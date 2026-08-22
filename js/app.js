@@ -841,6 +841,7 @@ function exportProductsCSV() {
 /* ==================== ERP: 매출 / 매입 / 재고 / 리포트 ==================== */
 const CHANNELS = ["스마트스토어", "쿠팡", "자사몰", "오픈마켓", "기타"];
 let erpChannelList = [];  // sales_channels 테이블
+let erpTransfers = [];    // stock_transfers (쿠팡 사외재고 이동)
 let erpMonth = today().slice(0, 7);
 let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
@@ -854,24 +855,37 @@ const monthOf = r => (r.date || "").slice(0, 7);
 
 /* 제품·재고·거래처·채널 공통 로드 */
 async function loadErpBase() {
-  const [prodRes, buyRes, saleRes, costRes, chRes] = await Promise.all([
+  const [prodRes, buyRes, saleRes, costRes, chRes, trRes] = await Promise.all([
     sb.from("products").select("*").order("name"),
     sb.from("purchases").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("sales").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("purchase_costs").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("sales_channels").select("*").order("created_at"),
+    sb.from("stock_transfers").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
   ]);
   erpProducts = prodRes.data || [];
   const buys = buyRes.data || [];
   const sales = saleRes.data || [];
   const costs = costRes.data || [];
   erpChannelList = chRes.data || [];
+  erpTransfers = trRes.data || [];
   erpStock = {};
   erpProducts.forEach(p => {
     const myBuys = buys.filter(b => b.product_id === p.id);
     const bought = myBuys.reduce((s, b) => s + Number(b.qty), 0);
-    const sold = sales.filter(x => x.product_id === p.id).reduce((s, x) => s + Number(x.qty), 0);
-    erpStock[p.id] = { stock: bought - sold, lastCost: myBuys.length ? Number(myBuys[0].unit_cost) : 0 };
+    const mySales = sales.filter(x => x.product_id === p.id);
+    const sold = mySales.reduce((s, x) => s + Number(x.qty), 0);
+    // 쿠팡 사외재고: 쿠팡으로 보낸(입고) − 회수 − 쿠팡 채널 판매
+    const moved = erpTransfers.filter(t => t.product_id === p.id)
+      .reduce((s, t) => s + (t.kind === "쿠팡입고" ? 1 : -1) * Number(t.qty), 0);
+    const coupangSold = mySales.filter(x => (x.channel || "").includes("쿠팡"))
+      .reduce((s, x) => s + Number(x.qty), 0);
+    const atCoupang = moved - coupangSold;
+    const stock = bought - sold;
+    erpStock[p.id] = {
+      stock, atCoupang, inHouse: stock - atCoupang,
+      lastCost: myBuys.length ? Number(myBuys[0].unit_cost) : 0,
+    };
   });
   erpSuppliers = [...new Set([...buys.map(b => b.supplier), ...costs.map(c => c.supplier)].filter(Boolean))];
   // 채널 목록: 등록된 채널 + 과거 매출에 쓰인 채널
@@ -1261,41 +1275,116 @@ async function viewInventory() {
   const inv = stockProducts.map(p => {
     const bought = buys.filter(b => b.product_id === p.id).reduce((s, b) => s + Number(b.qty), 0);
     const sold = sales.filter(x => x.product_id === p.id).reduce((s, x) => s + Number(x.qty), 0);
-    const st = erpStock[p.id] || { stock: 0, lastCost: 0 };
-    return { p, bought, sold, stock: st.stock, lastCost: st.lastCost, value: st.stock * st.lastCost };
+    const st = erpStock[p.id] || { stock: 0, inHouse: 0, atCoupang: 0, lastCost: 0 };
+    return { p, bought, sold, ...st, value: st.stock * st.lastCost };
   });
   const totalValue = inv.reduce((s, r) => s + r.value, 0);
+  const totalCoupang = inv.reduce((s, r) => s + r.atCoupang, 0);
+  const totalInHouse = inv.reduce((s, r) => s + r.inHouse, 0);
+  const recentTransfers = erpTransfers.slice(0, 20);
 
   return `
     <div class="grid-stats">
       <div class="stat"><div class="stat-label">재고 평가액 (최근 매입가 기준)</div>
         <div class="stat-value blue">₩${fmt(totalValue)}</div></div>
-      <div class="stat"><div class="stat-label">사입 제품</div>
-        <div class="stat-value">${stockProducts.length}종</div></div>
-      <div class="stat" onclick="location.hash='#/products'"><div class="stat-label">위탁 제품 (재고 관리 제외)</div>
-        <div class="stat-value amber">${consignCount}종</div></div>
+      <div class="stat"><div class="stat-label">자사창고 재고</div>
+        <div class="stat-value">${fmt(totalInHouse)}개</div></div>
+      <div class="stat"><div class="stat-label">쿠팡 사외재고</div>
+        <div class="stat-value amber">${fmt(totalCoupang)}개</div></div>
+      <div class="stat" onclick="location.hash='#/products'"><div class="stat-label">위탁 제품 (재고 제외)</div>
+        <div class="stat-value">${consignCount}종</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h2>제품별 재고</h2>
-        <button class="btn sm secondary" onclick="location.hash='#/purchases'">＋ 매입 입력</button></div>
+      <div class="card-head"><h2>제품별 재고 (자사창고 / 쿠팡)</h2>
+        <div style="display:flex;gap:8px">
+          <button class="btn sm" onclick="openTransferModal()">🚚 쿠팡 재고 이동</button>
+          <button class="btn sm secondary" onclick="location.hash='#/purchases'">＋ 매입 입력</button>
+        </div></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>제품</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">현재 재고</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
+        <thead><tr><th>제품</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">자사창고</th><th class="num">쿠팡</th><th class="num">총 재고</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
         <tbody>${inv.length ? inv.map(r => `
           <tr>
             <td><b>${esc(r.p.name)}</b><br><small style="color:var(--text-sub)">${esc(r.p.code)} · ${esc(r.p.spec)}</small></td>
             <td class="num">${fmt(r.bought)}</td>
             <td class="num">${fmt(r.sold)}</td>
+            <td class="num" style="color:${r.inHouse < 0 ? "var(--red)" : "var(--text)"}">${fmt(r.inHouse)}</td>
+            <td class="num" style="color:${r.atCoupang < 0 ? "var(--red)" : "var(--amber)"}">${fmt(r.atCoupang)}</td>
             <td class="num" style="font-weight:800;color:${r.stock < 0 ? "var(--red)" : r.stock <= 5 ? "var(--amber)" : "var(--text)"}">${fmt(r.stock)}</td>
             <td class="num">₩${fmt(r.lastCost)}</td>
             <td class="num">₩${fmt(r.value)}</td>
-          </tr>`).join("") : `<tr><td colspan="6" class="empty">제품이 없습니다</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="8" class="empty">제품이 없습니다</td></tr>`}
         </tbody>
       </table></div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ 재고 = 매입 수량 − 판매 수량. 재고가 음수면 매입 입력이 누락된 것입니다.<br>
-        ※ 위탁 상품은 공급처가 재고·배송을 관리하므로 이 화면에 표시되지 않습니다.
+        ※ 창고에서 쿠팡 물류센터로 보낸 수량은 <b>🚚 쿠팡 재고 이동</b>으로 기록하세요.<br>
+        ※ <b>쿠팡</b> 채널 매출은 쿠팡 재고에서, 그 외 채널 매출은 자사창고에서 차감됩니다.<br>
+        ※ 숫자가 음수면 이동/매입 기록이 누락된 것입니다. 위탁 상품은 이 화면에 표시되지 않습니다.
       </p>
+    </div>
+
+    <div class="card">
+      <h2>쿠팡 재고 이동 내역 (최근 20건)</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>일자</th><th>품목</th><th>구분</th><th class="num">수량</th><th>메모</th><th>입력자</th><th></th></tr></thead>
+        <tbody>${recentTransfers.length ? recentTransfers.map(t => `
+          <tr>
+            <td>${esc(t.date)}</td>
+            <td><b>${esc(prodName(t.product_id))}</b></td>
+            <td>${t.kind === "쿠팡입고" ? '<span class="chip mine">창고→쿠팡</span>' : '<span class="chip waiting">쿠팡→창고</span>'}</td>
+            <td class="num">${fmt(t.qty)}</td>
+            <td>${esc(t.memo)}</td>
+            <td>${esc(t.created_by)}</td>
+            <td><button class="btn sm danger" onclick="deleteErpRow('stock_transfers','${t.id}')">삭제</button></td>
+          </tr>`).join("") : `<tr><td colspan="7" class="empty">이동 내역이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
     </div>`;
+}
+
+function openTransferModal() {
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>🚚 쿠팡 재고 이동</h3>
+        <div class="form-grid">
+          <div class="field"><label>일자</label><input id="tr-date" type="date" value="${today()}"></div>
+          <div class="field"><label>구분</label>
+            <select id="tr-kind">
+              <option value="쿠팡입고">창고 → 쿠팡 (입고)</option>
+              <option value="쿠팡회수">쿠팡 → 창고 (회수)</option>
+            </select></div>
+          <div class="field full"><label>품목 *</label><select id="tr-prod">${productOptions("", "buy")}</select></div>
+          <div class="field"><label>수량 *</label><input id="tr-qty" type="number" min="1" value="1"></div>
+          <div class="field"><label>메모</label><input id="tr-memo" placeholder="송장번호 등" maxlength="100"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" onclick="saveTransfer()">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveTransfer() {
+  const pid = document.getElementById("tr-prod").value;
+  const qty = Number(document.getElementById("tr-qty").value) || 0;
+  const date = document.getElementById("tr-date").value;
+  if (!pid) return toast("품목을 선택해 주세요");
+  if (qty <= 0) return toast("수량을 입력해 주세요");
+  if (!date) return toast("일자를 선택해 주세요");
+  const kind = document.getElementById("tr-kind").value;
+  if (kind === "쿠팡입고" && qty > (erpStock[pid]?.inHouse ?? 0)) {
+    if (!confirm(`자사창고 재고(${fmt(erpStock[pid]?.inHouse ?? 0)})보다 많은 수량입니다.\n그래도 저장할까요?`)) return;
+  }
+  const { error } = await sb.from("stock_transfers").insert({
+    date, product_id: pid, qty, kind,
+    memo: document.getElementById("tr-memo").value.trim(),
+    created_by: me.name,
+  });
+  if (error) return toast("저장에 실패했습니다");
+  toast("이동이 기록되었습니다");
+  closeModal();
+  route();
 }
 
 /* ---------- 월별 리포트 ---------- */
