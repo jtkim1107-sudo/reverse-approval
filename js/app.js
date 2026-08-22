@@ -1409,7 +1409,7 @@ async function viewChannels() {
         <tbody>${list.length ? list.map(c => `
           <tr>
             <td><b>${esc(c.name)}</b></td>
-            <td>${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener" style="color:var(--brand)">바로가기 ↗</a>` : "—"}</td>
+            <td>${c.url ? `<a href="${esc(normUrl(c.url))}" target="_blank" rel="noopener" style="color:var(--brand)">바로가기 ↗</a>` : "—"}</td>
             <td>${c.login_id ? `${esc(c.login_id)} <button class="btn-ghost" style="font-size:12px" title="복사" onclick="copyText('${esc(c.login_id)}')">📋</button>` : "—"}</td>
             <td>${c.login_pw
               ? `<span id="pw-${c.id}" data-pw="${esc(c.login_pw)}">••••••</span>
@@ -1427,6 +1427,12 @@ async function viewChannels() {
 }
 
 let channelCache = [];
+// URL에 http(s):// 가 없으면 붙여줌 (없으면 상대경로로 깨짐)
+function normUrl(u) {
+  u = (u || "").trim();
+  if (!u) return "";
+  return /^https?:\/\//i.test(u) ? u : "https://" + u;
+}
 function togglePw(id) {
   const el = document.getElementById("pw-" + id);
   if (!el) return;
@@ -1434,7 +1440,27 @@ function togglePw(id) {
   el.textContent = shown ? "••••••" : el.dataset.pw;
 }
 function copyText(t) {
-  navigator.clipboard.writeText(t).then(() => toast("복사되었습니다")).catch(() => toast("복사 실패"));
+  const done = () => toast("복사되었습니다");
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(t).then(done).catch(() => fallbackCopy(t, done));
+  } else {
+    fallbackCopy(t, done);
+  }
+}
+function fallbackCopy(t, done) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = t;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    done();
+  } catch (e) {
+    toast("복사 실패 — 길게 눌러 복사하세요");
+  }
 }
 
 async function openChannelModal(id) {
@@ -1467,7 +1493,7 @@ async function saveChannel(id) {
   if (!name) return toast("채널명을 입력해 주세요");
   const data = {
     name,
-    url: document.getElementById("ch-url").value.trim(),
+    url: normUrl(document.getElementById("ch-url").value),
     login_id: document.getElementById("ch-id").value.trim(),
     login_pw: document.getElementById("ch-pw").value,
     memo: document.getElementById("ch-memo").value.trim(),
