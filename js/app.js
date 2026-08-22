@@ -238,6 +238,7 @@ const routes = {
   report: { title: "월별 리포트", render: viewReport },
   cash: { title: "자금일보", render: viewCash },
   tasks: { title: "업무 지시", render: viewTasks },
+  aireport: { title: "AI 리포트", render: viewAiReport },
   settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
 };
@@ -265,12 +266,13 @@ async function route() {
 
 /* ---------- 화면: 대시보드 ---------- */
 async function viewDashboard() {
-  const [docs, prodRes, saleRes, buyRes, taskRes] = await Promise.all([
+  const [docs, prodRes, saleRes, buyRes, taskRes, costRes] = await Promise.all([
     fetchDocs(),
     sb.from("products").select("*").order("updated_at", { ascending: false }).limit(5),
     sb.from("sales").select("amount,date"),
     sb.from("purchases").select("amount,date"),
     sb.from("tasks").select("assignee_id,status"),
+    sb.from("purchase_costs").select("amount,date"),
   ]);
   const myTasks = (taskRes.data || []).filter(t => t.assignee_id === me.id && t.status === "open").length;
   const products = prodRes.data || [];
@@ -278,6 +280,8 @@ async function viewDashboard() {
   const monthSales = (saleRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
     .reduce((s, r) => s + Number(r.amount), 0);
   const monthBuys = (buyRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
+    .reduce((s, r) => s + Number(r.amount), 0)
+    + (costRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
     .reduce((s, r) => s + Number(r.amount), 0);
   const inbox = inboxOf(docs).length;
   const mine = docs.filter(d => d.drafter_id === me.id);
@@ -821,6 +825,7 @@ let erpMonth = today().slice(0, 7);
 let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
 let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
+let erpCostsCache = []; // 부대비용(택배·운송) 캐시
 let erpSuppliers = [];
 let erpChannels = [];
 
@@ -829,14 +834,16 @@ const monthOf = r => (r.date || "").slice(0, 7);
 
 /* 제품·재고·거래처·채널 공통 로드 */
 async function loadErpBase() {
-  const [prodRes, buyRes, saleRes] = await Promise.all([
+  const [prodRes, buyRes, saleRes, costRes] = await Promise.all([
     sb.from("products").select("*").order("name"),
     sb.from("purchases").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("sales").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
+    sb.from("purchase_costs").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
   ]);
   erpProducts = prodRes.data || [];
   const buys = buyRes.data || [];
   const sales = saleRes.data || [];
+  const costs = costRes.data || [];
   erpStock = {};
   erpProducts.forEach(p => {
     const myBuys = buys.filter(b => b.product_id === p.id);
@@ -844,9 +851,9 @@ async function loadErpBase() {
     const sold = sales.filter(x => x.product_id === p.id).reduce((s, x) => s + Number(x.qty), 0);
     erpStock[p.id] = { stock: bought - sold, lastCost: myBuys.length ? Number(myBuys[0].unit_cost) : 0 };
   });
-  erpSuppliers = [...new Set(buys.map(b => b.supplier).filter(Boolean))];
+  erpSuppliers = [...new Set([...buys.map(b => b.supplier), ...costs.map(c => c.supplier)].filter(Boolean))];
   erpChannels = [...new Set([...CHANNELS, ...sales.map(s => s.channel).filter(Boolean)])];
-  return { buys, sales };
+  return { buys, sales, costs };
 }
 
 const tradeTypeOf = p => (p?.trade_type || "사입");
@@ -993,9 +1000,14 @@ async function saveSales() {
 
 /* ---------- 매입 (전표식 다품목 입력) ---------- */
 async function viewPurchases() {
-  const { buys } = await loadErpBase();
+  const { buys, costs } = await loadErpBase();
   const rows = buys.filter(r => monthOf(r) === erpMonth);
+  const costRows = costs.filter(r => monthOf(r) === erpMonth);
   erpRowsCache = rows;
+  erpCostsCache = costRows;
+  const goodsTotal = rows.reduce((s, r) => s + Number(r.amount), 0);
+  const shipTotal = costRows.filter(c => c.kind === "택배비").reduce((s, c) => s + Number(c.amount), 0);
+  const freightTotal = costRows.filter(c => c.kind === "운송비").reduce((s, c) => s + Number(c.amount), 0);
 
   return `
     <div class="card">
@@ -1006,12 +1018,14 @@ async function viewPurchases() {
         <div class="field"><label>거래처</label>
           <input id="b-supplier" list="supplier-list" placeholder="거래처 입력 또는 선택" maxlength="40">
           <datalist id="supplier-list">${erpSuppliers.map(s => `<option value="${esc(s)}">`).join("")}</datalist></div>
+        <div class="field"><label>택배비(원) — 상품값과 별도</label><input id="b-ship" type="number" min="0" placeholder="0"></div>
+        <div class="field"><label>운송비(원) — 상품값과 별도</label><input id="b-freight" type="number" min="0" placeholder="0"></div>
       </div>
       <div class="table-wrap"><table class="items-table">
         <thead><tr><th style="min-width:190px">품목 (현재 재고)</th><th style="width:85px" class="num">수량</th><th style="width:115px" class="num">단가(원)</th><th style="width:110px" class="num">금액</th><th>적요</th><th style="width:40px"></th></tr></thead>
         <tbody id="buy-rows"></tbody>
       </table></div>
-      <div class="total-line">합계 <b id="b-total">₩0</b></div>
+      <div class="total-line">상품 합계 <b id="b-total">₩0</b></div>
       <div class="modal-actions"><button class="btn" id="btn-save-buys" onclick="savePurchases()">매입 저장</button></div>
     </div>
 
@@ -1021,7 +1035,16 @@ async function viewPurchases() {
           ${monthPicker()}
           <button class="btn sm secondary" onclick="exportErpCSV('purchases')">CSV</button>
         </div></div>
-      ${erpSummaryCards(rows, "매입")}
+      <div class="grid-stats">
+        <div class="stat"><div class="stat-label">${erpMonth} 상품 매입</div>
+          <div class="stat-value blue">₩${fmt(goodsTotal)}</div></div>
+        <div class="stat"><div class="stat-label">택배비</div>
+          <div class="stat-value amber">₩${fmt(shipTotal)}</div></div>
+        <div class="stat"><div class="stat-label">운송비</div>
+          <div class="stat-value amber">₩${fmt(freightTotal)}</div></div>
+        <div class="stat"><div class="stat-label">총 매입 (상품+부대비용)</div>
+          <div class="stat-value">₩${fmt(goodsTotal + shipTotal + freightTotal)}</div></div>
+      </div>
       <div class="table-wrap"><table>
         <thead><tr><th>매입일</th><th>품목</th><th>거래처</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>적요</th><th>입력자</th><th></th></tr></thead>
         <tbody>${rows.length ? rows.map(r => `
@@ -1040,6 +1063,26 @@ async function viewPurchases() {
           </tr>`).join("") : `<tr><td colspan="9" class="empty">${erpMonth}월 매입이 없습니다</td></tr>`}
         </tbody>
       </table></div>
+    </div>
+
+    <div class="card">
+      <h2>부대비용 내역 (택배비 · 운송비)</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>일자</th><th>구분</th><th>거래처</th><th class="num">금액</th><th>입력자</th><th></th></tr></thead>
+        <tbody>${costRows.length ? costRows.map(c => `
+          <tr>
+            <td>${esc(c.date)}</td>
+            <td>${c.kind === "택배비" ? '<span class="chip mine">택배비</span>' : '<span class="chip waiting">운송비</span>'}</td>
+            <td>${esc(c.supplier)}</td>
+            <td class="num"><b>₩${fmt(c.amount)}</b></td>
+            <td>${esc(c.created_by)}</td>
+            <td><button class="btn sm danger" onclick="deleteErpRow('purchase_costs','${c.id}')">삭제</button></td>
+          </tr>`).join("") : `<tr><td colspan="6" class="empty">${erpMonth}월 부대비용이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+      <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
+        ※ 택배비·운송비는 상품 매입액과 분리 집계되며, 재고 단가에는 포함되지 않습니다.
+      </p>
     </div>`;
 }
 
@@ -1077,6 +1120,8 @@ async function savePurchases() {
   const date = document.getElementById("b-date").value;
   const supplier = document.getElementById("b-supplier").value.trim();
   if (!date) return toast("매입일을 선택해 주세요");
+  const ship = Number(document.getElementById("b-ship").value) || 0;
+  const freight = Number(document.getElementById("b-freight").value) || 0;
   const recs = [];
   for (const tr of document.querySelectorAll("#buy-rows tr")) {
     const pid = tr.querySelector(".br-prod").value;
@@ -1088,12 +1133,22 @@ async function savePurchases() {
     recs.push({ date, supplier, product_id: pid, qty, unit_cost: cost, amount: qty * cost,
       memo: tr.querySelector(".br-memo").value.trim(), created_by: me.name });
   }
-  if (!recs.length) return toast("품목을 1개 이상 입력해 주세요");
+  if (!recs.length && !ship && !freight) return toast("품목 또는 부대비용을 입력해 주세요");
   const btn = document.getElementById("btn-save-buys");
   btn.disabled = true;
-  const { error } = await sb.from("purchases").insert(recs);
-  if (error) { btn.disabled = false; return toast("저장에 실패했습니다"); }
-  toast(`매입 ${recs.length}건 저장되었습니다`);
+  if (recs.length) {
+    const { error } = await sb.from("purchases").insert(recs);
+    if (error) { btn.disabled = false; return toast("저장에 실패했습니다"); }
+  }
+  // 택배비·운송비는 별도 테이블에 분리 저장
+  const costRecs = [];
+  if (ship > 0) costRecs.push({ date, kind: "택배비", amount: ship, supplier, created_by: me.name });
+  if (freight > 0) costRecs.push({ date, kind: "운송비", amount: freight, supplier, created_by: me.name });
+  if (costRecs.length) {
+    const { error: e2 } = await sb.from("purchase_costs").insert(costRecs);
+    if (e2) { btn.disabled = false; return toast("부대비용 저장에 실패했습니다"); }
+  }
+  toast(`저장되었습니다 (상품 ${recs.length}건${costRecs.length ? ", 부대비용 " + costRecs.length + "건" : ""})`);
   erpMonth = date.slice(0, 7);
   route();
 }
@@ -1217,9 +1272,9 @@ async function viewInventory() {
 
 /* ---------- 월별 리포트 ---------- */
 async function viewReport() {
-  const { buys, sales } = await loadErpBase();
+  const { buys, sales, costs } = await loadErpBase();
 
-  // 최근 6개월 매출/매입/차액
+  // 최근 6개월 매출/매입/차액 (매입 = 상품 + 택배·운송비)
   const months = [];
   const now = new Date();
   for (let i = 0; i < 6; i++) {
@@ -1228,8 +1283,10 @@ async function viewReport() {
   }
   const monthRows = months.map(m => {
     const sale = sales.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
-    const buy = buys.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
-    return { m, sale, buy, diff: sale - buy };
+    const goods = buys.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
+    const extra = costs.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
+    const buy = goods + extra;
+    return { m, sale, buy, goods, extra, diff: sale - buy };
   });
 
   // 이번 달 채널별 / 품목별
@@ -1270,13 +1327,13 @@ async function viewReport() {
           <tr>
             <td><b>${r.m}</b></td>
             <td class="num">₩${fmt(r.sale)}</td>
-            <td class="num">₩${fmt(r.buy)}</td>
+            <td class="num">₩${fmt(r.buy)}${r.extra ? `<br><small style="color:var(--text-sub)">상품 ₩${fmt(r.goods)} + 택배·운송 ₩${fmt(r.extra)}</small>` : ""}</td>
             <td class="num" style="font-weight:700;color:${r.diff >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(r.diff)}</td>
           </tr>`).join("")}
         </tbody>
       </table></div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ 차액은 단순 매출−매입입니다. (기간 내 재고 변동·경비 미반영)
+        ※ 매입 = 상품 매입 + 택배비·운송비. 차액은 단순 매출−매입입니다. (기간 내 재고 변동·경비 미반영)
       </p>
     </div>
 
@@ -1305,6 +1362,32 @@ async function viewReport() {
         </tbody>
       </table></div>
     </div>`;
+}
+
+/* ---------- AI 리포트 ---------- */
+async function viewAiReport() {
+  const { data } = await sb.from("ai_reports").select("*").order("date", { ascending: false }).limit(14);
+  const reports = data || [];
+  if (!reports.length) {
+    return `<div class="card">
+      <h2>🤖 AI 리포트</h2>
+      <p style="color:var(--text-sub);font-size:13.5px">
+        아직 생성된 리포트가 없습니다. <b>매일 아침 8시</b>에 어제 매출·재고·결재·업무·자금을 자동 분석해서
+        이상징후와 함께 리포트를 만들어 알림으로 보내드립니다.
+      </p>
+    </div>`;
+  }
+  return reports.map((r, i) => `
+    <div class="card" ${i === 0 ? 'style="border:2px solid var(--brand)"' : ""}>
+      <div class="card-head">
+        <h2>${i === 0 ? "🤖 최신 리포트 · " : ""}${esc(r.date)}</h2>
+        ${r.anomalies
+          ? `<span class="chip rejected">이상징후 ${r.anomalies}건</span>`
+          : '<span class="chip approved">이상 없음</span>'}
+      </div>
+      <div style="white-space:pre-wrap;font-size:14px;line-height:1.8">${esc(r.content)}</div>
+    </div>`).join("") + `
+    <p style="color:var(--text-sub);font-size:12px">※ 매일 아침 8시에 자동 생성됩니다. 최근 14일치가 보관됩니다.</p>`;
 }
 
 /* ---------- 업무 지시 ---------- */
