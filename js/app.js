@@ -3715,9 +3715,10 @@ async function viewPODoc(id) {
     <div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <button class="btn secondary" onclick="location.hash='#/po'">← 목록</button>
       ${canSend ? `
-        <button class="btn" onclick="mailPO('${p.id}')">📧 거래처에 메일 보내기</button>
+        <button class="btn" onclick="mailPOHtml('${p.id}')">📧 메일로 보내기 (표 그대로)</button>
         <button class="btn secondary" onclick="window.print()">🖨 인쇄 · PDF 저장</button>
-        <button class="btn secondary" onclick="copyPOText('${p.id}')">📋 내용 복사</button>
+        <button class="btn secondary" onclick="mailPO('${p.id}')">✉️ 휴대폰 메일앱 (텍스트)</button>
+        <button class="btn secondary" onclick="copyPOText('${p.id}')">📋 텍스트 복사</button>
       ` : `<span class="chip progress">결재가 끝나야 보낼 수 있습니다</span>`}
       ${!sup.email && canSend ? `<span style="font-size:12.5px;color:#d9480f">
         ⚠️ ${esc(p.supplier)}의 이메일이 등록되지 않았습니다 —
@@ -3808,18 +3809,148 @@ async function viewPODoc(id) {
     </div>`;
 }
 
-// 거래처 메일 앱을 열어 발주 내용을 채워 준다 (별도 메일 서비스 없이 동작)
-function mailPO(id) {
+/* 메일에 붙여넣을 발주서 HTML.
+   메일 클라이언트는 <style>을 지우므로 모든 서식을 인라인으로 넣어야 표가 유지된다. */
+function poEmailHtml(id) {
+  const p = poCache.find(x => x.id === id);
+  const items = poItemCache[id] || [];
+  const sup = erpSupplierList.find(s => s.name === p.supplier) || {};
+  const supply = items.reduce((s, it) => s + Number(it.amount), 0);
+  const net = vatCfg.purchaseCostIncludesVat ? Math.round(supply / 1.1) : supply;
+  const vat = vatCfg.enabled ? (vatCfg.purchaseCostIncludesVat ? supply - net : Math.round(net * 0.1)) : 0;
+  const apprStep = (p.approval_line || []).find(s => s.status === "approved");
+  const approver = apprStep ? userName(apprStep.userId)
+    : (p.approval_line || []).length === 0 ? userName(p.drafter_id) + " (전결)" : "—";
+
+  const B = "1px solid #e3e7ef";
+  const th = `background:#eef0f4;font-size:12px;font-weight:700;padding:9px 10px;border-bottom:${B}`;
+  const td = `font-size:13px;padding:9px 12px;border-bottom:${B}`;
+  const pth = `width:74px;color:#6b7487;font-size:11.5px;padding:6px 12px;border-bottom:${B}`;
+  const ptd = `font-size:12.5px;padding:6px 12px;border-bottom:${B}`;
+  const party = (title, rows) => `
+    <td width="49%" valign="top" style="border:${B};border-radius:8px">
+      <div style="background:#eef3fe;color:#2b5df0;font-weight:800;font-size:12px;padding:8px 12px">${title}</div>
+      <table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse">
+        ${rows.map(([k, v]) => `<tr><td style="${pth}">${k}</td><td style="${ptd}">${esc(v) || "—"}</td></tr>`).join("")}
+      </table></td>`;
+  const signBox = (label, name, date) => `
+    <td style="width:118px;border:${B};border-radius:6px;text-align:center">
+      <div style="background:#eef0f4;font-size:11px;font-weight:700;color:#6b7487;padding:5px">${label}</div>
+      <div style="font-size:14px;font-weight:800;padding:14px 4px 4px">${esc(name)}</div>
+      <div style="font-size:11px;color:#6b7487;padding-bottom:10px">${esc(date)}</div></td>`;
+
+  return `<div style="font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;color:#1c2333">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:660px;background:#ffffff">
+<tr><td>
+<div style="text-align:center;font-size:28px;font-weight:900;letter-spacing:12px">발 주 서</div>
+<div style="text-align:center;font-size:11px;color:#6b7487;letter-spacing:3px;margin-top:3px">PURCHASE ORDER</div>
+
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:24px;border-top:2px solid #1c2333;border-collapse:collapse">
+  <tr><td style="width:92px;${th}">발주번호</td><td style="${td}"><b>${esc(p.po_no)}</b></td>
+      <td style="width:92px;${th}">발주일</td><td style="${td}">${esc(p.date)}</td></tr>
+  <tr><td style="${th}">납품희망일</td><td style="${td}">${p.due_date ? esc(p.due_date) : "협의"}</td>
+      <td style="${th}">입고처</td><td style="${td}">${p.deliver_to === "쿠팡" ? "쿠팡 물류센터 (로켓그로스)" : "자사창고"}</td></tr>
+</table>
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:18px"><tr>
+${party("공급자 (받는 분)", [["상호", p.supplier], ["사업자번호", sup.biz_no], ["대표자", sup.ceo], ["담당자", sup.manager], ["연락처", sup.phone]])}
+<td width="2%"></td>
+${party("발주자 (보내는 분)", [["상호", companyCfg.name], ["사업자번호", companyCfg.biz_no], ["대표자", companyCfg.ceo], ["주소", companyCfg.addr], ["연락처", companyCfg.phone]])}
+</tr></table>
+
+<p style="font-size:13.5px;margin:22px 0 10px">아래와 같이 발주하오니 확인 후 납품하여 주시기 바랍니다.</p>
+
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;border-top:2px solid #1c2333">
+<thead><tr>
+  <th style="width:36px;${th}">No</th>
+  <th style="${th};text-align:left">품목</th>
+  <th style="width:70px;${th};text-align:right">수량</th>
+  <th style="width:90px;${th};text-align:right">단가</th>
+  <th style="width:110px;${th};text-align:right">공급가액</th>
+</tr></thead>
+<tbody>${items.map((it, i) => `<tr>
+  <td style="${td};text-align:center">${i + 1}</td>
+  <td style="${td}"><b>${esc(prodName(it.product_id))}</b></td>
+  <td style="${td};text-align:right">${fmt(it.qty)}</td>
+  <td style="${td};text-align:right">${fmt(it.unit_cost)}</td>
+  <td style="${td};text-align:right">${fmt(it.amount)}</td>
+</tr>`).join("")}</tbody>
+<tfoot>
+  <tr><td colspan="4" style="background:#fafbfd;font-size:12.5px;padding:9px 12px;text-align:right;border-bottom:${B}">공급가액</td>
+      <td style="background:#fafbfd;font-size:12.5px;padding:9px 10px;text-align:right;border-bottom:${B}">${fmt(net)}</td></tr>
+  ${vatCfg.enabled ? `<tr><td colspan="4" style="background:#fafbfd;font-size:12.5px;padding:9px 12px;text-align:right;border-bottom:${B}">부가세 (10%)</td>
+      <td style="background:#fafbfd;font-size:12.5px;padding:9px 10px;text-align:right;border-bottom:${B}">${fmt(vat)}</td></tr>` : ""}
+  <tr><td colspan="4" style="background:#eef3fe;font-size:14.5px;font-weight:800;padding:11px 12px;text-align:right">합계 금액</td>
+      <td style="background:#eef3fe;font-size:14.5px;font-weight:800;padding:11px 10px;text-align:right">₩${fmt(net + vat)}</td></tr>
+</tfoot>
+</table>
+
+${p.freight_est ? `<p style="font-size:12.5px;color:#6b7487;margin-top:12px">※ 운송비 ₩${fmt(p.freight_est)}는 <b>${esc(companyCfg.name)}</b>가 운송업체에 직접 지급합니다.</p>` : ""}
+${p.memo ? `<p style="font-size:12.5px;color:#6b7487;margin-top:4px">※ ${esc(p.memo)}</p>` : ""}
+
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="right" style="margin-top:26px"><tr>
+${signBox("기안", userName(p.drafter_id), p.date)}<td style="width:10px"></td>${signBox("승인", approver, apprStep ? String(apprStep.date).slice(0, 10) : p.date)}
+</tr></table>
+<div style="clear:both"></div>
+
+<div style="text-align:center;font-size:11px;color:#6b7487;margin-top:36px;padding-top:14px;border-top:${B}">
+${esc(companyCfg.name)}${companyCfg.addr ? " · " + esc(companyCfg.addr) : ""}${companyCfg.phone ? " · " + esc(companyCfg.phone) : ""}
+</div>
+</td></tr></table></div>`;
+}
+
+/* 표 서식을 유지한 채 클립보드에 복사 → 메일 작성창에 붙여넣으면 발주서 표가 그대로 들어간다 */
+async function copyPOHtml(id) {
+  const html = poEmailHtml(id);
+  const plain = poPlainText(id);
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      "text/html": new Blob([html], { type: "text/html" }),
+      "text/plain": new Blob([plain], { type: "text/plain" }),
+    })]);
+    return true;
+  } catch (e) {
+    // ClipboardItem 미지원 브라우저 — 화면에서 직접 선택 복사하도록 안내
+    try {
+      const holder = document.createElement("div");
+      holder.innerHTML = html;
+      holder.style.cssText = "position:fixed;left:-9999px;top:0";
+      document.body.appendChild(holder);
+      const range = document.createRange(); range.selectNodeContents(holder);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      const ok = document.execCommand("copy");
+      sel.removeAllRanges(); document.body.removeChild(holder);
+      return ok;
+    } catch (e2) { return false; }
+  }
+}
+
+// 발주서를 메일로: 표 서식을 복사한 뒤 메일 작성창을 연다
+async function mailPOHtml(id) {
   const p = poCache.find(x => x.id === id);
   const sup = erpSupplierList.find(s => s.name === p.supplier) || {};
-  if (!sup.email && !confirm(
-    `${p.supplier}의 이메일이 등록되어 있지 않습니다.\n\n메일 앱을 열어 직접 주소를 입력하시겠습니까?\n`
-    + `(매입 거래처에 이메일을 등록해두면 다음부터 자동으로 채워집니다)`)) return;
+  const ok = await copyPOHtml(id);
+  if (!ok) return toast("복사에 실패했습니다 — 발주서 화면을 직접 드래그해 복사해 주세요");
+  const subject = `[발주서] ${p.po_no} · ${companyCfg.name}`;
+  const gmail = `https://mail.google.com/mail/?view=cm&fs=1`
+    + `&to=${encodeURIComponent(sup.email || "")}&su=${encodeURIComponent(subject)}`;
+  alert(
+    "발주서를 복사했습니다.\n\n"
+    + "메일 작성창이 열리면 본문에서 붙여넣기(Ctrl+V)를 누르세요.\n"
+    + "표가 그대로 들어갑니다.\n\n"
+    + (sup.email ? `받는사람: ${sup.email}` : "※ 거래처 이메일이 등록되지 않아 직접 입력하셔야 합니다."));
+  window.open(gmail, "_blank", "noopener");
+}
+
+// 메일 본문(텍스트) — HTML을 못 쓰는 환경용
+function poPlainText(id) {
+  const p = poCache.find(x => x.id === id);
+  const sup = erpSupplierList.find(s => s.name === p.supplier) || {};
   const items = poItemCache[id] || [];
   const supply = items.reduce((s, it) => s + Number(it.amount), 0);
   const net = vatCfg.purchaseCostIncludesVat ? Math.round(supply / 1.1) : supply;
   const vat = vatCfg.enabled ? (vatCfg.purchaseCostIncludesVat ? supply - net : Math.round(net * 0.1)) : 0;
-  const body = [
+  return [
     `${sup.manager ? sup.manager + " 님, " : ""}안녕하세요. ${companyCfg.name}입니다.`,
     `아래와 같이 발주드리오니 확인 후 납품 부탁드립니다.`,
     "",
@@ -3844,9 +3975,15 @@ function mailPO(id) {
     ...(companyCfg.phone ? [companyCfg.phone] : []),
     ...(companyCfg.addr ? [companyCfg.addr] : []),
   ].join("\n");
+}
+
+// 메일 앱(휴대폰 등)으로 텍스트 발주서 보내기 — 표가 필요 없을 때
+function mailPO(id) {
+  const p = poCache.find(x => x.id === id);
+  const sup = erpSupplierList.find(s => s.name === p.supplier) || {};
   const url = `mailto:${encodeURIComponent(sup.email || "")}`
     + `?subject=${encodeURIComponent(`[발주서] ${p.po_no} · ${companyCfg.name}`)}`
-    + `&body=${encodeURIComponent(body)}`;
+    + `&body=${encodeURIComponent(poPlainText(id))}`;
   location.href = url;
   toast("메일 앱을 열었습니다 — 내용 확인 후 보내세요");
 }
