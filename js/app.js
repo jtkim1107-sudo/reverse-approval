@@ -1759,8 +1759,14 @@ async function loadErpBase() {
     // 창고에서 쿠팡으로 보낸(입고) − 회수
     const moved = upTo(erpTransfers.filter(t => t.product_id === p.id))
       .reduce((s, t) => s + (t.kind === "쿠팡입고" ? 1 : -1) * Number(t.qty), 0);
-    const coupangSold = mySales.filter(x => (x.channel || "").includes("쿠팡"))
-      .reduce((s, x) => s + Number(x.qty), 0);
+    // 쿠팡 사외재고에서 차감되는 판매 = '풀필먼트' 채널(로켓그로스 등) 매출.
+    // 쿠팡 판매자배송(윙)은 우리 창고에서 택배로 나가므로 자사창고에서 차감해야 한다 — 이름이 아니라 배송 방식으로 판단.
+    // 채널 목록에 없는 이름은 배송 방식을 알 수 없으므로, 이름에 '쿠팡'이 들어가면 기존 규칙대로 쿠팡 재고로 본다.
+    const coupangSold = mySales.filter(x => {
+      const ch = x.channel || "";
+      const reg = erpChannelList.find(c => c.name === ch);
+      return reg ? reg.ship_type === "풀필먼트" : ch.includes("쿠팡");
+    }).reduce((s, x) => s + Number(x.qty), 0);
     const houseSold = sold - coupangSold;
     // 쿠팡 재고 = 직송 입고 + 창고에서 보낸 것 − 쿠팡 판매
     const atCoupangRaw = boughtCoupang + moved - coupangSold;
@@ -2657,7 +2663,7 @@ async function viewInventory() {
       })()}
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
         ※ 창고에서 쿠팡 물류센터로 보낸 수량은 <b>🚚 쿠팡 재고 이동</b>으로 기록하세요.<br>
-        ※ <b>쿠팡</b> 채널 매출은 쿠팡 재고에서, 그 외 채널 매출은 자사창고에서 차감됩니다.<br>
+        ※ <b>풀필먼트 채널</b>(쿠팡 로켓그로스 등) 매출은 쿠팡 재고에서, 그 외(쿠팡 판매자배송 포함) 매출은 자사창고에서 차감됩니다.<br>
         ※ 숫자가 음수면 이동/매입 기록이 누락된 것입니다. 위탁 상품은 이 화면에 표시되지 않습니다.
       </p>
     </div>
@@ -2771,9 +2777,11 @@ function cmOfSale(r, shipCharged) {
   const st = channelSetting(r.channel);
   // 채널 수수료는 '고객이 실제로 결제한 금액'(부가세 포함)에 붙는다
   const feeGross = Math.round((revenue + outVat) * st.fee / 100);
-  const shipGross = (!shipCharged || shipCharged.has(r)) ? st.ship : 0;
-  // 로켓그로스처럼 개당 물류비가 붙는 채널은 수량만큼 곱한다
-  const logiGross = st.unit * qty;
+  // 배송 방식에 따라 둘 중 하나만 붙는다 — 직접배송은 주문 1건당 택배비,
+  // 풀필먼트(로켓그로스 등)는 개당 물류비. 채널 설정에 두 값이 모두 남아 있어도 이중으로 계산하지 않는다.
+  const isFulfill = st.type === "풀필먼트";
+  const shipGross = (!isFulfill && (!shipCharged || shipCharged.has(r))) ? st.ship : 0;
+  const logiGross = isFulfill ? st.unit * qty : 0;
   const fee = expNet(feeGross), ship = expNet(shipGross), logi = expNet(logiGross);
   return {
     // 고객이 실제로 낸 돈 = 공급가액 + 부가세 (판매가를 부가세 별도로 적는 경우도 맞음)
@@ -2928,7 +2936,7 @@ async function viewProfit() {
           ${vatCfg.enabled && t.outVat ? `<div style="font-size:12px;color:var(--text-sub);margin-top:2px">
             고객이 낸 돈 ₩${fmt(t.gross)} − 부가세 ₩${fmt(t.outVat)}</div>` : ""}</div>
         <div class="stat"><div class="stat-label">변동비 합계</div>
-          <div class="stat-value amber">₩${fmt(t.cost + t.fee + t.ship + adTotal)}</div></div>
+          <div class="stat-value amber">₩${fmt(t.cost + t.fee + t.ship + t.logi + adTotal)}</div></div>
         <div class="stat"><div class="stat-label">공헌이익</div>
           <div class="stat-value" style="color:${cmNet >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(cmNet)}</div></div>
         <div class="stat"><div class="stat-label">공헌이익률</div>
@@ -4447,8 +4455,9 @@ async function saveChannel(id) {
     login_pw: document.getElementById("ch-pw").value,
     fee_rate: fee,
     ship_type: document.getElementById("ch-type").value,
-    ship_fee: Number(document.getElementById("ch-ship").value) || 0,
-    unit_fee: Number(document.getElementById("ch-unit").value) || 0,
+    // 배송 방식과 무관한 쪽 값은 0으로 저장 — 방식을 바꿨을 때 예전 값이 남아 이중 계산되는 것을 막는다
+    ship_fee: document.getElementById("ch-type").value === "풀필먼트" ? 0 : (Number(document.getElementById("ch-ship").value) || 0),
+    unit_fee: document.getElementById("ch-type").value === "풀필먼트" ? (Number(document.getElementById("ch-unit").value) || 0) : 0,
     memo: document.getElementById("ch-memo").value.trim(),
   };
   const res = id
