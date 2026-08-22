@@ -731,8 +731,14 @@ function productTable() {
   }
   if (!list.length) return `<div class="table-wrap"><table><tbody><tr><td class="empty">제품이 없습니다</td></tr></tbody></table></div>`;
   return `<div class="table-wrap"><table>
-    <thead><tr><th>제품코드</th><th>제품명</th><th>구분</th><th>분류</th><th>규격</th><th>단위</th><th class="num">단가</th><th>메모</th><th>최종수정</th><th></th></tr></thead>
-    <tbody>${list.map(p => `
+    <thead><tr><th>제품코드</th><th>제품명</th><th>구분</th><th>분류</th>
+      <th class="num">원가</th><th class="num">판매가</th><th class="num">마진</th><th class="num">마진율</th>
+      <th class="num">MSRP</th><th class="num">박스입수</th><th>메모</th><th>최종수정</th><th></th></tr></thead>
+    <tbody>${list.map(p => {
+      const cost = Number(p.cost_price) || 0, price = Number(p.price) || 0;
+      const margin = cost && price ? price - cost : null;
+      const rate = margin !== null && price ? Math.round((margin / price) * 100) : null;
+      return `
       <tr>
         <td>${esc(p.code)}</td>
         <td><b>${esc(p.name)}</b></td>
@@ -740,16 +746,21 @@ function productTable() {
           ? '<span class="chip waiting">위탁</span>'
           : '<span class="chip mine">사입</span>'}</td>
         <td>${esc(p.category)}</td>
-        <td>${esc(p.spec)}</td>
-        <td>${esc(p.unit)}</td>
-        <td class="num">₩${fmt(p.price)}</td>
-        <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${esc(p.memo)}</td>
+        <td class="num">${cost ? "₩" + fmt(cost) : '<span style="color:var(--text-sub)">—</span>'}</td>
+        <td class="num">₩${fmt(price)}</td>
+        <td class="num">${margin !== null ? "₩" + fmt(margin) : '<span style="color:var(--text-sub)">—</span>'}</td>
+        <td class="num">${rate !== null
+          ? `<b style="color:${rate < 20 ? "#d9480f" : "var(--brand)"}">${rate}%</b>`
+          : '<span style="color:var(--text-sub)">—</span>'}</td>
+        <td class="num">${p.msrp ? "₩" + fmt(p.msrp) : '<span style="color:var(--text-sub)">—</span>'}</td>
+        <td class="num">${p.box_qty ? fmt(p.box_qty) : '<span style="color:var(--text-sub)">—</span>'}</td>
+        <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(p.memo)}</td>
         <td>${esc(p.updated_at)}<br><small style="color:var(--text-sub)">${esc(p.updated_by || "")}</small></td>
-        <td>
+        <td style="white-space:nowrap">
           <button class="btn sm secondary" onclick="openProductModal('${p.id}')">수정</button>
           <button class="btn sm danger" onclick="deleteProduct('${p.id}')">삭제</button>
         </td>
-      </tr>`).join("")}
+      </tr>`; }).join("")}
     </tbody></table></div>`;
 }
 function refreshProductTable() {
@@ -774,8 +785,16 @@ function openProductModal(id) {
           <div class="field"><label>분류</label><input id="p-cat" value="${esc(p?.category || "")}" placeholder="예) 건강식품" maxlength="30"></div>
           <div class="field"><label>규격</label><input id="p-spec" value="${esc(p?.spec || "")}" placeholder="예) 30g x 10입" maxlength="40"></div>
           <div class="field"><label>단위</label><input id="p-unit" value="${esc(p?.unit || "")}" placeholder="BOX / EA / 병" maxlength="10"></div>
-          <div class="field"><label>단가(원)</label><input id="p-price" type="number" min="0" value="${p?.price ?? ""}"></div>
-          <div class="field full"><label>메모</label><textarea id="p-memo">${esc(p?.memo || "")}</textarea></div>
+          <div class="field"><label>원가(원) — 매입 단가</label>
+            <input id="p-cost" type="number" min="0" value="${p?.cost_price ?? ""}" oninput="calcMarginHint()"></div>
+          <div class="field"><label>판매가(원) — 실제 판매</label>
+            <input id="p-price" type="number" min="0" value="${p?.price ?? ""}" oninput="calcMarginHint()"></div>
+          <div class="field"><label>MSRP(원) — 권장소비자가</label>
+            <input id="p-msrp" type="number" min="0" value="${p?.msrp ?? ""}"></div>
+          <div class="field"><label>박스입수(개)</label>
+            <input id="p-box" type="number" min="0" value="${p?.box_qty ?? ""}" placeholder="예) 40"></div>
+          <div class="field full" id="margin-hint" style="font-size:13px;color:var(--text-sub)"></div>
+          <div class="field full"><label>메모 (그 외 참고사항)</label><textarea id="p-memo" placeholder="원가·판매가·박스입수는 위 칸에 입력하세요">${esc(p?.memo || "")}</textarea></div>
         </div>
         <div class="modal-actions">
           <button class="btn secondary" onclick="closeModal()">취소</button>
@@ -783,7 +802,20 @@ function openProductModal(id) {
         </div>
       </div>
     </div>`;
+  calcMarginHint();
 }
+
+function calcMarginHint() {
+  const el = document.getElementById("margin-hint");
+  if (!el) return;
+  const cost = Number(document.getElementById("p-cost")?.value) || 0;
+  const price = Number(document.getElementById("p-price")?.value) || 0;
+  if (!cost || !price) { el.textContent = "원가와 판매가를 넣으면 마진이 자동 계산됩니다."; return; }
+  const m = price - cost, rate = Math.round((m / price) * 100);
+  el.innerHTML = `개당 마진 <b>₩${fmt(m)}</b> · 마진율 <b style="color:${rate < 20 ? "#d9480f" : "var(--brand)"}">${rate}%</b>`
+    + (rate < 20 ? " ⚠️ 마진율이 낮습니다" : "");
+}
+
 function closeModal() { document.getElementById("modal-root").innerHTML = ""; }
 
 async function saveProduct(id) {
@@ -798,6 +830,9 @@ async function saveProduct(id) {
     spec: document.getElementById("p-spec").value.trim(),
     unit: document.getElementById("p-unit").value.trim(),
     price: Number(document.getElementById("p-price").value) || 0,
+    cost_price: Number(document.getElementById("p-cost").value) || null,
+    msrp: Number(document.getElementById("p-msrp").value) || null,
+    box_qty: Number(document.getElementById("p-box").value) || null,
     memo: document.getElementById("p-memo").value.trim(),
     updated_at: today(),
     updated_by: me.name,
@@ -830,9 +865,15 @@ async function deleteProduct(id) {
 }
 
 function exportProductsCSV() {
-  const head = ["제품코드", "제품명", "분류", "규격", "단위", "단가", "메모", "최종수정일", "수정자"];
-  const rows = prodCache.map(p =>
-    [p.code, p.name, p.category, p.spec, p.unit, p.price, p.memo, p.updated_at, p.updated_by || ""]);
+  const head = ["제품코드", "제품명", "구분", "분류", "규격", "단위", "원가", "판매가", "마진", "마진율(%)", "MSRP", "박스입수", "메모", "최종수정일", "수정자"];
+  const rows = prodCache.map(p => {
+    const cost = Number(p.cost_price) || 0, price = Number(p.price) || 0;
+    const margin = cost && price ? price - cost : "";
+    const rate = margin !== "" && price ? Math.round((margin / price) * 100) : "";
+    return [p.code, p.name, p.trade_type || "사입", p.category, p.spec, p.unit,
+      p.cost_price ?? "", price, margin, rate, p.msrp ?? "", p.box_qty ?? "",
+      p.memo, p.updated_at, p.updated_by || ""];
+  });
   const csv = "﻿" + [head, ...rows]
     .map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
   downloadFile(csv, `리버스_제품마스터_${today()}.csv`, "text/csv");
@@ -884,7 +925,8 @@ async function loadErpBase() {
     const stock = bought - sold;
     erpStock[p.id] = {
       stock, atCoupang, inHouse: stock - atCoupang,
-      lastCost: myBuys.length ? Number(myBuys[0].unit_cost) : 0,
+      // 최근 매입단가 우선, 없으면 제품 마스터의 등록 원가
+      lastCost: myBuys.length ? Number(myBuys[0].unit_cost) : (Number(p.cost_price) || 0),
     };
   });
   erpSuppliers = [...new Set([...buys.map(b => b.supplier), ...costs.map(c => c.supplier)].filter(Boolean))];
@@ -900,7 +942,9 @@ function productOptions(sel, mode) {
   // 매입은 사입 상품만 대상 (위탁은 우리가 사입하지 않음)
   const list = mode === "buy" ? erpProducts.filter(p => tradeTypeOf(p) === "사입") : erpProducts;
   return `<option value="">품목 선택</option>` + list.map(p => {
-    const tag = tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`;
+    const tag = mode === "buy"
+      ? (p.cost_price ? `원가 ₩${fmt(p.cost_price)}` : "원가 미등록")
+      : (tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`);
     return `<option value="${p.id}" ${p.id === sel ? "selected" : ""}>${esc(p.name)} (${tag})</option>`;
   }).join("");
 }
@@ -1303,6 +1347,8 @@ function buildExcelDraft(wsRows, mode) {
     const qty = qtyRaw || 1;
     let price = xlsNum(get("price"));
     if (!price && amount) price = Math.round(amount / qty);
+    // 단가/금액이 아예 없으면 제품 마스터 기준가로 채움 (매출=판매가, 매입=원가)
+    if (!price && p) price = Number(isSale ? p.price : p.cost_price) || 0;
     rows.push({
       date: xlsDateOf(get("date")) || today(),
       pid: p ? p.id : "",
