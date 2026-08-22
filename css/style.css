@@ -198,6 +198,56 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .chip.rejected { background: var(--red-bg); color: var(--red); }
 .chip.waiting { background: var(--gray-bg); color: var(--text-sub); }
 .chip.mine { background: var(--brand-light); color: var(--brand); }
+.chip.gold { background: #fff3bf; color: #a67c00; }
+
+/* ===== 진행 게이지 (공용) ===== */
+.bar { position: relative; height: 12px; background: var(--line); border-radius: 99px; overflow: hidden; }
+.bar.bar-lg { height: 22px; }
+.bar-fill {
+  height: 100%; width: 0; border-radius: 99px; background: var(--brand);
+  transition: width .7s cubic-bezier(.2, .7, .3, 1);
+}
+.bar-fill.green { background: var(--green); }
+.bar-fill.amber { background: var(--amber); }
+.bar-fill.red { background: var(--red); }
+/* 눈금은 막대 위에 겹쳐야 하므로 .bar의 형제로 두고 overflow 밖에 그린다 */
+.bar-wrap { position: relative; padding: 4px 0 26px; }
+.bar-mark { position: absolute; top: 0; width: 2px; height: 30px; background: var(--text-sub); opacity: .45; }
+.bar-mark span {
+  position: absolute; top: 32px; left: 50%; transform: translateX(-50%);
+  font-size: 11px; color: var(--text-sub); white-space: nowrap; font-weight: 700;
+}
+
+/* ===== 우리 팀 카드 ===== */
+.team-card { border-left: 4px solid var(--brand); }
+.team-card.done { border-left-color: var(--green); }
+.team-avatars { display: flex; }
+.team-avatars .avatar { width: 26px; height: 26px; font-size: 11.5px; border: 2px solid var(--card); margin-left: -8px; }
+.team-avatars .avatar:first-child { margin-left: 0; }
+
+/* ===== 마일스톤 배지 ===== */
+.mstones { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.mstone {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 99px; font-size: 12.5px; font-weight: 700;
+  background: var(--gray-bg); color: var(--text-sub);
+}
+.mstone.on { background: var(--green-bg); color: var(--green); }
+.mstone .m-ico { filter: grayscale(1); opacity: .45; }
+.mstone.on .m-ico { filter: none; opacity: 1; }
+
+/* ===== 기록 커버리지 점 ===== */
+.daydots { display: flex; gap: 3px; flex-wrap: wrap; margin-top: 10px; }
+.daydot { width: 11px; height: 11px; border-radius: 3px; background: var(--line); }
+.daydot.on { background: var(--green); }
+.daydot.weekend { opacity: .35; }
+.daydot.today { outline: 2px solid var(--brand); outline-offset: 1px; }
+
+/* ===== 축하 카드 ===== */
+.celebrate { border: 2px solid var(--green); background: var(--green-bg); }
+.celebrate h2 { color: var(--green); }
+
+@media (prefers-reduced-motion: reduce) { .bar-fill { transition: none; } }
 
 /* 폼 */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }

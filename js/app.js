@@ -320,6 +320,7 @@ const routes = {
   cash: { title: "자금일보", render: viewCash },
   tasks: { title: "업무 지시", render: viewTasks },
   aireport: { title: "AI 아침 리포트", render: viewAiReport },
+  team: { title: "우리 팀 목표", render: viewTeam },
   settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
 };
@@ -374,6 +375,388 @@ async function route() {
   window.scrollTo(0, 0);
 }
 
+/* ==================== 우리 팀 목표 (협력형) ====================
+   개인 실적을 비교하지 않는다. 주어는 항상 '우리'.
+   축은 월 누적 공헌이익 하나, 눈금은 손익분기(자동)와 우리 목표(선택) 둘. */
+
+// 한 달치 팀 상태를 모은다. sumCM/cmOfSale이 전역(erpProducts·erpChannelList)에 의존하므로 loadErpBase가 먼저.
+async function loadTeamMonth(month) {
+  const { buys, sales } = await loadErpBase();
+  const [adRes, fixRes, goalRes, cashRes] = await Promise.all([
+    sb.from("ad_costs").select("*"),
+    sb.from("fixed_costs").select("*"),
+    sb.from("team_goals").select("*").eq("month", month).maybeSingle(),
+    sb.from("cash_txns").select("date"),
+  ]);
+  const ads = adRes.data || [];
+  const fixed = (fixRes.data || []).filter(f => f.active !== false);
+  const m = computeCmOfMonth(month, sales, ads, fixed);
+
+  const td = today();
+  const lastDay = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate();
+  const isThisMonth = month === td.slice(0, 7);
+  const elapsed = isThisMonth ? Number(td.slice(8, 10)) : lastDay;
+  const remainDays = isThisMonth ? lastDay - elapsed : 0;
+
+  // 기록 커버리지: 매출·매입·자금 중 하나라도 그 날짜로 기록된 날
+  const recorded = new Set([
+    ...sales.map(r => r.date), ...buys.map(r => r.date), ...(cashRes.data || []).map(r => String(r.date)),
+  ].filter(d => (d || "").slice(0, 7) === month));
+  const days = [];
+  for (let i = 1; i <= (isThisMonth ? elapsed : lastDay); i++) {
+    const ds = `${month}-${pad2(i)}`;
+    const dow = new Date(`${ds}T00:00:00`).getDay();
+    days.push({ date: ds, on: recorded.has(ds), weekend: dow === 0 || dow === 6, today: ds === td });
+  }
+  const covOn = days.filter(d => d.on).length;
+
+  const target = Number(goalRes.data?.cm_target) || 0;
+  return { month, isThisMonth, lastDay, elapsed, remainDays, target, goalNote: goalRes.data?.note || "",
+           cov: { days, on: covOn, elapsed: days.length, rate: days.length ? covOn / days.length : 0 },
+           sales, buys, ads, fixed, ...m };
+}
+
+// 게이지 축과 눈금 위치 계산
+function computeTeamGauge(st) {
+  const { cmNet, fixTotal, target } = st;
+  let axis = Math.max(fixTotal, target, 1);
+  if (cmNet > axis) axis = cmNet;                       // 목표를 넘기면 축을 늘려 100%로 채운다
+  const pct = v => Math.max(0, Math.min(100, (v / axis) * 100));
+  const hitBep = fixTotal > 0 && cmNet >= fixTotal;
+  const hitTarget = target > 0 && cmNet >= target;
+  // 다음으로 닿을 지점
+  const next = (!hitBep && fixTotal > 0) ? { label: "손익분기", amt: fixTotal }
+             : (!hitTarget && target > 0) ? { label: "우리 목표", amt: target }
+             : null;
+  return {
+    axis, hitBep, hitTarget,
+    fillPct: cmNet > 0 ? pct(cmNet) : 0,
+    fillTone: cmNet < 0 ? "red" : hitTarget || (hitBep && !target) ? "green" : "",
+    bepPct: fixTotal > 0 ? pct(fixTotal) : null,
+    targetPct: target > 0 ? pct(target) : null,
+    nextLabel: next ? next.label : "목표 달성",
+    remainAmt: next ? Math.max(0, next.amt - cmNet) : 0,
+    needPerDay: next && st.remainDays > 0 ? Math.ceil(Math.max(0, next.amt - cmNet) / st.remainDays) : 0,
+  };
+}
+
+// 지금 가장 도움 되는 한 문장만. 미달을 비난하지 않고 항상 '다음 한 걸음'으로 끝낸다.
+function teamHeadline(st, g, hy) {
+  const link = (href, text) => `<a onclick="location.hash='${href}'" style="color:var(--brand);cursor:pointer;font-weight:600">${text} →</a>`;
+  if (hy.count) return `지금 이익 숫자에 <b>${hy.count}가지 확인할 점</b>이 있습니다 — ${esc(hy.top.text)} ${link(hy.top.href, "고치러 가기")}`;
+  if (st.overdueTasks) return `기한이 지난 우리 일이 <b>${st.overdueTasks}건</b> 남아 있습니다. ${link("#/tasks", "보러 가기")}`;
+  if (g.hitTarget) return `우리 목표 ₩${fmt(st.target)}를 넘었습니다. 남은 ${st.remainDays}일은 그대로 이익입니다. 🏔️`;
+  if (g.hitBep) return `손익분기를 넘겼습니다. 지금부터 버는 ₩1은 그대로 우리 이익입니다. 🎉`;
+  if (st.cmNet < 0) return `아직 광고비가 먼저 나가는 구간입니다. 매출이 쌓이면 곧 올라옵니다.`;
+  if (!st.rows.length) return `이번 달이 시작됐습니다. 첫 매출이 기록되면 여기에 진척이 나타납니다.`;
+  if (g.remainAmt > 0 && st.remainDays > 0) {
+    // 이번 달에 못 닿을 것 같으면 절망 대신 다음 지점을 알려준다
+    const perDay = st.elapsed > 0 ? st.cmNet / st.elapsed : 0;
+    if (perDay > 0 && g.needPerDay > perDay * 2) {
+      const daysNeeded = Math.ceil(g.remainAmt / perDay);
+      return `${g.nextLabel}까지 <b>₩${fmt(g.remainAmt)}</b> — 이번 달 안에는 빠듯하지만,
+        지금 속도면 <b>약 ${daysNeeded}일 뒤</b>에 닿습니다.`;
+    }
+    return `${g.nextLabel}까지 <b>₩${fmt(g.remainAmt)}</b> —
+      남은 ${st.remainDays}일 동안 하루 <b>₩${fmt(g.needPerDay)}</b>씩이면 닿습니다.`;
+  }
+  return `${st.month} 진행 중입니다. 기록을 채워 주시면 진척이 여기에 쌓입니다.`;
+}
+
+// 흩어져 있던 데이터 위생 경고를 한곳에 모은다 (급한 순서)
+function collectHygiene(st) {
+  const items = [];
+  const add = (n, text, href) => { if (n > 0) items.push({ n, text, href }); };
+  add(st.t.noCostRows, `원가가 비어 있는 매출 ${st.t.noCostRows}줄`, "#/products");
+  add(st.t.unknownChannels.size,
+      `채널 목록에 없는 이름 ${st.t.unknownChannels.size}개 (${[...st.t.unknownChannels].join(", ")})`, "#/channels");
+  // 이동 기록 없이 팔린 쿠팡 재고 — 지금까지 계산만 되고 어디에도 표시되지 않던 신호
+  const untracked = Object.entries(erpStock).filter(([, s]) => (s.coupangUntracked || 0) > 0);
+  if (untracked.length) items.push({
+    n: untracked.length,
+    text: `이동 기록 없이 팔린 쿠팡 재고 ${fmt(untracked.reduce((s, [, x]) => s + x.coupangUntracked, 0))}개`,
+    href: "#/inventory",
+  });
+  add(Object.values(erpStock).filter(s => s.stock < 0 || s.inHouse < 0).length,
+      `마이너스가 된 재고 ${Object.values(erpStock).filter(s => s.stock < 0 || s.inHouse < 0).length}종`, "#/inventory");
+  add(erpChannelList.filter(c => !Number(c.fee_rate)).length,
+      `수수료율이 비어 있는 채널 ${erpChannelList.filter(c => !Number(c.fee_rate)).length}개`, "#/channels");
+  add(erpProducts.filter(p => tradeTypeOf(p) === "사입" && !p.cost_price).length,
+      `원가가 없는 사입 상품 ${erpProducts.filter(p => tradeTypeOf(p) === "사입" && !p.cost_price).length}종`, "#/products");
+  return { count: items.length, items, top: items[0] || null };
+}
+
+const TEAM_BADGES = [
+  { kind: "first_sale", ico: "🌱", label: "첫 매출", tip: "이번 달 첫 매출이 기록되면" },
+  { kind: "bep", ico: "🎉", label: "손익분기", tip: "공헌이익이 월 고정비를 넘으면" },
+  { kind: "cm_target", ico: "🏔️", label: "목표 달성", tip: "우리가 정한 목표에 닿으면" },
+  { kind: "clean_data", ico: "🔍", label: "숫자 정확", tip: "확인할 점이 하나도 없으면" },
+  { kind: "coverage", ico: "📔", label: "기록 충실", tip: "이번 달 기록이 90% 이상 채워지면" },
+];
+
+function teamBadgeStates(st, g, hy) {
+  const on = {
+    first_sale: st.rows.length > 0,
+    bep: g.hitBep,
+    cm_target: g.hitTarget,
+    clean_data: hy.count === 0 && st.rows.length > 0,
+    coverage: st.cov.elapsed >= 15 && st.cov.rate >= 0.9,
+  };
+  return TEAM_BADGES.map(b => ({ ...b, on: !!on[b.kind] }));
+}
+
+/* 축하 — 같은 마일스톤이 두 번 뜨지 않게 3중으로 막는다.
+   ① DB unique(kind,period)  ② ignoreDuplicates로 '새로 딴 것'만 회수  ③ seen_by로 사람별 1회 */
+async function claimMilestones(st, g, hy) {
+  const on = teamBadgeStates(st, g, hy).filter(b => b.on);
+  if (!on.length) return [];
+  const rows = on.map(b => ({ kind: b.kind, period: st.month, value: st.cmNet }));
+  const { data, error } = await sb.from("team_milestones")
+    .upsert(rows, { onConflict: "kind,period", ignoreDuplicates: true })
+    .select("*");
+  if (error) { console.error("마일스톤:", error); return []; }   // 축하 실패가 업무를 막으면 안 됨
+  return data || [];
+}
+
+const MILESTONE_TEXT = {
+  first_sale: { ico: "🌱", head: "이번 달 첫 매출이 기록되었습니다",
+    body: m => `${String(m.period)}의 시작입니다. 여기서부터 쌓아 올리면 됩니다.` },
+  bep: { ico: "🎉", head: "우리 팀이 손익분기를 넘었습니다",
+    body: m => `공헌이익이 이번 달 고정비를 넘어섰습니다. 지금부터 버는 ₩1은 그대로 우리 이익입니다.` },
+  cm_target: { ico: "🏔️", head: "우리가 정한 목표에 닿았습니다",
+    body: m => `₩${fmt(m.value)}까지 왔습니다. 남은 날은 덤입니다.` },
+  clean_data: { ico: "🔍", head: "지금 숫자는 그대로 믿어도 됩니다",
+    body: () => `원가·채널·재고 어디에도 어긋난 곳이 없습니다. 이익 숫자를 그대로 판단에 쓰셔도 됩니다.` },
+  coverage: { ico: "📔", head: "이번 달 기록이 거의 빠짐없습니다",
+    body: () => `기록이 촘촘할수록 모든 숫자가 정확해집니다. 이 습관이 가장 큰 자산입니다.` },
+};
+
+async function fetchCelebrations(month) {
+  // 최근 7일 이내에 달성했고, 내가 아직 확인하지 않은 것 (밤에 상대가 달성해도 다음 날 내가 본다)
+  const { data } = await sb.from("team_milestones").select("*").eq("period", month);
+  const week = Date.now() - 7 * 86400000;
+  return (data || []).filter(m =>
+    !(m.seen_by || []).includes(me.id) && new Date(m.achieved_at).getTime() > week);
+}
+
+function celebrationHtml(list) {
+  return list.map(m => {
+    const t = MILESTONE_TEXT[m.kind];
+    if (!t) return "";
+    return `
+      <div class="card celebrate">
+        <h2>${t.ico} ${esc(t.head)}</h2>
+        <p style="font-size:14px;line-height:1.75;margin:6px 0 14px">${esc(t.body(m))}</p>
+        <div class="modal-actions" style="margin-top:0">
+          <button class="btn secondary" onclick="location.hash='#/profit'">숫자 보기</button>
+          <button class="btn green" onclick="dismissCelebration('${m.id}')">확인</button>
+        </div>
+      </div>`;
+  }).join("");
+}
+
+async function dismissCelebration(id) {
+  const { data } = await sb.from("team_milestones").select("seen_by").eq("id", id).maybeSingle();
+  const seen = [...new Set([...(data?.seen_by || []), me.id])];
+  const { error } = await sb.from("team_milestones").update({ seen_by: seen }).eq("id", id).select("id");
+  if (error) return toast("처리에 실패했습니다");
+  route();
+}
+
+function teamCardHtml(st, g, hy, compact) {
+  const badges = teamBadgeStates(st, g, hy);
+  return `
+    <div class="card team-card ${g.hitTarget || (g.hitBep && !st.target) ? "done" : ""}">
+      <div class="card-head">
+        <h2>🎯 ${st.month} 우리 팀</h2>
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="team-avatars">${USERS.map(u =>
+            `<span class="avatar" title="${esc(u.name)}">${esc(u.name[0])}</span>`).join("")}</div>
+          ${compact ? `<button class="btn sm secondary" onclick="location.hash='#/team'">자세히</button>` : ""}
+        </div>
+      </div>
+      ${vatCfgWarning()}
+      <p style="font-size:15px;line-height:1.75;margin-bottom:16px">${teamHeadline(st, g, hy)}</p>
+
+      <div class="bar-wrap">
+        <div class="bar bar-lg"><div class="bar-fill ${g.fillTone}" style="width:${g.fillPct}%"></div></div>
+        ${g.bepPct != null ? `<div class="bar-mark" style="left:${g.bepPct}%"><span>손익분기 ₩${fmt(st.fixTotal)}</span></div>` : ""}
+        ${g.targetPct != null ? `<div class="bar-mark" style="left:${g.targetPct}%"><span>우리 목표 ₩${fmt(st.target)}</span></div>` : ""}
+      </div>
+
+      <div class="grid-stats" style="margin-bottom:0">
+        <div class="stat" onclick="location.hash='#/profit'">
+          <div class="stat-label">지금까지 우리가 남긴 돈</div>
+          <div class="stat-value ${st.cmNet >= 0 ? "blue" : "red"}">₩${fmt(st.cmNet)}</div></div>
+        <div class="stat" onclick="location.hash='#/team'">
+          <div class="stat-label">${esc(g.nextLabel)}까지</div>
+          <div class="stat-value ${g.remainAmt <= 0 ? "green" : "amber"}">
+            ${g.remainAmt <= 0 ? "넘었습니다" : "₩" + fmt(g.remainAmt)}</div></div>
+        <div class="stat" onclick="location.hash='#/team'">
+          <div class="stat-label">이번 달 남은 날</div>
+          <div class="stat-value">${st.remainDays}일</div></div>
+      </div>
+
+      <div class="mstones">${badges.map(b =>
+        `<span class="mstone ${b.on ? "on" : ""}" title="${esc(b.tip)}"><span class="m-ico">${b.ico}</span>${b.label}</span>`).join("")}</div>
+
+      ${!st.fixTotal && !st.target ? `<p style="font-size:12.5px;color:var(--text-sub);margin-top:12px">
+        ℹ️ 월 고정비를 등록하면 손익분기선이 생기고, 목표를 정하면 두 번째 눈금이 생깁니다.
+        <a onclick="location.hash='#/team'" style="color:var(--brand);cursor:pointer;font-weight:600">시작하기 →</a></p>` : ""}
+    </div>`;
+}
+
+async function viewTeam() {
+  const month = today().slice(0, 7);
+  const st = await loadTeamMonth(month);
+  const { data: taskRows } = await sb.from("tasks").select("status,due_date");
+  st.overdueTasks = (taskRows || []).filter(t => t.status === "open" && t.due_date && t.due_date < today()).length;
+  const g = computeTeamGauge(st);
+  const hy = collectHygiene(st);
+  const badges = teamBadgeStates(st, g, hy);
+  await claimMilestones(st, g, hy);
+  const cel = await fetchCelebrations(month);
+
+  // 최근 6개월 되돌아보기 (viewReport와 같은 방식)
+  const months = [];
+  const now = new Date();
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
+  }
+  const history = months.map(mm => {
+    const c = computeCmOfMonth(mm, st.sales, st.ads, st.fixed);
+    return { month: mm, cm: c.cmNet, bepHit: c.fixTotal > 0 && c.cmNet >= c.fixTotal, hasFix: c.fixTotal > 0 };
+  });
+
+  const suggested = st.fixTotal ? Math.round(st.fixTotal * 1.5 / 100000) * 100000 : 1000000;
+  const dayNum = Number(today().slice(8, 10));
+
+  return `
+    ${celebrationHtml(cel)}
+    ${teamCardHtml(st, g, hy, false)}
+
+    ${!st.target && dayNum <= 5 ? `
+    <div class="card" style="border-left:4px solid var(--amber)">
+      <p style="font-size:14px;margin-bottom:10px">${st.month} 우리 목표를 정할까요?
+        정해두면 게이지에 눈금이 하나 더 생기고, 하루에 얼마씩이면 닿는지 계산해 드립니다.</p>
+      <button class="btn" onclick="openTeamGoalModal('${st.month}', ${suggested}, ${st.fixTotal})">목표 정하기</button>
+    </div>` : ""}
+
+    <div class="card">
+      <div class="card-head"><h2>🎯 이번 달 목표</h2>
+        <button class="btn sm secondary" onclick="openTeamGoalModal('${st.month}', ${st.target || suggested}, ${st.fixTotal})">
+          ${st.target ? "목표 바꾸기" : "목표 정하기"}</button></div>
+      ${st.target ? `
+        <p style="font-size:14px">한 달 동안 우리 둘이 남기고 싶은 공헌이익:
+          <b style="font-size:18px">₩${fmt(st.target)}</b>
+          <span style="font-size:12px;color:var(--text-sub)">(부가세 제외)</span></p>
+        ${st.goalNote ? `<p style="font-size:13px;color:var(--text-sub);margin-top:6px">📝 ${esc(st.goalNote)}</p>` : ""}
+      ` : `
+        <p style="font-size:13.5px;color:var(--text-sub)">
+          아직 목표가 없습니다. ${st.fixTotal
+            ? `월 고정비 ₩${fmt(st.fixTotal)}가 손익분기선으로 이미 잡혀 있고, 목표를 정하면 그 너머의 눈금이 생깁니다.`
+            : "월 고정비를 등록하면 손익분기선이 자동으로 생깁니다."}</p>
+        ${!st.fixTotal ? `<button class="btn secondary" style="margin-top:10px" onclick="location.hash='#/profit'">고정비 먼저 등록하기</button>` : ""}
+      `}
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>📔 이번 달 기록한 날</h2>
+        <span class="chip ${st.cov.rate >= 0.8 ? "approved" : "waiting"}">${st.cov.on} / ${st.cov.elapsed}일</span></div>
+      <p style="font-size:13px;color:var(--text-sub)">
+        매출·매입·자금 중 하나라도 그 날짜로 기록된 날입니다. 빈 칸이 이어지면
+        <b>실제로 거래가 없던 날인지</b> 한 번 확인해 주세요 — 매출 누락은 이렇게 잡힙니다. (주말은 흐리게 표시)</p>
+      <div class="daydots">${st.cov.days.map(d =>
+        `<span class="daydot ${d.on ? "on" : ""} ${d.weekend ? "weekend" : ""} ${d.today ? "today" : ""}"
+          title="${d.date}${d.on ? " · 기록 있음" : " · 기록 없음"}"></span>`).join("")}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>🔍 숫자를 믿을 수 있는 상태인가</h2>
+        ${hy.count === 0
+          ? '<span class="chip approved">✔ 지금 숫자는 그대로 믿어도 됩니다</span>'
+          : `<span class="chip progress">확인할 점 ${hy.count}가지</span>`}</div>
+      ${hy.count === 0 ? `
+        <p style="font-size:13.5px;color:var(--text-sub)">
+          원가·채널·재고 어디에도 어긋난 곳이 없습니다. 이 상태라면 이익 숫자를 그대로 판단에 쓰셔도 됩니다.</p>` : `
+        <p style="font-size:13.5px;color:var(--text-sub);margin-bottom:12px">
+          하나씩 고칠 때마다 이익 숫자가 정확해집니다. 급한 순서입니다.</p>
+        <div class="table-wrap"><table><tbody>${hy.items.map(it => `
+          <tr class="clickable" onclick="location.hash='${it.href}'">
+            <td>${esc(it.text)}</td>
+            <td class="num" style="width:110px"><span class="chip progress">확인 →</span></td>
+          </tr>`).join("")}</tbody></table></div>`}
+    </div>
+
+    <div class="card">
+      <h2>🏅 이번 달 배지</h2>
+      <div class="mstones">${badges.map(b =>
+        `<span class="mstone ${b.on ? "on" : ""}" title="${esc(b.tip)}"><span class="m-ico">${b.ico}</span>${b.label}</span>`).join("")}</div>
+      <p style="font-size:12.5px;color:var(--text-sub);margin-top:12px">
+        회색은 아직 못 딴 배지입니다. 달이 바뀌면 모두 초기화되고 다시 도전합니다.</p>
+    </div>
+
+    <div class="card">
+      <h2>📈 지난 6개월</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>월</th><th class="num">공헌이익</th><th>손익분기</th></tr></thead>
+        <tbody>${history.map(h => `
+          <tr ${h.month === st.month ? 'style="background:var(--brand-light)"' : ""}>
+            <td><b>${h.month}</b>${h.month === st.month ? ' <span class="chip mine">이번 달</span>' : ""}</td>
+            <td class="num" style="color:${h.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(h.cm)}</td>
+            <td>${!h.hasFix ? '<span style="color:var(--text-sub)">—</span>'
+              : h.bepHit ? '<span class="chip approved">넘김</span>' : '<span class="chip waiting">아직</span>'}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>
+      <p style="font-size:12px;color:var(--text-sub);margin-top:10px">
+        ※ 손익분기는 <b>현재 등록된 고정비</b> 기준으로 계산합니다. 과거에 고정비가 달랐다면 실제와 차이가 날 수 있습니다.</p>
+    </div>`;
+}
+
+function openTeamGoalModal(month, suggested, fixTotal) {
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>🎯 ${month} 우리 목표</h3>
+        <p style="font-size:13px;color:var(--text-sub);margin:4px 0 12px">
+          한 달 동안 <b>우리 둘이 남기고 싶은 공헌이익</b>입니다.
+          매출이 아니라 원가·수수료·배송비·광고비까지 뺀 뒤 남는 돈입니다.
+          ${fixTotal ? `<br>월 고정비 ₩${fmt(fixTotal)}를 넘긴 다음의 목표라고 생각하시면 됩니다.` : ""}</p>
+        <div class="form-grid">
+          <div class="field full"><label>월 공헌이익 목표(원) *
+            <span style="background:#fff4e6;color:#d9480f;border-radius:5px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:4px">부가세 제외</span></label>
+            <input id="tg-amt" type="number" min="1" step="100000" value="${suggested || ""}">
+            ${fixTotal ? `<p style="font-size:12px;color:var(--text-sub);margin-top:4px">
+              제안 ₩${fmt(Math.round(fixTotal * 1.5 / 100000) * 100000)} — 고정비의 1.5배, 두 사람 몫이 생기기 시작하는 선입니다.</p>` : ""}</div>
+          <div class="field full"><label>메모 (선택)</label>
+            <input id="tg-note" maxlength="60" placeholder="예) 쿠팡 광고 늘리는 달"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-tg-save" onclick="saveTeamGoal('${month}')">저장</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("tg-amt").focus();
+}
+
+async function saveTeamGoal(month) {
+  const amt = Number(document.getElementById("tg-amt").value) || 0;
+  if (amt <= 0) return toast("목표 금액을 입력해 주세요");
+  const btn = document.getElementById("btn-tg-save");
+  if (btn) btn.disabled = true;
+  const { data, error } = await sb.from("team_goals").upsert(
+    { month, cm_target: amt, note: document.getElementById("tg-note").value.trim(),
+      updated_by: me.name, updated_at: new Date().toISOString() },
+    { onConflict: "month" }).select("month");
+  if (error || !data?.length) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
+  toast("우리 목표가 저장되었습니다");
+  closeModal();
+  route();
+}
+
 /* ---------- 화면: 대시보드 ---------- */
 async function viewDashboard() {
   const [docs, prodRes, saleRes, buyRes, taskRes, costRes] = await Promise.all([
@@ -386,7 +769,20 @@ async function viewDashboard() {
   ]);
   const myTasks = (taskRes.data || []).filter(t => t.assignee_id === me.id && t.status === "open").length;
   const products = prodRes.data || [];
-  const nowMonth = today().slice(0, 7);
+  const nowMonth = today().slice(0, 7);   // erpMonth(전역)를 건드리면 사용자가 보던 달이 몰래 바뀜
+
+  // 팀 카드 — 실패해도 대시보드 나머지는 보여야 하므로 따로 감싼다
+  let teamHtml = "";
+  try {
+    const st = await loadTeamMonth(nowMonth);
+    st.overdueTasks = (taskRes.data || []).filter(t => t.status === "open" && t.due_date && t.due_date < today()).length;
+    const g = computeTeamGauge(st);
+    const hy = collectHygiene(st);
+    await claimMilestones(st, g, hy);                 // 새로 달성한 게 있으면 기록
+    const cel = await fetchCelebrations(nowMonth);    // 내가 아직 못 본 축하
+    if (cel.length) setTimeout(() => toast(`${MILESTONE_TEXT[cel[0].kind]?.ico || "🎉"} ${MILESTONE_TEXT[cel[0].kind]?.head || "축하합니다"}`), 400);
+    teamHtml = celebrationHtml(cel) + teamCardHtml(st, g, hy, true);
+  } catch (e) { console.error("팀 카드:", e); }
   const monthSales = (saleRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
     .reduce((s, r) => s + Number(r.amount), 0);
   const monthBuys = (buyRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
@@ -403,6 +799,7 @@ async function viewDashboard() {
     .reduce((s, d) => s + Number(d.total), 0);
 
   return `
+    ${teamHtml}
     <div class="grid-stats">
       <div class="stat" onclick="location.hash='#/inbox'">
         <div class="stat-label">내 결재 대기</div>
@@ -1944,6 +2341,16 @@ async function viewInventory() {
           </tr>`).join("") : `<tr><td colspan="8" class="empty">제품이 없습니다</td></tr>`}
         </tbody>
       </table></div>
+      ${(() => {
+        // 이동 기록 없이 쿠팡에서 팔린 수량 — 그만큼 자사창고 재고가 부풀려져 보인다
+        const ut = Object.entries(erpStock).filter(([, s]) => (s.coupangUntracked || 0) > 0);
+        return ut.length ? `<div style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:12px;margin-top:12px;font-size:13px">
+          <b style="color:#d9480f">⚠️ 이동 기록 없이 팔린 쿠팡 재고가 있습니다</b><br>
+          ${ut.map(([id, s]) => `${esc(prodName(id))} ${fmt(s.coupangUntracked)}개`).join(", ")}<br>
+          창고에서 쿠팡으로 보낸 기록이 빠지면 <b>자사창고 재고가 그만큼 부풀려집니다</b>.
+          <a onclick="openTransferModal()" style="color:var(--brand);cursor:pointer;font-weight:600">이동 기록 남기기 →</a>
+        </div>` : "";
+      })()}
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
         ※ 창고에서 쿠팡 물류센터로 보낸 수량은 <b>🚚 쿠팡 재고 이동</b>으로 기록하세요.<br>
         ※ <b>쿠팡</b> 채널 매출은 쿠팡 재고에서, 그 외 채널 매출은 자사창고에서 차감됩니다.<br>
@@ -2083,24 +2490,15 @@ function sumCM(rows) {
        noCostRows: 0, noCostRevenue: 0, unknownChannels: new Set() });
 }
 
-async function viewProfit() {
-  const { sales } = await loadErpBase();
-  const [adRes, fixRes] = await Promise.all([
-    sb.from("ad_costs").select("*").order("date", { ascending: false }),
-    sb.from("fixed_costs").select("*").order("created_at"),
-  ]);
-  const ads = adRes.data || [];
-  const fixed = (fixRes.data || []).filter(f => f.active !== false);
-  profitAdsCache = ads;
-  profitFixedCache = fixed;
-
+/* 한 달치 공헌이익 계산 — 공헌이익 화면과 팀 목표 화면이 같은 숫자를 쓰도록 공용화.
+   두 화면의 값이 어긋나면 사용자가 어느 쪽도 믿지 않게 된다. */
+function computeCmOfMonth(month, sales, ads, fixed) {
   // 아직 오지 않은 날짜는 실적이 아니므로 제외 (미래 매출을 미리 입력해도 이익이 부풀지 않도록)
   const td = today();
-  const rows = sales.filter(r => monthOf(r) === erpMonth && (r.date || "") <= td);
-  const monthAds = ads.filter(a => String(a.date).slice(0, 7) === erpMonth && String(a.date) <= td);
+  const rows = sales.filter(r => monthOf(r) === month && (r.date || "") <= td);
+  const monthAds = ads.filter(a => String(a.date).slice(0, 7) === month && String(a.date) <= td);
   const adGross = monthAds.reduce((s, a) => s + Number(a.amount), 0);
   const adTotal = expNet(adGross);                    // 광고비도 공급가액 기준으로
-  const adVat = adGross - adTotal;
   const fixTotal = fixed.reduce((s, f) => s + Number(f.amount), 0);
 
   const t = sumCM(rows);
@@ -2124,9 +2522,26 @@ async function viewProfit() {
     if (!dayMap[d]) dayMap[d] = { revenue: 0, cm: 0 };
     dayMap[d].cm -= expNet(a.amount);
   });
-  const days = Object.keys(dayMap).sort();
   let acc = 0;
-  const dayRows = days.map(d => { acc += dayMap[d].cm; return { d, ...dayMap[d], acc }; });
+  const dayRows = Object.keys(dayMap).sort().map(d => { acc += dayMap[d].cm; return { d, ...dayMap[d], acc }; });
+
+  return { td, rows, monthAds, adGross, adTotal, adVat: adGross - adTotal, fixTotal,
+           t, shipCharged, cmNet, cmRate, op, bepRate, dayRows, acc };
+}
+
+async function viewProfit() {
+  const { sales } = await loadErpBase();
+  const [adRes, fixRes] = await Promise.all([
+    sb.from("ad_costs").select("*").order("date", { ascending: false }),
+    sb.from("fixed_costs").select("*").order("created_at"),
+  ]);
+  const ads = adRes.data || [];
+  const fixed = (fixRes.data || []).filter(f => f.active !== false);
+  profitAdsCache = ads;
+  profitFixedCache = fixed;
+
+  const m = computeCmOfMonth(erpMonth, sales, ads, fixed);
+  const { td, rows, monthAds, adTotal, fixTotal, t, shipCharged, cmNet, cmRate, op, bepRate, dayRows, acc } = m;
   const maxAcc = Math.max(fixTotal, ...dayRows.map(x => Math.abs(x.acc)), 1);
 
   // BEP 달성 예상일
@@ -2254,8 +2669,8 @@ async function viewProfit() {
         <div style="margin-top:16px">
           <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
             <span>손익분기 달성률</span><b>${bepRate}%</b></div>
-          <div style="height:14px;background:var(--line);border-radius:7px;overflow:hidden">
-            <div style="height:100%;width:${Math.max(0, bepRate)}%;background:${bepRate >= 100 ? "var(--green)" : "var(--brand)"};transition:width .4s"></div>
+          <div class="bar bar-lg">
+            <div class="bar-fill ${bepRate >= 100 ? "green" : ""}" style="width:${Math.max(0, bepRate)}%"></div>
           </div>
           <p style="font-size:13px;color:var(--text-sub);margin-top:8px">${bepMsg}</p>
         </div>` : `
@@ -2276,8 +2691,8 @@ async function viewProfit() {
             <td class="num">₩${fmt(x.revenue)}</td>
             <td class="num" style="color:${x.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(x.cm)}</td>
             <td class="num"><b>₩${fmt(x.acc)}</b></td>
-            <td><div style="height:10px;background:var(--line);border-radius:5px;overflow:hidden">
-              <div style="height:100%;width:${w}%;background:${x.acc < 0 ? "var(--red)" : over ? "var(--green)" : "var(--brand)"}"></div></div></td>
+            <td><div class="bar" style="height:10px">
+              <div class="bar-fill ${x.acc < 0 ? "red" : over ? "green" : ""}" style="width:${w}%"></div></div></td>
           </tr>`; }).join("")}
         </tbody>
       </table></div>
@@ -3655,7 +4070,8 @@ async function saveVatCfg() {
 
 const BACKUP_TABLES = ["documents", "products", "sales", "purchases", "purchase_costs", "settings",
   "sales_channels", "suppliers", "stock_transfers", "cash_accounts", "cash_txns", "cash_plans",
-  "ad_costs", "fixed_costs", "tasks", "ai_reports", "profiles"];
+  "ad_costs", "fixed_costs", "tasks", "ai_reports", "profiles",
+  "team_goals", "team_milestones"];
 
 async function exportJSON() {
   const btn = document.getElementById("btn-export");
