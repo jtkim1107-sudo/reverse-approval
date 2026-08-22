@@ -24,14 +24,15 @@ let loginTarget = null;
 /* ---------- 유틸 ---------- */
 const fmt = n => (Number(n) || 0).toLocaleString("ko-KR");
 const pad2 = n => String(n).padStart(2, "0");
-// 한국 시간 기준 날짜 (toISOString은 UTC라 오전 9시 이전에 전날로 기록되는 문제가 있음)
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-};
+// 항상 한국(KST) 기준. 기기 시간대에 의존하면 해외에서 접속했을 때 하루 어긋난 채로 저장됨
+const KST = { timeZone: "Asia/Seoul" };
+const today = () =>
+  new Intl.DateTimeFormat("en-CA", { ...KST, year: "numeric", month: "2-digit", day: "2-digit" })
+    .format(new Date());
 const nowStr = () => {
-  const d = new Date();
-  return `${today()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const t = new Intl.DateTimeFormat("en-GB", { ...KST, hour: "2-digit", minute: "2-digit", hour12: false })
+    .format(new Date());
+  return `${today()} ${t}`;
 };
 const localDT = ts => {
   const d = new Date(ts);
@@ -263,6 +264,16 @@ const routes = {
   doc: { title: "문서 상세", render: viewDocDetail },
 };
 
+// 날짜가 바뀌면 화면 기본 날짜도 따라 옮김 (PWA는 며칠씩 안 닫고 쓰기 때문)
+let lastKnownDay = today();
+function syncTodayState() {
+  const now = today();
+  if (now === lastKnownDay) return;
+  if (cashDate === lastKnownDay) cashDate = now;
+  if (erpMonth === lastKnownDay.slice(0, 7)) erpMonth = now.slice(0, 7);
+  lastKnownDay = now;
+}
+
 let routeSeq = 0;
 async function route() {
   if (!me) return;
@@ -270,6 +281,7 @@ async function route() {
   const hash = location.hash.replace(/^#\//, "") || "dashboard";
   const [name, param] = hash.split("/");
   const r = routes[name] || routes.dashboard;
+  syncTodayState(); // 앱을 켜둔 채 자정을 넘겨도 '오늘'이 어제로 굳지 않도록
   document.getElementById("page-title").textContent = r.title;
   document.querySelectorAll(".nav-item").forEach(el =>
     el.classList.toggle("active", el.dataset.route === name));
@@ -857,6 +869,19 @@ async function saveProduct(id) {
 async function deleteProduct(id) {
   const p = prodCache.find(x => x.id === id);
   if (!p) return;
+  // 거래 기록이 있으면 DB가 삭제를 막는다 — 이유를 알려줘야 사용자가 헤매지 않음
+  const [s, b] = await Promise.all([
+    sb.from("sales").select("id", { count: "exact", head: true }).eq("product_id", id),
+    sb.from("purchases").select("id", { count: "exact", head: true }).eq("product_id", id),
+  ]);
+  const used = (s.count || 0) + (b.count || 0);
+  if (used) {
+    return alert(
+      `'${p.name}'은(는) 삭제할 수 없습니다.\n\n`
+      + `매출 ${s.count || 0}건, 매입 ${b.count || 0}건에 이미 사용되고 있습니다.\n`
+      + `지우면 과거 매출·매입 기록의 품목명이 사라지기 때문에 시스템이 막고 있습니다.\n\n`
+      + `더 이상 취급하지 않는 상품이라면, 제품명 뒤에 '(단종)'을 붙여 두세요.`);
+  }
   if (!confirm(`'${p.name}' 제품을 삭제할까요?`)) return;
   const { error } = await sb.from("products").delete().eq("id", id);
   if (error) return toast("삭제에 실패했습니다");
@@ -912,20 +937,25 @@ async function loadErpBase() {
   erpChannelList = chRes.data || [];
   erpTransfers = trRes.data || [];
   erpStock = {};
+  // 재고는 '오늘까지 실제로 일어난' 입출고만 반영 (내일 입고 예정을 미리 입력해도 지금 재고는 그대로)
+  const td = today();
+  const upTo = arr => arr.filter(x => (x.date || "") <= td);
   erpProducts.forEach(p => {
-    const myBuys = buys.filter(b => b.product_id === p.id);
+    const myBuys = upTo(buys.filter(b => b.product_id === p.id));
     const bought = myBuys.reduce((s, b) => s + Number(b.qty), 0);
-    const mySales = sales.filter(x => x.product_id === p.id);
+    const mySales = upTo(sales.filter(x => x.product_id === p.id));
     const sold = mySales.reduce((s, x) => s + Number(x.qty), 0);
     // 쿠팡 사외재고: 쿠팡으로 보낸(입고) − 회수 − 쿠팡 채널 판매
-    const moved = erpTransfers.filter(t => t.product_id === p.id)
+    const moved = upTo(erpTransfers.filter(t => t.product_id === p.id))
       .reduce((s, t) => s + (t.kind === "쿠팡입고" ? 1 : -1) * Number(t.qty), 0);
     const coupangSold = mySales.filter(x => (x.channel || "").includes("쿠팡"))
       .reduce((s, x) => s + Number(x.qty), 0);
-    const atCoupang = moved - coupangSold;
+    // 이동 기록 없이 쿠팡 매출부터 넣으면 atCoupang이 음수가 되고, 그만큼 자사창고가 부풀려짐 → 0에서 끊음
+    const atCoupang = Math.max(0, moved - coupangSold);
     const stock = bought - sold;
     erpStock[p.id] = {
       stock, atCoupang, inHouse: stock - atCoupang,
+      coupangUntracked: moved - coupangSold < 0 ? coupangSold - moved : 0, // 이동 누락 의심 수량
       // 최근 매입단가 우선, 없으면 제품 마스터의 등록 원가
       lastCost: myBuys.length ? Number(myBuys[0].unit_cost) : (Number(p.cost_price) || 0),
     };
@@ -987,6 +1017,7 @@ async function viewSales() {
         <div class="field"><label>판매 채널
           <a onclick="location.hash='#/channels'" style="color:var(--brand);font-size:12px;cursor:pointer;font-weight:400">＋채널 관리</a></label>
           <select id="s-channel">
+            <option value="">채널을 선택하세요</option>
             ${erpChannels.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
             <option value="기타">기타</option>
           </select></div>
@@ -1060,10 +1091,13 @@ function calcSalesTotal() {
 
 async function saveSales() {
   const date = document.getElementById("s-date").value;
-  const channel = document.getElementById("s-channel").value.trim() || "기타";
+  const channel = document.getElementById("s-channel").value.trim();
   if (!date) return toast("판매일을 선택해 주세요");
+  // 채널이 틀리면 수수료·쿠팡 재고까지 어긋나므로 기본 선택으로 두지 않음
+  if (!channel) return toast("판매 채널을 선택해 주세요");
   const recs = [];
-  let stockWarn = "";
+  const qtyByPid = {};
+  const priceWarns = [];
   for (const tr of document.querySelectorAll("#sale-rows tr")) {
     const pid = tr.querySelector(".sr-prod").value;
     const qty = Number(tr.querySelector(".sr-qty").value) || 0;
@@ -1071,15 +1105,28 @@ async function saveSales() {
     if (!pid && !price) continue; // 빈 줄은 건너뜀
     if (!pid) return toast("품목을 선택해 주세요");
     if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
-    const st = erpStock[pid]?.stock ?? 0;
-    if (tradeTypeOfId(pid) === "사입" && qty > st) stockWarn = `'${prodName(pid)}' 재고(${fmt(st)})보다 많은 수량(${fmt(qty)})입니다.`;
+    if (!Number.isInteger(qty)) return toast("수량은 정수로 입력해 주세요");
+    if (price <= 0) return toast(`'${prodName(pid)}'의 단가를 입력해 주세요`);
+    // 등록 판매가와 크게 다르면 0을 더 붙였을 가능성이 큼
+    const listed = Number(erpProducts.find(p => p.id === pid)?.price) || 0;
+    if (listed && (price >= listed * 5 || price * 5 <= listed)) {
+      priceWarns.push(`'${prodName(pid)}' 단가 ₩${fmt(price)} (등록 판매가 ₩${fmt(listed)})`);
+    }
+    qtyByPid[pid] = (qtyByPid[pid] || 0) + qty;
     recs.push({ date, channel, product_id: pid, qty, unit_price: price, amount: qty * price,
       // 판매 시점 원가를 남겨야 나중에 원가가 바뀌어도 과거 이익이 흔들리지 않음
       unit_cost: Number(erpProducts.find(p => p.id === pid)?.cost_price) || null,
       memo: tr.querySelector(".sr-memo").value.trim(), created_by: me.name });
   }
   if (!recs.length) return toast("품목을 1개 이상 입력해 주세요");
-  if (stockWarn && !confirm(stockWarn + "\n그래도 저장할까요?")) return;
+  if (priceWarns.length && !confirm(
+    `단가가 평소와 많이 다릅니다. 자릿수를 확인해 주세요.\n\n${priceWarns.join("\n")}\n\n이대로 저장할까요?`)) return;
+  // 같은 품목이 여러 줄이면 합산해서 비교해야 함 (줄마다 따로 보면 초과를 놓침)
+  const stockWarns = Object.entries(qtyByPid)
+    .filter(([pid, q]) => tradeTypeOfId(pid) === "사입" && q > (erpStock[pid]?.stock ?? 0))
+    .map(([pid, q]) => `'${prodName(pid)}' 재고 ${fmt(erpStock[pid]?.stock ?? 0)} < 판매 ${fmt(q)}`);
+  if (stockWarns.length && !confirm(
+    `재고보다 많은 수량입니다.\n\n${stockWarns.join("\n")}\n\n그래도 저장할까요?`)) return;
   const btn = document.getElementById("btn-save-sales");
   btn.disabled = true;
   const { error } = await sb.from("sales").insert(recs);
@@ -1225,23 +1272,32 @@ async function savePurchases() {
     if (!pid && !cost) continue;
     if (!pid) return toast("품목을 선택해 주세요");
     if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
+    if (!Number.isInteger(qty)) return toast("수량은 정수로 입력해 주세요");
+    // 0원 매입이 들어가면 그 상품의 '최근 매입단가'가 0이 되어 재고 평가액과 이익이 전부 망가짐
+    if (cost <= 0) return toast(`'${prodName(pid)}'의 매입 단가를 입력해 주세요`);
     recs.push({ date, supplier, product_id: pid, qty, unit_cost: cost, amount: qty * cost,
       memo: tr.querySelector(".br-memo").value.trim(), created_by: me.name });
   }
   if (!recs.length && !ship && !freight) return toast("품목 또는 부대비용을 입력해 주세요");
   const btn = document.getElementById("btn-save-buys");
   btn.disabled = true;
-  if (recs.length) {
-    const { error } = await sb.from("purchases").insert(recs);
-    if (error) { btn.disabled = false; return toast("저장에 실패했습니다"); }
-  }
-  // 택배비·운송비는 별도 테이블에 분리 저장
+  // 부대비용을 먼저 넣는다 — 상품 매입이 커밋된 뒤 실패하면 재시도 시 매입이 중복되기 때문
   const costRecs = [];
   if (ship > 0) costRecs.push({ date, kind: "택배비", amount: ship, supplier, created_by: me.name });
   if (freight > 0) costRecs.push({ date, kind: "운송비", amount: freight, supplier, created_by: me.name });
   if (costRecs.length) {
     const { error: e2 } = await sb.from("purchase_costs").insert(costRecs);
-    if (e2) { btn.disabled = false; return toast("부대비용 저장에 실패했습니다"); }
+    if (e2) { btn.disabled = false; return toast("부대비용 저장에 실패했습니다 (매입은 아직 저장되지 않았습니다)"); }
+  }
+  if (recs.length) {
+    const { error } = await sb.from("purchases").insert(recs);
+    if (error) {
+      btn.disabled = false;
+      // 부대비용만 남으면 이중 계상이 되므로 되돌린다
+      if (costRecs.length) await sb.from("purchase_costs").delete().eq("date", date).eq("supplier", supplier)
+        .in("kind", costRecs.map(c => c.kind));
+      return toast("저장에 실패했습니다");
+    }
   }
   toast(`저장되었습니다 (상품 ${recs.length}건${costRecs.length ? ", 부대비용 " + costRecs.length + "건" : ""})`);
   erpMonth = date.slice(0, 7);
@@ -1263,6 +1319,8 @@ const XLS_KEYS = [
   ["supplier", ["거래처", "공급처", "매입처", "공급자"]],
   ["memo", ["적요", "메모", "비고", "주문번호", "발주번호", "note"]],
 ];
+const XLS_LABEL = { code: "상품코드", date: "날짜", product: "상품명", qty: "수량",
+  price: "단가", amount: "금액", channel: "채널", supplier: "거래처", memo: "적요" };
 const xlsNorm = s => String(s ?? "").toLowerCase().replace(/[\s()\[\]·,\-_]/g, "");
 const xlsNum = v => Number(String(v ?? "").replace(/[^\d.\-]/g, "")) || 0;
 
@@ -1276,7 +1334,14 @@ function xlsDateOf(v) {
   let m = s.match(/(\d{4})[.\-\/년\s]+(\d{1,2})[.\-\/월\s]+(\d{1,2})/);
   if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
   m = s.match(/^(\d{1,2})[.\-\/월\s]+(\d{1,2})일?$/);
-  if (m) return `${today().slice(0, 4)}-${pad2(m[1])}-${pad2(m[2])}`;
+  if (m) {
+    // 연도가 없으면 올해로 보되, 그러면 미래가 되는 경우(연초에 작년 12월 파일)엔 작년으로
+    const y = Number(today().slice(0, 4));
+    const guess = `${y}-${pad2(m[1])}-${pad2(m[2])}`;
+    return guess > today() ? `${y - 1}-${pad2(m[1])}-${pad2(m[2])}` : guess;
+  }
+  m = s.match(/^(\d{4})(\d{2})(\d{2})$/);          // 20260823
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
   return "";
 }
 
@@ -1347,23 +1412,33 @@ function buildExcelDraft(wsRows, mode) {
     if (!prodText && !qtyRaw && !amount) continue;       // 빈 줄
     if (/합계|총계|소계/.test(prodText)) continue;        // 합계 줄 제외
     const p = xlsMatchProduct(get("product"), get("code"), isSale);
-    const qty = qtyRaw || 1;
+    // 값이 없어서 시스템이 대신 채운 항목은 표시해 줘야 사용자가 검토할 수 있음
+    const guessed = [];
+    const qty = qtyRaw || (guessed.push("수량"), 1);
     let price = xlsNum(get("price"));
     if (!price && amount) price = Math.round(amount / qty);
     // 단가/금액이 아예 없으면 제품 마스터 기준가로 채움 (매출=판매가, 매입=원가)
-    if (!price && p) price = Number(isSale ? p.price : p.cost_price) || 0;
+    if (!price && p) { price = Number(isSale ? p.price : p.cost_price) || 0; if (price) guessed.push("단가"); }
+    const parsedDate = xlsDateOf(get("date"));
+    if (!parsedDate) guessed.push("날짜");
     rows.push({
-      date: xlsDateOf(get("date")) || today(),
+      date: parsedDate || today(),
       pid: p ? p.id : "",
       prodText,
       qty, price,
+      // 파일에 적힌 금액이 있으면 그대로 보존 (단가 역산 후 재곱하면 원 단위가 어긋남)
+      srcAmount: amount || 0,
+      guessed,
       party: String(get(isSale ? "channel" : "supplier") ?? "").trim(),
       memo: String(get("memo") ?? "").trim().slice(0, 100),
     });
   }
   if (!rows.length) return toast("읽을 수 있는 데이터 줄이 없습니다");
   if (rows.length > 300) return toast("한 번에 300줄까지만 올릴 수 있습니다. 파일을 나눠 주세요");
-  xlsDraft = { mode, rows, noDateCol: colMap.date === undefined };
+  const colNames = Object.entries(colMap)
+    .map(([k, ci]) => `${XLS_LABEL[k] || k} ← "${String(wsRows[headIdx][ci]).trim()}"`);
+  xlsDraft = { mode, rows, noDateCol: colMap.date === undefined, colNames,
+               dateFailed: rows.filter(r => r.guessed.includes("날짜")).length };
   renderExcelPreview();
 }
 
@@ -1371,11 +1446,13 @@ function xlsRowHtml(r, i, isSale) {
   return `
     <tr data-idx="${i}">
       <td><input type="checkbox" class="xr-chk" checked onchange="updateXlsSummary()"></td>
-      <td class="xr-st" style="white-space:nowrap"></td>
+      <td style="white-space:nowrap"><span class="xr-st"></span>${r.guessed?.length
+        ? `<div title="파일에 값이 없어 자동으로 채운 항목" style="font-size:11px;color:#d9480f">자동채움<br>${esc(r.guessed.join("·"))}</div>` : ""}</td>
       <td><input type="date" class="xr-date" value="${esc(r.date)}" style="width:130px" onchange="updateXlsSummary()"></td>
       <td>
         <select class="xr-prod" onchange="updateXlsSummary()">${productOptions(r.pid, isSale ? "" : "buy")}</select>
-        ${r.pid ? "" : `<div style="font-size:11px;color:#d9480f;margin-top:2px">원본: ${esc(r.prodText) || "(품목 없음)"}</div>`}
+        <div style="font-size:11px;color:${r.pid ? "var(--text-sub)" : "#d9480f"};margin-top:2px">
+          원본: ${esc(r.prodText) || "(품목 없음)"}</div>
       </td>
       <td><input type="number" class="xr-qty" min="1" value="${r.qty}" style="width:70px" oninput="updateXlsSummary()"></td>
       <td><input type="number" class="xr-price" min="0" value="${r.price}" style="width:100px" oninput="updateXlsSummary()"></td>
@@ -1396,7 +1473,13 @@ function renderExcelPreview() {
         <p style="font-size:13px;color:var(--text-sub);margin:4px 0 10px">
           엑셀에서 읽어온 초안입니다. 내용을 확인·수정한 뒤 <b>등록</b>을 누르면 저장됩니다.
           ${unmatched ? `<br>⚠️ 품목을 못 찾은 줄이 <b>${unmatched}건</b> 있습니다 — 직접 선택하거나 체크를 해제해 주세요.` : ""}
-          ${d.noDateCol ? `<br>ℹ️ 날짜 열이 없어 전부 오늘 날짜로 넣었습니다. 필요하면 줄마다 고쳐 주세요.` : ""}</p>
+          ${d.noDateCol ? `<br>ℹ️ 날짜 열이 없어 전부 오늘 날짜로 넣었습니다. 필요하면 줄마다 고쳐 주세요.` : ""}
+          ${d.dateFailed && !d.noDateCol ? `<br>⚠️ 날짜를 읽지 못한 줄이 <b>${d.dateFailed}건</b> 있어 오늘 날짜로 채웠습니다 — 꼭 확인해 주세요.` : ""}</p>
+        ${d.colNames?.length ? `<details style="font-size:12px;color:var(--text-sub);margin-bottom:10px">
+          <summary style="cursor:pointer">엑셀의 어느 열을 무엇으로 읽었는지 보기 (${d.colNames.length}개)</summary>
+          <div style="padding:8px 0 0 6px">${d.colNames.map(esc).join(" · ")}</div>
+          <div style="padding-top:4px">※ 잘못 읽었다면 취소하고, [양식↓] 버튼의 표준 양식으로 다시 만들어 주세요.</div>
+        </details>` : ""}
         <div class="table-wrap" style="max-height:52vh;overflow:auto"><table>
           <thead><tr><th></th><th>상태</th><th>날짜</th><th style="min-width:200px">품목</th>
             <th class="num">수량</th><th class="num">단가</th><th class="num">금액</th>
@@ -1426,7 +1509,8 @@ function updateXlsSummary() {
     const st = tr.querySelector(".xr-st");
     if (!on) { st.textContent = "제외"; st.style.color = "var(--text-sub)"; tr.style.opacity = ".45"; return; }
     tr.style.opacity = "1";
-    if (!pid || !date || qty <= 0) { st.textContent = "⚠️ 확인"; st.style.color = "#d9480f"; warn++; }
+    // 단가 0원은 매출·원가를 망가뜨리므로 반드시 확인시킴
+    if (!pid || !date || qty <= 0 || price <= 0) { st.textContent = "⚠️ 확인"; st.style.color = "#d9480f"; warn++; }
     else { st.textContent = "✅"; st.style.color = ""; valid++; total += amt; }
   });
   const sum = document.getElementById("xls-summary");
@@ -1444,13 +1528,18 @@ async function confirmExcelImport() {
   const recs = [];
   document.querySelectorAll("#xls-rows tr").forEach(tr => {
     if (!tr.querySelector(".xr-chk").checked) return;
+    const idx = Number(tr.dataset.idx);
+    const src = xlsDraft.rows[idx];
     const pid = tr.querySelector(".xr-prod").value;
     const qty = Number(tr.querySelector(".xr-qty").value) || 0;
     const price = Number(tr.querySelector(".xr-price").value) || 0;
     const party = tr.querySelector(".xr-party").value.trim();
+    // 파일에 적힌 금액을 그대로 쓴다 (단가를 역산해 다시 곱하면 원 단위가 어긋나고 할인가가 사라짐)
+    const keepSrc = src && src.srcAmount > 0 && qty === src.qty && price === src.price;
     const base = {
       date: tr.querySelector(".xr-date").value, product_id: pid, qty,
-      amount: qty * price, memo: tr.querySelector(".xr-memo").value.trim(), created_by: me.name,
+      amount: keepSrc ? src.srcAmount : qty * price,
+      memo: tr.querySelector(".xr-memo").value.trim(), created_by: me.name,
     };
     recs.push(isSale
       ? { ...base, unit_price: price, channel: party || "기타",
@@ -1458,6 +1547,23 @@ async function confirmExcelImport() {
       : { ...base, unit_cost: price, supplier: party });
   });
   if (!recs.length) return;
+
+  // 같은 파일을 두 번 올리는 사고 방지 — 날짜+품목+수량+금액이 같은 기존 데이터와 대조
+  const dates = [...new Set(recs.map(r => r.date))];
+  const { data: exist } = await sb.from(isSale ? "sales" : "purchases")
+    .select("date,product_id,qty,amount").in("date", dates);
+  if (exist?.length) {
+    const key = r => `${r.date}|${r.product_id}|${r.qty}|${r.amount}`;
+    const existKeys = new Set(exist.map(key));
+    const dup = recs.filter(r => existKeys.has(key(r)));
+    if (dup.length && !confirm(
+      `이미 등록된 것과 완전히 같은 내용이 ${dup.length}건 있습니다.\n`
+      + `(같은 날짜·품목·수량·금액)\n\n`
+      + `예시: ${dup.slice(0, 3).map(r => `${r.date} ${prodName(r.product_id)} ${r.qty}개`).join(", ")}\n\n`
+      + `같은 파일을 두 번 올린 것이라면 [취소]를 누르세요.\n`
+      + `실제로 같은 주문이 여러 건이면 [확인]을 눌러 계속하세요.`)) return;
+  }
+
   if (isSale) {
     // 사입 상품 재고 초과 경고 (품목별 합산)
     const byPid = {};
@@ -1568,25 +1674,52 @@ async function saveErpEdit(table, id) {
   const price = Number(document.getElementById("e-price").value) || 0;
   if (!pid) return toast("품목을 선택해 주세요");
   if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
+  const eDate = document.getElementById("e-date").value;
+  // 날짜가 비면 그 내역이 모든 집계에서 사라지므로 반드시 막아야 함
+  if (!eDate) return toast("날짜를 입력해 주세요");
   const patch = {
-    date: document.getElementById("e-date").value,
+    date: eDate,
     product_id: pid, qty, amount: qty * price,
     memo: document.getElementById("e-memo").value.trim(),
   };
   const party = document.getElementById("e-party").value.trim();
-  if (isSale) { patch.unit_price = price; patch.channel = party || "기타"; }
-  else { patch.unit_cost = price; patch.supplier = party; }
-  const { error } = await sb.from(table).update(patch).eq("id", id);
+  if (isSale) {
+    patch.unit_price = price;
+    patch.channel = party || "기타";
+    // 품목을 바꾸면 원가 스냅샷도 새 품목 기준으로 갱신 (안 하면 이익 계산이 틀어짐)
+    patch.unit_cost = Number(erpProducts.find(p => p.id === pid)?.cost_price) || null;
+  } else { patch.unit_cost = price; patch.supplier = party; }
+  const { data, error } = await sb.from(table).update(patch).eq("id", id).select("id");
   if (error) return toast("수정에 실패했습니다");
+  if (!data?.length) return toast("수정할 내역을 찾지 못했습니다 (다른 사람이 이미 삭제했을 수 있습니다)");
   toast("수정되었습니다");
   closeModal();
   route();
 }
 
+// 삭제 대상 설명 (무엇을 지우는지 보여줘야 오클릭을 막을 수 있음)
+function erpRowLabel(table, id) {
+  const row = [...erpRowsCache, ...erpCostsCache].find(x => x.id === id);
+  if (table === "cash_plans") {
+    const p = cashPlans.find(x => x.id === id);
+    if (!p) return "";
+    return `\n\n${p.date} · ${p.kind} · ${p.title} · ₩${fmt(p.amount)}`
+      + (p.repeat === "매월" ? "\n\n⚠️ '매월 반복' 계획입니다 — 이번 달뿐 아니라 반복 전체가 삭제됩니다." : "");
+  }
+  if (!row) return "";
+  const who = row.channel || row.supplier || row.kind || "";
+  const amt = row.amount != null ? ` · ₩${fmt(row.amount)}` : "";
+  const nm = row.product_id ? ` · ${prodName(row.product_id)}` : "";
+  return `\n\n${row.date} · ${who}${nm}${amt}`;
+}
+
 async function deleteErpRow(table, id) {
-  if (!confirm("이 내역을 삭제할까요?")) return;
-  const { error } = await sb.from(table).delete().eq("id", id);
+  const effect = table === "sales" ? "\n(매출을 지우면 재고와 공헌이익이 함께 바뀝니다)"
+    : table === "purchases" ? "\n(매입을 지우면 재고가 줄어듭니다)" : "";
+  if (!confirm(`이 내역을 삭제할까요?${erpRowLabel(table, id)}${effect}`)) return;
+  const { data, error } = await sb.from(table).delete().eq("id", id).select("id");
   if (error) return toast("삭제에 실패했습니다");
+  if (!data?.length) return toast("삭제할 내역을 찾지 못했습니다 (이미 삭제되었을 수 있습니다)");
   toast("삭제되었습니다");
   route();
 }
@@ -1737,7 +1870,22 @@ function channelSetting(name) {
 }
 
 // 매출 1줄의 공헌이익 계산 (광고비 제외 — 광고비는 기간 단위로 배분)
-function cmOfSale(r) {
+// 배송비는 '주문 1건당 1회'. 같은 날·같은 채널·같은 적요(주문번호)면 한 주문으로 묶는다.
+// 적요가 비어 있으면 묶을 근거가 없으므로 그 줄만 1회 부과.
+function shipKeyOf(r) {
+  const memo = (r.memo || "").trim();
+  return memo ? `${r.date}|${r.channel}|${memo}` : `row:${r.id || Math.random()}`;
+}
+function shipChargedRows(rows) {
+  const seen = new Set(), charged = new Set();
+  for (const r of rows) {
+    const k = shipKeyOf(r);
+    if (!seen.has(k)) { seen.add(k); charged.add(r); }
+  }
+  return charged; // 주문의 첫 줄에만 배송비를 매김
+}
+
+function cmOfSale(r, shipCharged) {
   const revenue = Number(r.amount) || 0;
   const qty = Number(r.qty) || 0;
   // 판매 시점 원가 스냅샷 우선, 없으면 현재 제품 마스터 원가
@@ -1746,18 +1894,26 @@ function cmOfSale(r) {
   const cost = unitCost * qty;
   const st = channelSetting(r.channel);
   const fee = Math.round(revenue * st.fee / 100);
-  const ship = st.ship; // 매출 1줄 = 주문 1건 기준
-  return { revenue, qty, cost, fee, ship, cm: revenue - cost - fee - ship, noCost: !unitCost };
+  const ship = (!shipCharged || shipCharged.has(r)) ? st.ship : 0;
+  return {
+    revenue, qty, cost, fee, ship,
+    cm: revenue - cost - fee - ship,
+    noCost: !unitCost,
+    noChannel: !!r.channel && !erpChannelList.some(c => c.name === r.channel),
+  };
 }
 
 function sumCM(rows) {
+  const shipCharged = shipChargedRows(rows);
   return rows.reduce((s, r) => {
-    const c = cmOfSale(r);
+    const c = cmOfSale(r, shipCharged);
     s.revenue += c.revenue; s.qty += c.qty; s.cost += c.cost;
     s.fee += c.fee; s.ship += c.ship; s.cm += c.cm;
-    if (c.noCost) s.noCostRows++;
+    if (c.noCost) { s.noCostRows++; s.noCostRevenue += c.revenue; }
+    if (c.noChannel) s.unknownChannels.add(r.channel);
     return s;
-  }, { revenue: 0, qty: 0, cost: 0, fee: 0, ship: 0, cm: 0, noCostRows: 0 });
+  }, { revenue: 0, qty: 0, cost: 0, fee: 0, ship: 0, cm: 0,
+       noCostRows: 0, noCostRevenue: 0, unknownChannels: new Set() });
 }
 
 async function viewProfit() {
@@ -1771,23 +1927,26 @@ async function viewProfit() {
   profitAdsCache = ads;
   profitFixedCache = fixed;
 
-  const rows = sales.filter(r => monthOf(r) === erpMonth);
-  const monthAds = ads.filter(a => String(a.date).slice(0, 7) === erpMonth);
+  // 아직 오지 않은 날짜는 실적이 아니므로 제외 (미래 매출을 미리 입력해도 이익이 부풀지 않도록)
+  const td = today();
+  const rows = sales.filter(r => monthOf(r) === erpMonth && (r.date || "") <= td);
+  const monthAds = ads.filter(a => String(a.date).slice(0, 7) === erpMonth && String(a.date) <= td);
   const adTotal = monthAds.reduce((s, a) => s + Number(a.amount), 0);
   const fixTotal = fixed.reduce((s, f) => s + Number(f.amount), 0);
 
   const t = sumCM(rows);
+  const shipCharged = shipChargedRows(rows);
   const cmNet = t.cm - adTotal;                       // 광고비까지 뺀 최종 공헌이익
   const cmRate = t.revenue ? (cmNet / t.revenue) * 100 : 0;
   const op = cmNet - fixTotal;                        // 영업이익 (고정비 차감)
-  const bepRate = fixTotal ? Math.min(100, Math.round((cmNet / fixTotal) * 100)) : null;
+  const bepRate = fixTotal ? Math.max(0, Math.min(100, Math.round((cmNet / fixTotal) * 100))) : null;
 
   // 일별 누적 (쌓여가는 구조)
   const dayMap = {};
   rows.forEach(r => {
     const d = r.date;
     if (!dayMap[d]) dayMap[d] = { revenue: 0, cm: 0 };
-    const c = cmOfSale(r);
+    const c = cmOfSale(r, shipCharged);
     dayMap[d].revenue += c.revenue;
     dayMap[d].cm += c.cm;
   });
@@ -1807,10 +1966,20 @@ async function viewProfit() {
     const hit = dayRows.find(x => x.acc >= fixTotal);
     if (hit) {
       bepMsg = `🎉 <b>${hit.d.slice(5)}에 손익분기 돌파</b> — 이후 공헌이익은 그대로 이익입니다`;
-    } else if (dayRows.length >= 2 && acc > 0) {
-      const perDay = acc / dayRows.length;
+    } else if (acc > 0) {
+      // '거래가 있었던 날 수'가 아니라 '실제 경과 일수'로 나눠야 속도가 부풀지 않음
+      const isThisMonth = erpMonth === td.slice(0, 7);
+      const lastDay = new Date(Number(erpMonth.slice(0, 4)), Number(erpMonth.slice(5, 7)), 0).getDate();
+      const elapsed = isThisMonth ? Number(td.slice(8, 10)) : lastDay;
+      const remain = isThisMonth ? lastDay - elapsed : 0;
+      const perDay = acc / Math.max(1, elapsed);
       const need = Math.ceil((fixTotal - acc) / perDay);
-      bepMsg = `현재 속도(하루 평균 ₩${fmt(Math.round(perDay))})면 <b>약 ${need}일 더</b> 필요합니다`;
+      bepMsg = `현재 속도(하루 평균 ₩${fmt(Math.round(perDay))})면 <b>약 ${need}일 더</b> 필요합니다`
+        + (isThisMonth
+            ? (need > remain
+                ? ` — 이번 달 남은 ${remain}일로는 <b style="color:var(--red)">도달이 어렵습니다</b>`
+                : ` (이번 달 ${remain}일 남음)`)
+            : "");
     } else {
       bepMsg = `손익분기까지 <b>₩${fmt(fixTotal - cmNet)}</b> 남았습니다`;
     }
@@ -1821,7 +1990,7 @@ async function viewProfit() {
   rows.forEach(r => {
     const k = r.channel || "기타";
     if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, cm: 0, ad: 0 };
-    const c = cmOfSale(r);
+    const c = cmOfSale(r, shipCharged);
     byCh[k].revenue += c.revenue; byCh[k].cost += c.cost;
     byCh[k].fee += c.fee; byCh[k].ship += c.ship; byCh[k].cm += c.cm;
   });
@@ -1836,7 +2005,7 @@ async function viewProfit() {
   const byProd = {};
   rows.forEach(r => {
     if (!byProd[r.product_id]) byProd[r.product_id] = { qty: 0, revenue: 0, cm: 0 };
-    const c = cmOfSale(r);
+    const c = cmOfSale(r, shipCharged);
     byProd[r.product_id].qty += c.qty;
     byProd[r.product_id].revenue += c.revenue;
     byProd[r.product_id].cm += c.cm;
@@ -1865,10 +2034,19 @@ async function viewProfit() {
         <div class="stat"><div class="stat-label">공헌이익률</div>
           <div class="stat-value ${cmRate >= 30 ? "blue" : "amber"}">${cmRate.toFixed(1)}%</div></div>
       </div>
-      ${t.noCostRows ? `<p style="color:#d9480f;font-size:13px;margin-top:10px">
-        ⚠️ 원가가 등록되지 않은 매출이 ${t.noCostRows}줄 있습니다 — 제품 마스터에 원가를 넣어야 이익이 정확해집니다.</p>` : ""}
-      ${noSetting.length ? `<p style="color:var(--text-sub);font-size:13px;margin-top:6px">
-        ℹ️ 수수료율 미설정 채널: ${noSetting.map(esc).join(", ")} — 판매채널 화면에서 채널별 수수료율·배송비를 넣으면 더 정확해집니다.</p>` : ""}
+      ${t.noCostRows ? `<div style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:12px;margin-top:12px;font-size:13px">
+        <b style="color:#d9480f">⚠️ 위 공헌이익은 실제보다 부풀려져 있습니다</b><br>
+        원가가 등록되지 않은 매출이 <b>${t.noCostRows}줄 (₩${fmt(t.noCostRevenue)})</b> 있습니다.
+        이 매출은 원가를 0원으로 계산하므로, 실제 이익은 표시된 금액보다 <b>최소 ₩${fmt(Math.round(t.noCostRevenue * 0.5))} 이상 적습니다</b>.<br>
+        <a onclick="location.hash='#/products'" style="color:var(--brand);cursor:pointer;font-weight:600">제품 마스터에서 원가 입력하기 →</a>
+      </div>` : ""}
+      ${t.unknownChannels.size ? `<div style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:12px;margin-top:10px;font-size:13px">
+        <b style="color:#d9480f">⚠️ 채널 목록에 없는 이름으로 기록된 매출이 있습니다</b>: ${[...t.unknownChannels].map(esc).join(", ")}<br>
+        이 매출들은 수수료·배송비가 0원으로 계산됩니다. 판매채널 화면에서 같은 이름으로 등록하거나, 매출의 채널명을 맞춰 주세요.
+      </div>` : ""}
+      ${noSetting.length ? `<p style="color:var(--text-sub);font-size:13px;margin-top:8px">
+        ℹ️ 수수료율 0%인 채널: ${noSetting.map(esc).join(", ")} — 자사몰처럼 수수료가 없으면 정상입니다.
+        오픈마켓이라면 판매채널 화면에서 수수료율·배송비를 넣어 주세요.</p>` : ""}
     </div>
 
     <div class="card">
@@ -2285,12 +2463,19 @@ async function openChannelModal(id) {
 async function saveChannel(id) {
   const name = document.getElementById("ch-name").value.trim();
   if (!name) return toast("채널명을 입력해 주세요");
+  const fee = Number(document.getElementById("ch-fee").value) || 0;
+  if (fee < 0 || fee > 100) return toast("수수료율은 0~100 사이로 입력해 주세요");
+  // 10.8%를 0.108로 넣는 실수가 잦아 수수료가 100배 작게 계산됨
+  if (fee > 0 && fee < 1 && !confirm(
+    `수수료율을 ${fee}%로 저장할까요?\n\n`
+    + `10.8%처럼 퍼센트 숫자를 그대로 넣어야 합니다 (0.108이 아니라 10.8).\n`
+    + `${fee}%가 맞다면 [확인]을 누르세요.`)) return;
   const data = {
     name,
     url: normUrl(document.getElementById("ch-url").value),
     login_id: document.getElementById("ch-id").value.trim(),
     login_pw: document.getElementById("ch-pw").value,
-    fee_rate: Number(document.getElementById("ch-fee").value) || 0,
+    fee_rate: fee,
     ship_fee: Number(document.getElementById("ch-ship").value) || 0,
     memo: document.getElementById("ch-memo").value.trim(),
   };
@@ -2304,7 +2489,12 @@ async function saveChannel(id) {
 }
 
 async function deleteChannel(id) {
-  if (!confirm("이 채널을 삭제할까요? (기존 매출 기록은 그대로 유지됩니다)")) return;
+  const c = channelCache.find(x => x.id === id) || {};
+  if (!confirm(
+    `'${c.name || "이 채널"}' 채널을 삭제할까요?\n\n`
+    + `매출 기록은 남지만, 이 채널의 수수료율·배송비 설정이 사라져\n`
+    + `과거 달의 공헌이익이 실제보다 크게 표시됩니다.\n`
+    + `채널을 더 안 쓰더라도 설정은 남겨두는 편이 정확합니다.`)) return;
   const { error } = await sb.from("sales_channels").delete().eq("id", id);
   if (error) return toast("삭제에 실패했습니다");
   toast("삭제되었습니다");
@@ -2378,7 +2568,7 @@ async function viewTasks() {
           <tr>
             <td><b>${esc(t.title)}</b>${t.detail ? `<br><small style="color:var(--text-sub)">${esc(t.detail)}</small>` : ""}</td>
             <td>${userName(t.creator_id)}</td>
-            <td>${dday(t.due_date) || "—"}</td>
+            <td>${t.status === "done" ? "—" : (dday(t.due_date) || "—")}</td>
             <td>${esc(localDT(t.created_at).slice(0, 10))}</td>
             <td><button class="btn sm green" onclick="completeTask('${t.id}')">✔ 완료</button></td>
           </tr>`).join("") : `<tr><td colspan="5" class="empty">받은 지시가 없습니다 👍</td></tr>`}
@@ -2394,7 +2584,7 @@ async function viewTasks() {
           <tr>
             <td><b>${esc(t.title)}</b>${t.detail ? `<br><small style="color:var(--text-sub)">${esc(t.detail)}</small>` : ""}</td>
             <td>${userName(t.assignee_id)}</td>
-            <td>${dday(t.due_date) || "—"}</td>
+            <td>${t.status === "done" ? "—" : (dday(t.due_date) || "—")}</td>
             <td>${t.status === "done"
               ? `<span class="chip approved">완료</span><br><small style="color:var(--text-sub)">${esc(localDT(t.done_at).slice(0, 10))}</small>`
               : '<span class="chip progress">진행 중</span>'}</td>
@@ -2468,8 +2658,9 @@ function planOccurrences(plans, startStr, days) {
         const ds = `${dd.getFullYear()}-${pad2(dd.getMonth() + 1)}-${pad2(dd.getDate())}`;
         if (ds >= startStr && ds <= endStr && ds >= p.date) occ.push({ ...p, occDate: ds });
       }
-    } else if (p.date >= startStr && p.date <= endStr) {
-      occ.push({ ...p, occDate: p.date });
+    } else if (p.date <= endStr) {
+      // 예정일이 지났는데 아직 처리 안 된 건도 포함해야 함 (빠지면 자금이 여유 있어 보임)
+      occ.push({ ...p, occDate: p.date, overdue: p.date < startStr });
     }
   }
   return occ.sort((a, b) => a.occDate.localeCompare(b.occDate) || (a.kind === "입금" ? -1 : 1));
@@ -2626,7 +2817,8 @@ async function viewCash() {
         <tbody>${projRows.length ? projRows.map(r => `
           <tr>
             <td>${esc(r.occDate)}</td>
-            <td><b>${esc(r.title)}</b>${r.repeat === "매월" ? ' <span class="chip mine">매월</span>' : ""}</td>
+            <td><b>${esc(r.title)}</b>${r.repeat === "매월" ? ' <span class="chip mine">매월</span>' : ""}
+              ${r.overdue ? ' <span class="chip rejected">예정일 지남</span>' : ""}</td>
             <td class="num" style="color:${r.kind === "입금" ? "var(--green)" : "var(--red)"}">${r.kind === "입금" ? "+" : "−"}₩${fmt(r.amount)}</td>
             <td class="num" style="font-weight:800;color:${r.bal < 0 ? "var(--red)" : "var(--text)"}">₩${fmt(r.bal)}</td>
             <td><button class="btn sm danger" onclick="deleteErpRow('cash_plans','${r.id}')">삭제</button></td>
@@ -2644,7 +2836,9 @@ async function viewCash() {
       <div class="form-grid">
         <div class="field"><label>일자</label><input id="c-date" type="date" value="${cashDate}"></div>
         <div class="field"><label>계좌 *</label>
-          <select id="c-account">${cashAccounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("")}</select></div>
+          <select id="c-account">
+            ${cashAccounts.length > 1 ? '<option value="">계좌를 선택하세요</option>' : ""}
+            ${cashAccounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("")}</select></div>
         <div class="field"><label>구분 *</label>
           <select id="c-kind" onchange="refreshCashCats()">
             <option value="입금">입금 (+)</option>
@@ -2655,7 +2849,7 @@ async function viewCash() {
         <div class="field"><label>금액(원) *</label><input id="c-amount" type="number" min="1" placeholder="0"></div>
         <div class="field"><label>적요</label><input id="c-memo" placeholder="예) 쿠팡 정산, OO상사 대금" maxlength="100"></div>
       </div>
-      <div class="modal-actions"><button class="btn" onclick="saveCashTxn()">저장</button></div>
+      <div class="modal-actions"><button class="btn" id="btn-save-txn" onclick="saveCashTxn()">저장</button></div>
     </div>
 
     <div class="card">
@@ -2701,7 +2895,7 @@ function openCashAccountModal(id) {
           <span>${a ? `<button class="btn danger" onclick="deleteCashAccount('${a.id}')">계좌 삭제</button>` : ""}</span>
           <span style="display:flex;gap:10px">
             <button class="btn secondary" onclick="closeModal()">취소</button>
-            <button class="btn" onclick="saveCashAccount('${id || ""}')">${a ? "저장" : "등록"}</button>
+            <button class="btn" id="btn-save-acc" onclick="saveCashAccount('${id || ""}')">${a ? "저장" : "등록"}</button>
           </span>
         </div>
       </div>
@@ -2711,15 +2905,21 @@ function openCashAccountModal(id) {
 async function saveCashAccount(id) {
   const name = document.getElementById("a-name").value.trim();
   if (!name) return toast("계좌명을 입력해 주세요");
+  const balRaw = document.getElementById("a-balance").value.trim();
+  // 비워두면 0으로 저장되어 이후 모든 잔액이 틀어짐
+  if (balRaw === "") return toast("기초잔액을 입력해 주세요 (없으면 0을 입력)");
   const data = {
     name,
     bank: document.getElementById("a-bank").value.trim(),
-    initial_balance: Number(document.getElementById("a-balance").value) || 0,
+    initial_balance: Number(balRaw) || 0,
   };
+  const btn = document.getElementById("btn-save-acc");
+  if (btn) btn.disabled = true; // 계좌가 두 번 등록되면 기초잔액이 이중 계상됨
   const res = id
-    ? await sb.from("cash_accounts").update(data).eq("id", id)
-    : await sb.from("cash_accounts").insert(data);
-  if (res.error) return toast("저장에 실패했습니다");
+    ? await sb.from("cash_accounts").update(data).eq("id", id).select("id")
+    : await sb.from("cash_accounts").insert(data).select("id");
+  if (res.error) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
+  if (!res.data?.length) { if (btn) btn.disabled = false; return toast("처리할 계좌를 찾지 못했습니다"); }
   toast(id ? "계좌가 수정되었습니다" : "계좌가 등록되었습니다");
   closeModal();
   route();
@@ -2743,31 +2943,34 @@ async function saveCashTxn() {
   const kind = document.getElementById("c-kind").value;
   // 아직 오지 않은 날짜 = 실제 거래가 아니라 '예정' — 잔액에 섞이지 않게 계획으로 유도
   if (date > today()) {
-    const go = confirm(
+    // '취소'가 저장으로 이어지면 안 됨 — 취소는 항상 아무 일도 일어나지 않아야 함
+    alert(
       `${date}는 아직 오지 않은 날짜입니다.\n\n`
-      + `아직 통장에 ${kind === "입금" ? "들어오지" : "나가지"} 않은 돈이라면 '들어올 돈·나갈 돈(예정)'으로 등록해야 합니다.\n`
-      + `(실제 잔액에 섞이지 않고, 자금 부족 예측에 반영됩니다)\n\n`
-      + `확인 = 예정으로 등록 / 취소 = 그대로 실제 거래로 저장`);
-    if (go) {
-      openPlanModal(kind, {
-        date, amount,
-        title: document.getElementById("c-memo").value.trim()
-          || document.getElementById("c-cat").value
-          || (kind === "입금" ? "입금 예정" : "출금 예정"),
-      });
-      return;
-    }
+      + `실제 입출금은 통장에 돈이 오간 뒤에 기록하는 곳입니다.\n`
+      + `아직 ${kind === "입금" ? "들어오지" : "나가지"} 않은 돈은 '들어올 돈·나갈 돈(예정)'으로 등록해 주세요.\n\n`
+      + `[확인]을 누르면 예정 등록 창이 열립니다.`);
+    openPlanModal(kind, {
+      date, amount,
+      title: document.getElementById("c-memo").value.trim()
+        || document.getElementById("c-cat").value
+        || (kind === "입금" ? "입금 예정" : "출금 예정"),
+    });
+    return;
   }
+  const accountId = document.getElementById("c-account").value;
+  if (!accountId) return toast("계좌를 선택해 주세요");
+  const btn = document.getElementById("btn-save-txn");
+  if (btn) btn.disabled = true; // 연타로 같은 입출금이 두 번 기록되는 것 방지
   const { error } = await sb.from("cash_txns").insert({
     date,
-    account_id: document.getElementById("c-account").value,
-    kind: document.getElementById("c-kind").value,
+    account_id: accountId,
+    kind,
     category: document.getElementById("c-cat").value,
     amount,
     memo: document.getElementById("c-memo").value.trim(),
     created_by: me.name,
   });
-  if (error) return toast("저장에 실패했습니다");
+  if (error) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
   toast("저장되었습니다");
   cashDate = date;
   route();
@@ -2824,7 +3027,13 @@ async function saveCashPlan(kind, fromTxnId) {
   });
   if (error) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
   // 실제 거래에서 옮겨온 경우, 원래 거래는 삭제 (잔액 이중 계산 방지)
-  if (fromTxnId) await sb.from("cash_txns").delete().eq("id", fromTxnId);
+  if (fromTxnId) {
+    const del = await sb.from("cash_txns").delete().eq("id", fromTxnId).select("id");
+    if (del.error || !del.data?.length) {
+      closeModal(); route();
+      return toast("예정은 등록됐지만 원래 거래가 지워지지 않았습니다 — 실제 거래에서 직접 삭제해 주세요");
+    }
+  }
   toast(fromTxnId ? "예정으로 옮겼습니다" : "등록되었습니다");
   closeModal();
   route();
@@ -2885,8 +3094,10 @@ async function viewSettings() {
     <div class="card">
       <h2>데이터 저장 방식</h2>
       <p style="color:var(--text-sub);font-size:13.5px">
-        모든 문서와 제품 정보는 <b>Supabase 클라우드 데이터베이스</b>에 저장되며,<br>
-        전 직원이 같은 데이터를 실시간으로 공유합니다. PC·핸드폰 어디서 접속해도 동일합니다.
+        모든 데이터는 <b>Supabase 클라우드 데이터베이스</b>에 저장되며, 전 직원이 같은 데이터를 공유합니다.
+        PC·핸드폰 어디서 접속해도 동일합니다.<br>
+        ※ 화면은 <b>열거나 새로고침할 때</b> 최신 내용을 불러옵니다. 두 사람이 동시에 작업 중이라면,
+        상대가 방금 입력한 내용을 보려면 화면을 다시 열어 주세요.
       </p>
     </div>
 
@@ -2900,25 +3111,43 @@ async function viewSettings() {
         </tbody>
       </table></div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ 직원 추가/삭제, 비밀번호 변경이 필요하면 관리자에게 요청하세요.
+        ※ 본인 비밀번호는 이 화면 위쪽에서 직접 변경할 수 있습니다. 직원 추가·삭제는 관리자에게 요청하세요.
       </p>
     </div>
 
     <div class="card">
-      <h2>문서 백업</h2>
-      <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">전체 문서·제품 데이터를 JSON 파일로 내려받습니다.</p>
-      <button class="btn" onclick="exportJSON()">📤 전체 데이터 내보내기 (JSON)</button>
+      <h2>데이터 백업</h2>
+      <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
+        결재문서·제품·매출·매입·재고·자금·광고비·업무 등 <b>모든 데이터</b>를 JSON 파일 하나로 내려받습니다.
+        가끔 받아서 PC에 보관해 두세요.</p>
+      <button class="btn" id="btn-export" onclick="exportJSON()">📤 전체 데이터 내보내기 (JSON)</button>
     </div>`;
 }
 
+const BACKUP_TABLES = ["documents", "products", "sales", "purchases", "purchase_costs",
+  "sales_channels", "stock_transfers", "cash_accounts", "cash_txns", "cash_plans",
+  "ad_costs", "fixed_costs", "tasks", "ai_reports", "profiles"];
+
 async function exportJSON() {
-  const [docs, prods] = await Promise.all([
-    sb.from("documents").select("*"),
-    sb.from("products").select("*"),
-  ]);
-  const dump = { exportedAt: nowStr(), documents: docs.data || [], products: prods.data || [] };
-  downloadFile(JSON.stringify(dump, null, 2), `리버스_전자결재_백업_${today()}.json`, "application/json");
-  toast("JSON 파일로 내보냈습니다");
+  const btn = document.getElementById("btn-export");
+  if (btn) { btn.disabled = true; btn.textContent = "내보내는 중…"; }
+  const results = await Promise.all(BACKUP_TABLES.map(t => sb.from(t).select("*")));
+  const failed = [];
+  const dump = { exportedAt: nowStr() };
+  BACKUP_TABLES.forEach((t, i) => {
+    if (results[i].error) failed.push(t);
+    dump[t] = results[i].data || [];
+  });
+  if (btn) { btn.disabled = false; btn.textContent = "📤 전체 데이터 내보내기 (JSON)"; }
+  // 일부라도 못 읽었으면 '백업했다'고 안심시키면 안 됨
+  if (failed.length) {
+    return alert(`백업을 만들지 못했습니다.\n\n다음 항목을 읽지 못했습니다: ${failed.join(", ")}\n`
+      + `잠시 후 다시 시도해 주세요.`);
+  }
+  const counts = BACKUP_TABLES.map(t => `${t} ${dump[t].length}`).join(", ");
+  downloadFile(JSON.stringify(dump, null, 2), `리버스_전체백업_${today()}.json`, "application/json");
+  toast(`백업 완료 (${BACKUP_TABLES.length}개 항목)`);
+  console.log("백업 내용:", counts);
 }
 
 function downloadFile(content, filename, mime) {

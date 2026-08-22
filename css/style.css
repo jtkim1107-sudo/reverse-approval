@@ -30,7 +30,11 @@ body {
   line-height: 1.55;
 }
 button { font-family: inherit; cursor: pointer; }
-input, select, textarea { font-family: inherit; font-size: 14px; }
+/* 16px 미만이면 iOS Safari가 입력할 때마다 화면을 확대해 옆 칸을 잘못 누르게 됨 */
+input, select, textarea { font-family: inherit; font-size: 16px; }
+@media (min-width: 768px) {
+  input, select, textarea { font-size: 14px; }
+}
 a { text-decoration: none; color: inherit; }
 .hidden { display: none !important; }
 
