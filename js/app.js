@@ -40,6 +40,38 @@ const localDT = ts => {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/* ---------- 부가세 ----------
+   이익은 반드시 '공급가액(부가세 뺀 금액)' 기준으로 계산해야 합니다.
+   판매가에는 부가세가 들어있고 원가에는 안 들어있으면, 그 차액만큼 이익이 부풀려 보입니다. */
+let vatCfg = { enabled: true, salePriceIncludesVat: true, purchaseCostIncludesVat: false, expenseIncludesVat: true };
+const VAT_RATE = 0.1;
+// 부가세가 포함된 금액에서 공급가액만 떼어냄
+const netAmt = (amount, included) => {
+  const a = Number(amount) || 0;
+  return (vatCfg.enabled && included) ? Math.round(a / (1 + VAT_RATE)) : a;
+};
+// 그 거래에 딸린 부가세.
+// 부가세가 포함된 금액이면 빼내고, 별도로 적은 금액이면 그 10%를 따로 주고받은 것
+const vatAmt = (amount, included) => {
+  if (!vatCfg.enabled) return 0;
+  const a = Number(amount) || 0;
+  return included ? a - netAmt(a, true) : Math.round(a * VAT_RATE);
+};
+const isTaxable = p => (p?.tax_type || "과세") === "과세";
+// 매출: 면세 상품은 부가세가 없으므로 판매가 전체가 공급가액
+const saleNet = (amount, p) => (isTaxable(p) ? netAmt(amount, vatCfg.salePriceIncludesVat) : Number(amount) || 0);
+const saleVat = (amount, p) => (isTaxable(p) ? vatAmt(amount, vatCfg.salePriceIncludesVat) : 0);
+const buyNet = (amount, p) => (isTaxable(p) ? netAmt(amount, vatCfg.purchaseCostIncludesVat) : Number(amount) || 0);
+const buyVat = (amount, p) => (isTaxable(p) ? vatAmt(amount, vatCfg.purchaseCostIncludesVat) : 0);
+const expNet = amount => netAmt(amount, vatCfg.expenseIncludesVat);
+const expVat = amount => vatAmt(amount, vatCfg.expenseIncludesVat);
+
+async function loadVatCfg() {
+  const { data } = await sb.from("settings").select("value").eq("key", "vat").maybeSingle();
+  if (data?.value) vatCfg = { ...vatCfg, ...data.value };
+  return vatCfg;
+}
 const userName = id => (USERS.find(u => u.id === id) || {}).name || "?";
 const userRole = id => (USERS.find(u => u.id === id) || {}).role || "";
 
@@ -131,6 +163,7 @@ async function enterApp(userId) {
   document.getElementById("app").classList.remove("hidden");
   document.getElementById("login-pw").value = "";
   renderUserBox();
+  await loadVatCfg(); // 이익 계산 기준이므로 화면을 그리기 전에 불러와야 함
   if (!location.hash || location.hash === "#/") location.hash = "#/dashboard";
   await route();
   // 이미 알림 권한이 있으면 이 기기 구독을 현재 사용자로 갱신
@@ -256,6 +289,7 @@ const routes = {
   purchases: { title: "매입 입력·조회", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
   profit: { title: "공헌이익", render: viewProfit },
+  vat: { title: "부가세", render: viewVat },
   report: { title: "월별 리포트", render: viewReport },
   cash: { title: "자금일보", render: viewCash },
   tasks: { title: "업무 지시", render: viewTasks },
@@ -744,13 +778,16 @@ function productTable() {
   }
   if (!list.length) return `<div class="table-wrap"><table><tbody><tr><td class="empty">제품이 없습니다</td></tr></tbody></table></div>`;
   return `<div class="table-wrap"><table>
-    <thead><tr><th>제품코드</th><th>제품명</th><th>구분</th><th>분류</th>
-      <th class="num">원가</th><th class="num">판매가</th><th class="num">마진</th><th class="num">마진율</th>
+    <thead><tr><th>제품코드</th><th>제품명</th><th>구분</th><th>부가세</th><th>분류</th>
+      <th class="num">원가</th><th class="num">판매가</th><th class="num">마진<br><small>부가세 제외</small></th><th class="num">마진율</th>
       <th class="num">MSRP</th><th class="num">박스입수</th><th>메모</th><th>최종수정</th><th></th></tr></thead>
     <tbody>${list.map(p => {
       const cost = Number(p.cost_price) || 0, price = Number(p.price) || 0;
-      const margin = cost && price ? price - cost : null;
-      const rate = margin !== null && price ? Math.round((margin / price) * 100) : null;
+      const taxable = isTaxable(p);
+      const nPrice = taxable ? netAmt(price, vatCfg.salePriceIncludesVat) : price;
+      const nCost = taxable ? netAmt(cost, vatCfg.purchaseCostIncludesVat) : cost;
+      const margin = cost && price ? nPrice - nCost : null;
+      const rate = margin !== null && nPrice ? Math.round((margin / nPrice) * 100) : null;
       return `
       <tr>
         <td>${esc(p.code)}</td>
@@ -758,6 +795,7 @@ function productTable() {
         <td>${(p.trade_type || "사입") === "위탁"
           ? '<span class="chip waiting">위탁</span>'
           : '<span class="chip mine">사입</span>'}</td>
+        <td>${taxable ? '<span style="color:var(--text-sub)">과세</span>' : '<span class="chip waiting">면세</span>'}</td>
         <td>${esc(p.category)}</td>
         <td class="num">${cost ? "₩" + fmt(cost) : '<span style="color:var(--text-sub)">—</span>'}</td>
         <td class="num">₩${fmt(price)}</td>
@@ -796,6 +834,11 @@ function openProductModal(id) {
             </select></div>
           <div class="field full"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60"></div>
           <div class="field"><label>분류</label><input id="p-cat" value="${esc(p?.category || "")}" placeholder="예) 건강식품" maxlength="30"></div>
+          <div class="field"><label>부가세</label>
+            <select id="p-tax">
+              <option value="과세" ${(p?.tax_type || "과세") === "과세" ? "selected" : ""}>과세 (대부분의 공산품)</option>
+              <option value="면세" ${p?.tax_type === "면세" ? "selected" : ""}>면세 (미가공 식품·도서 등)</option>
+            </select></div>
           <div class="field"><label>규격</label><input id="p-spec" value="${esc(p?.spec || "")}" placeholder="예) 30g x 10입" maxlength="40"></div>
           <div class="field"><label>단위</label><input id="p-unit" value="${esc(p?.unit || "")}" placeholder="BOX / EA / 병" maxlength="10"></div>
           <div class="field"><label>원가(원) — 매입 단가</label>
@@ -824,8 +867,13 @@ function calcMarginHint() {
   const cost = Number(document.getElementById("p-cost")?.value) || 0;
   const price = Number(document.getElementById("p-price")?.value) || 0;
   if (!cost || !price) { el.textContent = "원가와 판매가를 넣으면 마진이 자동 계산됩니다."; return; }
-  const m = price - cost, rate = Math.round((m / price) * 100);
+  const taxable = (document.getElementById("p-tax")?.value || "과세") === "과세";
+  // 부가세를 뺀 금액끼리 비교해야 실제 마진
+  const netPrice = taxable ? netAmt(price, vatCfg.salePriceIncludesVat) : price;
+  const netCost = taxable ? netAmt(cost, vatCfg.purchaseCostIncludesVat) : cost;
+  const m = netPrice - netCost, rate = netPrice ? Math.round((m / netPrice) * 100) : 0;
   el.innerHTML = `개당 마진 <b>₩${fmt(m)}</b> · 마진율 <b style="color:${rate < 20 ? "#d9480f" : "var(--brand)"}">${rate}%</b>`
+    + (vatCfg.enabled && taxable ? ` <span style="color:var(--text-sub)">(부가세 제외: 판매 ₩${fmt(netPrice)} − 원가 ₩${fmt(netCost)})</span>` : "")
     + (rate < 20 ? " ⚠️ 마진율이 낮습니다" : "");
 }
 
@@ -839,6 +887,7 @@ async function saveProduct(id) {
   const data = {
     code, name,
     trade_type: document.getElementById("p-type").value,
+    tax_type: document.getElementById("p-tax").value,
     category: document.getElementById("p-cat").value.trim(),
     spec: document.getElementById("p-spec").value.trim(),
     unit: document.getElementById("p-unit").value.trim(),
@@ -891,12 +940,16 @@ async function deleteProduct(id) {
 }
 
 function exportProductsCSV() {
-  const head = ["제품코드", "제품명", "구분", "분류", "규격", "단위", "원가", "판매가", "마진", "마진율(%)", "MSRP", "박스입수", "메모", "최종수정일", "수정자"];
+  const head = ["제품코드", "제품명", "구분", "부가세", "분류", "규격", "단위", "원가", "판매가",
+    "마진(부가세제외)", "마진율(%)", "MSRP", "박스입수", "메모", "최종수정일", "수정자"];
   const rows = prodCache.map(p => {
     const cost = Number(p.cost_price) || 0, price = Number(p.price) || 0;
-    const margin = cost && price ? price - cost : "";
-    const rate = margin !== "" && price ? Math.round((margin / price) * 100) : "";
-    return [p.code, p.name, p.trade_type || "사입", p.category, p.spec, p.unit,
+    const taxable = isTaxable(p);
+    const nPrice = taxable ? netAmt(price, vatCfg.salePriceIncludesVat) : price;
+    const nCost = taxable ? netAmt(cost, vatCfg.purchaseCostIncludesVat) : cost;
+    const margin = cost && price ? nPrice - nCost : "";
+    const rate = margin !== "" && nPrice ? Math.round((margin / nPrice) * 100) : "";
+    return [p.code, p.name, p.trade_type || "사입", p.tax_type || "과세", p.category, p.spec, p.unit,
       p.cost_price ?? "", price, margin, rate, p.msrp ?? "", p.box_qty ?? "",
       p.memo, p.updated_at, p.updated_by || ""];
   });
@@ -1886,17 +1939,23 @@ function shipChargedRows(rows) {
 }
 
 function cmOfSale(r, shipCharged) {
-  const revenue = Number(r.amount) || 0;
+  const gross = Number(r.amount) || 0;              // 고객이 낸 돈 (부가세 포함)
   const qty = Number(r.qty) || 0;
-  // 판매 시점 원가 스냅샷 우선, 없으면 현재 제품 마스터 원가
   const p = erpProducts.find(x => x.id === r.product_id);
+  // 이익은 전부 공급가액(부가세 뺀 금액) 기준 — 부가세는 우리 돈이 아니라 나중에 내야 할 돈
+  const revenue = saleNet(gross, p);
+  const outVat = saleVat(gross, p);
+  // 판매 시점 원가 스냅샷 우선, 없으면 현재 제품 마스터 원가
   const unitCost = Number(r.unit_cost ?? p?.cost_price) || 0;
-  const cost = unitCost * qty;
+  const cost = buyNet(unitCost * qty, p);
   const st = channelSetting(r.channel);
-  const fee = Math.round(revenue * st.fee / 100);
-  const ship = (!shipCharged || shipCharged.has(r)) ? st.ship : 0;
+  const feeGross = Math.round(gross * st.fee / 100);
+  const shipGross = (!shipCharged || shipCharged.has(r)) ? st.ship : 0;
+  const fee = expNet(feeGross), ship = expNet(shipGross);
   return {
-    revenue, qty, cost, fee, ship,
+    // 고객이 실제로 낸 돈 = 공급가액 + 부가세 (판매가를 부가세 별도로 적는 경우도 맞음)
+    gross: revenue + outVat, revenue, outVat, qty, cost, fee, ship,
+    inVat: buyVat(unitCost * qty, p) + expVat(feeGross) + expVat(shipGross),
     cm: revenue - cost - fee - ship,
     noCost: !unitCost,
     noChannel: !!r.channel && !erpChannelList.some(c => c.name === r.channel),
@@ -1907,12 +1966,13 @@ function sumCM(rows) {
   const shipCharged = shipChargedRows(rows);
   return rows.reduce((s, r) => {
     const c = cmOfSale(r, shipCharged);
-    s.revenue += c.revenue; s.qty += c.qty; s.cost += c.cost;
+    s.gross += c.gross; s.revenue += c.revenue; s.outVat += c.outVat; s.inVat += c.inVat;
+    s.qty += c.qty; s.cost += c.cost;
     s.fee += c.fee; s.ship += c.ship; s.cm += c.cm;
     if (c.noCost) { s.noCostRows++; s.noCostRevenue += c.revenue; }
     if (c.noChannel) s.unknownChannels.add(r.channel);
     return s;
-  }, { revenue: 0, qty: 0, cost: 0, fee: 0, ship: 0, cm: 0,
+  }, { gross: 0, revenue: 0, outVat: 0, inVat: 0, qty: 0, cost: 0, fee: 0, ship: 0, cm: 0,
        noCostRows: 0, noCostRevenue: 0, unknownChannels: new Set() });
 }
 
@@ -1931,7 +1991,9 @@ async function viewProfit() {
   const td = today();
   const rows = sales.filter(r => monthOf(r) === erpMonth && (r.date || "") <= td);
   const monthAds = ads.filter(a => String(a.date).slice(0, 7) === erpMonth && String(a.date) <= td);
-  const adTotal = monthAds.reduce((s, a) => s + Number(a.amount), 0);
+  const adGross = monthAds.reduce((s, a) => s + Number(a.amount), 0);
+  const adTotal = expNet(adGross);                    // 광고비도 공급가액 기준으로
+  const adVat = adGross - adTotal;
   const fixTotal = fixed.reduce((s, f) => s + Number(f.amount), 0);
 
   const t = sumCM(rows);
@@ -1953,7 +2015,7 @@ async function viewProfit() {
   monthAds.forEach(a => {
     const d = String(a.date);
     if (!dayMap[d]) dayMap[d] = { revenue: 0, cm: 0 };
-    dayMap[d].cm -= Number(a.amount);
+    dayMap[d].cm -= expNet(a.amount);
   });
   const days = Object.keys(dayMap).sort();
   let acc = 0;
@@ -2025,8 +2087,10 @@ async function viewProfit() {
         </div>
       </div>
       <div class="grid-stats">
-        <div class="stat"><div class="stat-label">매출</div>
-          <div class="stat-value">₩${fmt(t.revenue)}</div></div>
+        <div class="stat"><div class="stat-label">매출 (부가세 제외)</div>
+          <div class="stat-value">₩${fmt(t.revenue)}</div>
+          ${vatCfg.enabled && t.outVat ? `<div style="font-size:12px;color:var(--text-sub);margin-top:2px">
+            고객이 낸 돈 ₩${fmt(t.gross)} − 부가세 ₩${fmt(t.outVat)}</div>` : ""}</div>
         <div class="stat"><div class="stat-label">변동비 합계</div>
           <div class="stat-value amber">₩${fmt(t.cost + t.fee + t.ship + adTotal)}</div></div>
         <div class="stat"><div class="stat-label">공헌이익</div>
@@ -2034,6 +2098,12 @@ async function viewProfit() {
         <div class="stat"><div class="stat-label">공헌이익률</div>
           <div class="stat-value ${cmRate >= 30 ? "blue" : "amber"}">${cmRate.toFixed(1)}%</div></div>
       </div>
+      ${vatCfg.enabled ? `<p style="font-size:12.5px;color:var(--text-sub);margin-top:10px">
+        🧾 모든 금액은 <b>부가세를 뺀 공급가액</b> 기준입니다. 고객이 낸 부가세는 우리 이익이 아니라
+        <a onclick="location.hash='#/vat'" style="color:var(--brand);cursor:pointer">나중에 내야 할 돈</a>이라 이익에서 제외합니다.
+        (${vatCfg.salePriceIncludesVat ? "판매가=부가세 포함" : "판매가=부가세 별도"} ·
+         ${vatCfg.purchaseCostIncludesVat ? "매입원가=부가세 포함" : "매입원가=부가세 별도"} —
+        <a onclick="location.hash='#/settings'" style="color:var(--brand);cursor:pointer">설정 변경</a>)</p>` : ""}
       ${t.noCostRows ? `<div style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:12px;margin-top:12px;font-size:13px">
         <b style="color:#d9480f">⚠️ 위 공헌이익은 실제보다 부풀려져 있습니다</b><br>
         원가가 등록되지 않은 매출이 <b>${t.noCostRows}줄 (₩${fmt(t.noCostRevenue)})</b> 있습니다.
@@ -2167,6 +2237,126 @@ async function viewProfit() {
 }
 
 let profitAdsCache = [], profitFixedCache = [];
+
+/* ---------- 부가세 ---------- */
+// 부가세 신고는 분기 단위. 1기 예정(1~3월)·확정(4~6월), 2기 예정(7~9월)·확정(10~12월)
+const VAT_PERIODS = [
+  { key: "1", label: "1~3월", months: ["01", "02", "03"], due: "4월 25일" },
+  { key: "2", label: "4~6월", months: ["04", "05", "06"], due: "7월 25일" },
+  { key: "3", label: "7~9월", months: ["07", "08", "09"], due: "10월 25일" },
+  { key: "4", label: "10~12월", months: ["10", "11", "12"], due: "1월 25일" },
+];
+function vatPeriodOf(dateStr) {
+  const m = String(dateStr).slice(5, 7);
+  return VAT_PERIODS.find(p => p.months.includes(m));
+}
+
+async function viewVat() {
+  const { sales, buys, costs } = await loadErpBase();
+  const [adRes] = await Promise.all([sb.from("ad_costs").select("*")]);
+  const ads = adRes.data || [];
+  const td = today();
+  const year = erpMonth.slice(0, 4);
+
+  const calc = period => {
+    const inRange = d => String(d).slice(0, 4) === year && period.months.includes(String(d).slice(5, 7)) && String(d) <= td;
+    const s = sales.filter(r => inRange(r.date));
+    const b = buys.filter(r => inRange(r.date));
+    const c = costs.filter(r => inRange(r.date));
+    const a = ads.filter(r => inRange(r.date));
+    // 매출세액 = 고객에게 받은 부가세
+    const outVat = s.reduce((sum, r) => sum + saleVat(r.amount, erpProducts.find(p => p.id === r.product_id)), 0);
+    const saleNetSum = s.reduce((sum, r) => sum + saleNet(r.amount, erpProducts.find(p => p.id === r.product_id)), 0);
+    // 매입세액 = 우리가 낸 부가세 (돌려받음)
+    const buyVatSum = b.reduce((sum, r) => sum + buyVat(r.amount, erpProducts.find(p => p.id === r.product_id)), 0);
+    const buyNetSum = b.reduce((sum, r) => sum + buyNet(r.amount, erpProducts.find(p => p.id === r.product_id)), 0);
+    const costVat = c.reduce((sum, r) => sum + expVat(r.amount), 0);
+    const adVat = a.reduce((sum, r) => sum + expVat(r.amount), 0);
+    const inVat = buyVatSum + costVat + adVat;
+    return { period, outVat, inVat, pay: outVat - inVat, saleNetSum, buyNetSum,
+             costVat, adVat, buyVatSum, saleCnt: s.length, buyCnt: b.length };
+  };
+  const periods = VAT_PERIODS.map(calc);
+  const nowP = vatPeriodOf(td);
+  const cur = periods.find(p => p.period.key === nowP.key);
+  const yearPay = periods.reduce((s, p) => s + p.pay, 0);
+
+  return `
+    <div class="card">
+      <div class="card-head"><h2>${year}년 부가세</h2>${monthPicker()}</div>
+      ${!vatCfg.enabled ? `<p style="color:var(--text-sub)">부가세 계산이 꺼져 있습니다. 설정에서 켜 주세요.</p>` : `
+      <div class="grid-stats">
+        <div class="stat"><div class="stat-label">이번 분기 (${cur.period.label}) 낼 세금</div>
+          <div class="stat-value ${cur.pay >= 0 ? "red" : "green"}">₩${fmt(Math.abs(cur.pay))}</div>
+          <div style="font-size:12px;color:var(--text-sub);margin-top:2px">
+            ${cur.pay >= 0 ? `${cur.period.due}까지 납부` : "환급 예상"}</div></div>
+        <div class="stat"><div class="stat-label">받은 부가세 (매출세액)</div>
+          <div class="stat-value">₩${fmt(cur.outVat)}</div></div>
+        <div class="stat"><div class="stat-label">낸 부가세 (매입세액)</div>
+          <div class="stat-value">₩${fmt(cur.inVat)}</div></div>
+        <div class="stat"><div class="stat-label">${year}년 전체 예상</div>
+          <div class="stat-value">₩${fmt(yearPay)}</div></div>
+      </div>
+      <div style="background:var(--brand-light);border-radius:9px;padding:14px;margin-top:14px;font-size:13.5px;line-height:1.7">
+        <b>부가세는 우리 돈이 아닙니다.</b><br>
+        물건을 팔 때 고객에게서 <b>부가세를 대신 받아 두었다가</b>, 분기마다 나라에 냅니다.
+        대신 우리가 물건을 사면서 낸 부가세는 빼 줍니다.<br><br>
+        <b>낼 세금 = 받은 부가세 − 낸 부가세</b><br>
+        이번 분기 = ₩${fmt(cur.outVat)} − ₩${fmt(cur.inVat)} = <b style="color:${cur.pay >= 0 ? "var(--red)" : "var(--green)"}">₩${fmt(cur.pay)}</b>
+        ${cur.pay < 0 ? " (마이너스면 돌려받습니다)" : ""}
+      </div>`}
+    </div>
+
+    <div class="card">
+      <h2>분기별 내역</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>분기</th><th class="num">매출 (부가세 제외)</th><th class="num">받은 부가세</th>
+          <th class="num">매입 (부가세 제외)</th><th class="num">낸 부가세</th><th class="num">낼 세금</th><th>납부기한</th></tr></thead>
+        <tbody>${periods.map(p => `
+          <tr ${p.period.key === nowP.key ? 'style="background:var(--brand-light)"' : ""}>
+            <td><b>${p.period.label}</b>${p.period.key === nowP.key ? ' <span class="chip mine">진행 중</span>' : ""}</td>
+            <td class="num">₩${fmt(p.saleNetSum)}</td>
+            <td class="num">₩${fmt(p.outVat)}</td>
+            <td class="num">₩${fmt(p.buyNetSum)}</td>
+            <td class="num">₩${fmt(p.inVat)}</td>
+            <td class="num"><b style="color:${p.pay >= 0 ? "var(--red)" : "var(--green)"}">₩${fmt(p.pay)}</b></td>
+            <td>${p.period.due}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>
+      <p style="font-size:12px;color:var(--text-sub);margin-top:10px">
+        ※ 낸 부가세에는 상품 매입뿐 아니라 택배비·운송비·광고비의 부가세도 포함됩니다.<br>
+        ※ 실제 신고는 세무대리인을 통해 하시고, 이 화면은 <b>미리 준비하고 자금을 확보하기 위한 참고용</b>입니다.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>💰 세금 낼 돈 미리 챙겨두기</h2>
+      <p style="font-size:13.5px;color:var(--text-sub);margin-bottom:12px">
+        부가세는 통장에 있는 돈처럼 보이지만 <b>나중에 나갈 돈</b>입니다.
+        미리 '나갈 돈'으로 등록해 두면 자금 예측에 반영되어, 납부일에 당황하지 않습니다.</p>
+      ${cur.pay > 0 ? `
+        <button class="btn" onclick="registerVatPlan(${cur.pay}, '${cur.period.label}', '${cur.period.due}')">
+          ${cur.period.label} 부가세 ₩${fmt(cur.pay)}을(를) 나갈 돈으로 등록</button>
+        <p style="font-size:12px;color:var(--text-sub);margin-top:8px">
+          ※ 분기가 끝나기 전이라 금액은 계속 늘어납니다. 분기 마감 후 다시 등록하면 정확합니다.</p>
+      ` : `<p style="color:var(--text-sub);font-size:13px">이번 분기는 낼 세금이 없습니다 (환급 또는 0원).</p>`}
+    </div>`;
+}
+
+async function registerVatPlan(amount, label, due) {
+  const y = Number(today().slice(0, 4));
+  const mm = { "4월 25일": "04", "7월 25일": "07", "10월 25일": "10", "1월 25일": "01" }[due];
+  const yy = mm === "01" ? y + 1 : y;
+  const date = `${yy}-${mm}-25`;
+  if (!confirm(`${label} 부가세 ₩${fmt(amount)}을(를)\n${date} 나갈 돈으로 등록할까요?`)) return;
+  const { error } = await sb.from("cash_plans").insert({
+    date, kind: "출금", title: `부가세 납부 (${label})`, amount, repeat: "없음", created_by: me.name,
+  });
+  if (error) return toast("등록에 실패했습니다");
+  toast("자금일보의 '나갈 돈'에 등록되었습니다");
+  location.hash = "#/cash";
+}
 
 function openAdModal() {
   const chOpts = erpChannels.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
@@ -3092,6 +3282,41 @@ async function viewSettings() {
     </div>
 
     <div class="card">
+      <h2>🧾 부가세 기준</h2>
+      <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
+        입력하는 금액에 부가세가 <b>들어 있는지</b>를 정해 둡니다. 이 설정에 따라 이익 계산이 달라지므로,
+        실제 입력 방식과 맞는지 꼭 확인해 주세요.</p>
+      <div class="form-grid">
+        <div class="field"><label>부가세 계산</label>
+          <select id="vat-enabled">
+            <option value="1" ${vatCfg.enabled ? "selected" : ""}>사용 (일반과세자)</option>
+            <option value="0" ${!vatCfg.enabled ? "selected" : ""}>사용 안 함 (간이과세자·면세사업자)</option>
+          </select></div>
+        <div class="field"><label>제품 마스터의 <b>판매가</b></label>
+          <select id="vat-sale">
+            <option value="1" ${vatCfg.salePriceIncludesVat ? "selected" : ""}>부가세 포함 (쿠팡·스마트스토어 판매가)</option>
+            <option value="0" ${!vatCfg.salePriceIncludesVat ? "selected" : ""}>부가세 별도</option>
+          </select></div>
+        <div class="field"><label>제품 마스터의 <b>원가</b> · 매입 단가</label>
+          <select id="vat-buy">
+            <option value="0" ${!vatCfg.purchaseCostIncludesVat ? "selected" : ""}>부가세 별도 (세금계산서 공급가액)</option>
+            <option value="1" ${vatCfg.purchaseCostIncludesVat ? "selected" : ""}>부가세 포함</option>
+          </select></div>
+        <div class="field"><label>수수료 · 배송비 · 광고비</label>
+          <select id="vat-exp">
+            <option value="1" ${vatCfg.expenseIncludesVat ? "selected" : ""}>부가세 포함 (청구된 금액 그대로)</option>
+            <option value="0" ${!vatCfg.expenseIncludesVat ? "selected" : ""}>부가세 별도</option>
+          </select></div>
+      </div>
+      <div style="background:var(--brand-light);border-radius:9px;padding:12px;margin-top:12px;font-size:13px;line-height:1.7">
+        <b>예시</b> — 판매가 11,900원(부가세 포함), 원가 5,500원(부가세 별도)일 때<br>
+        · 실제 매출(공급가액) = 11,900 ÷ 1.1 = <b>10,818원</b> · 부가세 1,082원은 나중에 납부<br>
+        · 이익 = 10,818 − 5,500 = <b>5,318원</b> (부가세를 안 빼면 6,400원으로 <b style="color:#d9480f">1,082원 부풀려짐</b>)
+      </div>
+      <div class="modal-actions"><button class="btn" id="btn-vat-save" onclick="saveVatCfg()">저장</button></div>
+    </div>
+
+    <div class="card">
       <h2>데이터 저장 방식</h2>
       <p style="color:var(--text-sub);font-size:13.5px">
         모든 데이터는 <b>Supabase 클라우드 데이터베이스</b>에 저장되며, 전 직원이 같은 데이터를 공유합니다.
@@ -3124,7 +3349,25 @@ async function viewSettings() {
     </div>`;
 }
 
-const BACKUP_TABLES = ["documents", "products", "sales", "purchases", "purchase_costs",
+async function saveVatCfg() {
+  const btn = document.getElementById("btn-vat-save");
+  if (btn) btn.disabled = true;
+  const value = {
+    enabled: document.getElementById("vat-enabled").value === "1",
+    salePriceIncludesVat: document.getElementById("vat-sale").value === "1",
+    purchaseCostIncludesVat: document.getElementById("vat-buy").value === "1",
+    expenseIncludesVat: document.getElementById("vat-exp").value === "1",
+  };
+  const { data, error } = await sb.from("settings")
+    .upsert({ key: "vat", value, updated_at: new Date().toISOString(), updated_by: me.name },
+            { onConflict: "key" }).select("key");
+  if (error || !data?.length) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
+  vatCfg = { ...vatCfg, ...value };
+  toast("부가세 기준이 저장되었습니다 — 이익 계산에 바로 반영됩니다");
+  route();
+}
+
+const BACKUP_TABLES = ["documents", "products", "sales", "purchases", "purchase_costs", "settings",
   "sales_channels", "stock_transfers", "cash_accounts", "cash_txns", "cash_plans",
   "ad_costs", "fixed_costs", "tasks", "ai_reports", "profiles"];
 
