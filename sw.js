@@ -21,7 +21,8 @@ self.addEventListener("push", event => {
 
 self.addEventListener("notificationclick", event => {
   event.notification.close();
-  const url = new URL(event.notification.data?.url || "./", self.location.href).href;
+  // scope(앱 루트) 기준으로 주소 계산 — sw.js 기준으로 하면 코드 파일이 열림
+  const url = new URL(event.notification.data?.url || "./", self.registration.scope).href;
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(list => {
       for (const c of list) {
