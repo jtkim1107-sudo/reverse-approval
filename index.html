@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>리버스 전자결재</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📋</text></svg>">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- 로그인 화면 -->
+<div id="login-screen" class="login-screen hidden">
+  <div class="login-box">
+    <div class="login-logo">RE:VERSE</div>
+    <h1>주식회사 리버스 전자결재</h1>
+    <p class="login-desc">테스트용 데모입니다. 사용자를 선택해 로그인하세요.</p>
+    <div id="login-users" class="login-users"></div>
+    <p class="login-note">※ 테스트 단계에서는 데이터가 이 브라우저에만 저장됩니다.<br>설정 메뉴에서 JSON으로 내보내기/가져오기로 공유할 수 있습니다.</p>
+  </div>
+</div>
+
+<!-- 메인 레이아웃 -->
+<div id="app" class="app hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <span class="logo-mark">RE:VERSE</span>
+      <span class="logo-sub">전자결재</span>
+    </div>
+    <nav class="nav" id="nav">
+      <a href="#/dashboard" data-route="dashboard" class="nav-item"><span class="nav-ico">🏠</span>대시보드</a>
+      <a href="#/new" data-route="new" class="nav-item"><span class="nav-ico">✏️</span>지출결의서 작성</a>
+      <a href="#/inbox" data-route="inbox" class="nav-item"><span class="nav-ico">📥</span>결재 대기함 <span id="badge-inbox" class="badge hidden">0</span></a>
+      <a href="#/drafts" data-route="drafts" class="nav-item"><span class="nav-ico">📤</span>내 기안함</a>
+      <a href="#/docs" data-route="docs" class="nav-item"><span class="nav-ico">📚</span>전체 문서함</a>
+      <a href="#/products" data-route="products" class="nav-item"><span class="nav-ico">📦</span>제품 마스터</a>
+      <a href="#/settings" data-route="settings" class="nav-item"><span class="nav-ico">⚙️</span>설정 · 데이터</a>
+    </nav>
+    <div class="sidebar-user">
+      <div class="avatar" id="user-avatar">?</div>
+      <div class="user-info">
+        <div class="user-name" id="user-name">-</div>
+        <div class="user-role" id="user-role">-</div>
+      </div>
+      <button class="btn-ghost" id="btn-logout" title="로그아웃">↩</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="btn-ghost menu-toggle" id="menu-toggle">☰</button>
+      <div class="topbar-title" id="page-title">대시보드</div>
+      <div class="topbar-user" id="topbar-user"></div>
+    </header>
+    <main class="content" id="content"></main>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
