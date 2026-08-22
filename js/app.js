@@ -655,6 +655,7 @@ async function decide(docId, approve) {
 
 /* ---------- 화면: 제품 마스터 ---------- */
 let prodFilter = "";
+let prodTypeFilter = "";
 let prodCache = [];
 async function viewProducts() {
   const { data, error } = await sb.from("products").select("*").order("code");
@@ -671,12 +672,18 @@ async function viewProducts() {
       <div class="searchbar" style="margin-bottom:14px">
         <input placeholder="제품명, 코드, 분류 검색" value="${esc(prodFilter)}"
           oninput="prodFilter=this.value;refreshProductTable()">
+        <select onchange="prodTypeFilter=this.value;refreshProductTable()">
+          <option value="">전체 (사입+위탁)</option>
+          <option value="사입" ${prodTypeFilter === "사입" ? "selected" : ""}>사입만</option>
+          <option value="위탁" ${prodTypeFilter === "위탁" ? "selected" : ""}>위탁만</option>
+        </select>
       </div>
       <div id="product-table">${productTable()}</div>
     </div>`;
 }
 function productTable() {
   let list = prodCache;
+  if (prodTypeFilter) list = list.filter(p => (p.trade_type || "사입") === prodTypeFilter);
   if (prodFilter) {
     const q = prodFilter.toLowerCase();
     list = list.filter(p =>
@@ -685,11 +692,14 @@ function productTable() {
   }
   if (!list.length) return `<div class="table-wrap"><table><tbody><tr><td class="empty">제품이 없습니다</td></tr></tbody></table></div>`;
   return `<div class="table-wrap"><table>
-    <thead><tr><th>제품코드</th><th>제품명</th><th>분류</th><th>규격</th><th>단위</th><th class="num">단가</th><th>메모</th><th>최종수정</th><th></th></tr></thead>
+    <thead><tr><th>제품코드</th><th>제품명</th><th>구분</th><th>분류</th><th>규격</th><th>단위</th><th class="num">단가</th><th>메모</th><th>최종수정</th><th></th></tr></thead>
     <tbody>${list.map(p => `
       <tr>
         <td>${esc(p.code)}</td>
         <td><b>${esc(p.name)}</b></td>
+        <td>${(p.trade_type || "사입") === "위탁"
+          ? '<span class="chip waiting">위탁</span>'
+          : '<span class="chip mine">사입</span>'}</td>
         <td>${esc(p.category)}</td>
         <td>${esc(p.spec)}</td>
         <td>${esc(p.unit)}</td>
@@ -716,7 +726,12 @@ function openProductModal(id) {
         <h3>${p ? "제품 수정" : "제품 등록"}</h3>
         <div class="form-grid">
           <div class="field"><label>제품코드 *</label><input id="p-code" value="${esc(p?.code || "")}" placeholder="RV-000" maxlength="20"></div>
-          <div class="field"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60"></div>
+          <div class="field"><label>구분 *</label>
+            <select id="p-type">
+              <option value="사입" ${(p?.trade_type || "사입") === "사입" ? "selected" : ""}>사입 (직접 재고 보유)</option>
+              <option value="위탁" ${p?.trade_type === "위탁" ? "selected" : ""}>위탁 (공급처 직배송)</option>
+            </select></div>
+          <div class="field full"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60"></div>
           <div class="field"><label>분류</label><input id="p-cat" value="${esc(p?.category || "")}" placeholder="예) 건강식품" maxlength="30"></div>
           <div class="field"><label>규격</label><input id="p-spec" value="${esc(p?.spec || "")}" placeholder="예) 30g x 10입" maxlength="40"></div>
           <div class="field"><label>단위</label><input id="p-unit" value="${esc(p?.unit || "")}" placeholder="BOX / EA / 병" maxlength="10"></div>
@@ -739,6 +754,7 @@ async function saveProduct(id) {
 
   const data = {
     code, name,
+    trade_type: document.getElementById("p-type").value,
     category: document.getElementById("p-cat").value.trim(),
     spec: document.getElementById("p-spec").value.trim(),
     unit: document.getElementById("p-unit").value.trim(),
@@ -817,9 +833,16 @@ async function loadErpBase() {
   return { buys, sales };
 }
 
-function productOptions(sel) {
-  return `<option value="">품목 선택</option>` + erpProducts.map(p =>
-    `<option value="${p.id}" ${p.id === sel ? "selected" : ""}>${esc(p.name)} (재고 ${fmt(erpStock[p.id]?.stock || 0)})</option>`).join("");
+const tradeTypeOf = p => (p?.trade_type || "사입");
+const tradeTypeOfId = id => tradeTypeOf(erpProducts.find(p => p.id === id));
+
+function productOptions(sel, mode) {
+  // 매입은 사입 상품만 대상 (위탁은 우리가 사입하지 않음)
+  const list = mode === "buy" ? erpProducts.filter(p => tradeTypeOf(p) === "사입") : erpProducts;
+  return `<option value="">품목 선택</option>` + list.map(p => {
+    const tag = tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`;
+    return `<option value="${p.id}" ${p.id === sel ? "selected" : ""}>${esc(p.name)} (${tag})</option>`;
+  }).join("");
 }
 
 function erpSummaryCards(rows, label) {
@@ -937,7 +960,7 @@ async function saveSales() {
     if (!pid) return toast("품목을 선택해 주세요");
     if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
     const st = erpStock[pid]?.stock ?? 0;
-    if (qty > st) stockWarn = `'${prodName(pid)}' 재고(${fmt(st)})보다 많은 수량(${fmt(qty)})입니다.`;
+    if (tradeTypeOfId(pid) === "사입" && qty > st) stockWarn = `'${prodName(pid)}' 재고(${fmt(st)})보다 많은 수량(${fmt(qty)})입니다.`;
     recs.push({ date, channel, product_id: pid, qty, unit_price: price, amount: qty * price,
       memo: tr.querySelector(".sr-memo").value.trim(), created_by: me.name });
   }
@@ -1009,7 +1032,7 @@ function addBuyRow() {
   if (!tbody) return;
   const tr = document.createElement("tr");
   tr.innerHTML = `
-    <td><select class="br-prod" onchange="onBuyRowProduct(this)">${productOptions()}</select></td>
+    <td><select class="br-prod" onchange="onBuyRowProduct(this)">${productOptions("", "buy")}</select></td>
     <td><input class="br-qty" type="number" min="1" value="1" oninput="calcBuysTotal()"></td>
     <td><input class="br-cost" type="number" min="0" placeholder="0" oninput="calcBuysTotal()"></td>
     <td class="num br-amt" style="font-weight:700">₩0</td>
@@ -1073,7 +1096,7 @@ function openErpEditModal(table, id) {
           <div class="field"><label>${isSale ? "판매일" : "매입일"}</label><input id="e-date" type="date" value="${esc(r.date)}"></div>
           <div class="field"><label>${isSale ? "채널" : "거래처"}</label>
             <input id="e-party" list="${isSale ? "channel-list" : "supplier-list"}" value="${esc(isSale ? r.channel : r.supplier)}"></div>
-          <div class="field full"><label>품목</label><select id="e-prod">${productOptions(r.product_id)}</select></div>
+          <div class="field full"><label>품목</label><select id="e-prod">${productOptions(r.product_id, isSale ? "" : "buy")}</select></div>
           <div class="field"><label>수량</label><input id="e-qty" type="number" min="1" value="${r.qty}"></div>
           <div class="field"><label>단가(원)</label><input id="e-price" type="number" min="0" value="${isSale ? r.unit_price : r.unit_cost}"></div>
           <div class="field full"><label>적요</label><input id="e-memo" value="${esc(r.memo)}" maxlength="100"></div>
@@ -1133,7 +1156,10 @@ function exportErpCSV(table) {
 async function viewInventory() {
   const { buys, sales } = await loadErpBase();
 
-  const inv = erpProducts.map(p => {
+  // 재고 관리는 사입 상품만 (위탁은 공급처 재고)
+  const stockProducts = erpProducts.filter(p => tradeTypeOf(p) === "사입");
+  const consignCount = erpProducts.length - stockProducts.length;
+  const inv = stockProducts.map(p => {
     const bought = buys.filter(b => b.product_id === p.id).reduce((s, b) => s + Number(b.qty), 0);
     const sold = sales.filter(x => x.product_id === p.id).reduce((s, x) => s + Number(x.qty), 0);
     const st = erpStock[p.id] || { stock: 0, lastCost: 0 };
@@ -1145,8 +1171,10 @@ async function viewInventory() {
     <div class="grid-stats">
       <div class="stat"><div class="stat-label">재고 평가액 (최근 매입가 기준)</div>
         <div class="stat-value blue">₩${fmt(totalValue)}</div></div>
-      <div class="stat"><div class="stat-label">등록 제품</div>
-        <div class="stat-value">${erpProducts.length}종</div></div>
+      <div class="stat"><div class="stat-label">사입 제품</div>
+        <div class="stat-value">${stockProducts.length}종</div></div>
+      <div class="stat" onclick="location.hash='#/products'"><div class="stat-label">위탁 제품 (재고 관리 제외)</div>
+        <div class="stat-value amber">${consignCount}종</div></div>
     </div>
     <div class="card">
       <div class="card-head"><h2>제품별 재고</h2>
@@ -1165,7 +1193,8 @@ async function viewInventory() {
         </tbody>
       </table></div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ 재고 = 매입 수량 − 판매 수량. 재고가 음수면 매입 입력이 누락된 것입니다.
+        ※ 재고 = 매입 수량 − 판매 수량. 재고가 음수면 매입 입력이 누락된 것입니다.<br>
+        ※ 위탁 상품은 공급처가 재고·배송을 관리하므로 이 화면에 표시되지 않습니다.
       </p>
     </div>`;
 }
@@ -1204,7 +1233,19 @@ async function viewReport() {
   const topProducts = Object.entries(byProduct)
     .sort((a, b) => b[1].amount - a[1].amount).slice(0, 5);
 
+  // 이번 달 사입/위탁 매출 분리
+  const saipSales = monthSales.filter(r => tradeTypeOfId(r.product_id) === "사입")
+    .reduce((s, r) => s + Number(r.amount), 0);
+  const witakSales = monthSales.filter(r => tradeTypeOfId(r.product_id) === "위탁")
+    .reduce((s, r) => s + Number(r.amount), 0);
+
   return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">${nowMonth} 사입 매출</div>
+        <div class="stat-value blue">₩${fmt(saipSales)}</div></div>
+      <div class="stat"><div class="stat-label">${nowMonth} 위탁 매출</div>
+        <div class="stat-value amber">₩${fmt(witakSales)}</div></div>
+    </div>
     <div class="card">
       <h2>최근 6개월 매출 · 매입</h2>
       <div class="table-wrap"><table>
