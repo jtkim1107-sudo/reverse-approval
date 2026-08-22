@@ -214,6 +214,14 @@ async function updateBadge() {
   const b = document.getElementById("badge-inbox");
   b.textContent = n;
   b.classList.toggle("hidden", n === 0);
+  // 내가 받은 미완료 업무 지시 수
+  const { count } = await sb.from("tasks").select("id", { count: "exact", head: true })
+    .eq("assignee_id", me.id).eq("status", "open");
+  const tb = document.getElementById("badge-tasks");
+  if (tb) {
+    tb.textContent = count || 0;
+    tb.classList.toggle("hidden", !count);
+  }
 }
 
 /* ---------- 라우터 ---------- */
@@ -229,6 +237,7 @@ const routes = {
   inventory: { title: "재고 현황", render: viewInventory },
   report: { title: "월별 리포트", render: viewReport },
   cash: { title: "자금일보", render: viewCash },
+  tasks: { title: "업무 지시", render: viewTasks },
   settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
 };
@@ -256,12 +265,14 @@ async function route() {
 
 /* ---------- 화면: 대시보드 ---------- */
 async function viewDashboard() {
-  const [docs, prodRes, saleRes, buyRes] = await Promise.all([
+  const [docs, prodRes, saleRes, buyRes, taskRes] = await Promise.all([
     fetchDocs(),
     sb.from("products").select("*").order("updated_at", { ascending: false }).limit(5),
     sb.from("sales").select("amount,date"),
     sb.from("purchases").select("amount,date"),
+    sb.from("tasks").select("assignee_id,status"),
   ]);
+  const myTasks = (taskRes.data || []).filter(t => t.assignee_id === me.id && t.status === "open").length;
   const products = prodRes.data || [];
   const nowMonth = today().slice(0, 7);
   const monthSales = (saleRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
@@ -282,6 +293,10 @@ async function viewDashboard() {
       <div class="stat" onclick="location.hash='#/inbox'">
         <div class="stat-label">내 결재 대기</div>
         <div class="stat-value red">${inbox}건</div>
+      </div>
+      <div class="stat" onclick="location.hash='#/tasks'">
+        <div class="stat-label">내가 받은 업무</div>
+        <div class="stat-value ${myTasks ? "red" : "green"}">${myTasks}건</div>
       </div>
       <div class="stat" onclick="location.hash='#/drafts'">
         <div class="stat-label">내 기안 진행 중</div>
@@ -1290,6 +1305,104 @@ async function viewReport() {
         </tbody>
       </table></div>
     </div>`;
+}
+
+/* ---------- 업무 지시 ---------- */
+async function viewTasks() {
+  const { data } = await sb.from("tasks").select("*").order("created_at", { ascending: false }).limit(300);
+  const list = data || [];
+  const myOpen = list.filter(t => t.assignee_id === me.id && t.status === "open");
+  const iAssigned = list.filter(t => t.creator_id === me.id);
+  const others = USERS.filter(u => u.id !== me.id);
+
+  const dday = d => {
+    if (!d) return "";
+    const diff = Math.round((new Date(d) - new Date(today())) / 86400000);
+    const label = diff === 0 ? "오늘까지" : diff > 0 ? `D-${diff}` : `${-diff}일 지남`;
+    const color = diff < 0 ? "var(--red)" : diff <= 1 ? "var(--amber)" : "var(--text-sub)";
+    return `<span style="color:${color};font-weight:700">${label}</span> <small style="color:var(--text-sub)">(${esc(d)})</small>`;
+  };
+
+  return `
+    <div class="card">
+      <h2>업무 지시하기</h2>
+      <div class="form-grid">
+        <div class="field full"><label>지시 내용 *</label>
+          <input id="t-title" placeholder="예) 쿠팡 발주서 오늘까지 넣어주세요" maxlength="100"></div>
+        <div class="field"><label>담당자 *</label>
+          <select id="t-assignee">${others.map(u => `<option value="${u.id}">${esc(u.name)} (${esc(u.role)})</option>`).join("")}</select></div>
+        <div class="field"><label>기한 (선택)</label><input id="t-due" type="date"></div>
+        <div class="field full"><label>상세 설명 (선택)</label>
+          <textarea id="t-detail" placeholder="참고 링크, 세부 내용 등"></textarea></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" onclick="createTask()">지시 보내기 (알림 발송)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>📥 내가 받은 지시 (${myOpen.length}건)</h2></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>내용</th><th>지시자</th><th>기한</th><th>받은 날</th><th></th></tr></thead>
+        <tbody>${myOpen.length ? myOpen.map(t => `
+          <tr>
+            <td><b>${esc(t.title)}</b>${t.detail ? `<br><small style="color:var(--text-sub)">${esc(t.detail)}</small>` : ""}</td>
+            <td>${userName(t.creator_id)}</td>
+            <td>${dday(t.due_date) || "—"}</td>
+            <td>${esc(localDT(t.created_at).slice(0, 10))}</td>
+            <td><button class="btn sm green" onclick="completeTask('${t.id}')">✔ 완료</button></td>
+          </tr>`).join("") : `<tr><td colspan="5" class="empty">받은 지시가 없습니다 👍</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>📤 내가 시킨 일 (${iAssigned.filter(t => t.status === "open").length}건 진행 중)</h2></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>내용</th><th>담당자</th><th>기한</th><th>상태</th><th></th></tr></thead>
+        <tbody>${iAssigned.length ? iAssigned.map(t => `
+          <tr>
+            <td><b>${esc(t.title)}</b>${t.detail ? `<br><small style="color:var(--text-sub)">${esc(t.detail)}</small>` : ""}</td>
+            <td>${userName(t.assignee_id)}</td>
+            <td>${dday(t.due_date) || "—"}</td>
+            <td>${t.status === "done"
+              ? `<span class="chip approved">완료</span><br><small style="color:var(--text-sub)">${esc(localDT(t.done_at).slice(0, 10))}</small>`
+              : '<span class="chip progress">진행 중</span>'}</td>
+            <td><button class="btn sm danger" onclick="deleteTask('${t.id}')">삭제</button></td>
+          </tr>`).join("") : `<tr><td colspan="5" class="empty">시킨 일이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+async function createTask() {
+  const title = document.getElementById("t-title").value.trim();
+  if (!title) return toast("지시 내용을 입력해 주세요");
+  const { error } = await sb.from("tasks").insert({
+    title,
+    detail: document.getElementById("t-detail").value.trim(),
+    assignee_id: document.getElementById("t-assignee").value,
+    creator_id: me.id,
+    due_date: document.getElementById("t-due").value || null,
+  });
+  if (error) return toast("지시 등록에 실패했습니다");
+  toast("지시를 보냈습니다 (알림 발송)");
+  route();
+}
+
+async function completeTask(id) {
+  const { error } = await sb.from("tasks").update({ status: "done", done_at: new Date().toISOString() }).eq("id", id);
+  if (error) return toast("처리에 실패했습니다");
+  toast("완료 처리되었습니다 (지시자에게 알림)");
+  route();
+}
+
+async function deleteTask(id) {
+  if (!confirm("이 지시를 삭제할까요?")) return;
+  const { error } = await sb.from("tasks").delete().eq("id", id);
+  if (error) return toast("삭제에 실패했습니다");
+  toast("삭제되었습니다");
+  route();
 }
 
 /* ---------- 자금일보 ---------- */
