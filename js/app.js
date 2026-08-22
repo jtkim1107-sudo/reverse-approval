@@ -23,10 +23,20 @@ let loginTarget = null;
 
 /* ---------- 유틸 ---------- */
 const fmt = n => (Number(n) || 0).toLocaleString("ko-KR");
-const today = () => new Date().toISOString().slice(0, 10);
+const pad2 = n => String(n).padStart(2, "0");
+// 한국 시간 기준 날짜 (toISOString은 UTC라 오전 9시 이전에 전날로 기록되는 문제가 있음)
+const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+};
 const nowStr = () => {
   const d = new Date();
-  return d.toISOString().slice(0, 10) + " " + d.toTimeString().slice(0, 5);
+  return `${today()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+const localDT = ts => {
+  const d = new Date(ts);
+  if (isNaN(d)) return "";
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 };
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const userName = id => (USERS.find(u => u.id === id) || {}).name || "?";
@@ -214,9 +224,10 @@ const routes = {
   drafts: { title: "내 기안함", render: viewDrafts },
   docs: { title: "전체 문서함", render: viewAllDocs },
   products: { title: "제품 마스터", render: viewProducts },
-  sales: { title: "매출 입력·조회", render: viewSales },
-  purchases: { title: "매입 입력·조회", render: viewPurchases },
+  sales: { title: "매출 입력·조회", render: viewSales, after: () => addSaleRow() },
+  purchases: { title: "매입 입력·조회", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
+  report: { title: "월별 리포트", render: viewReport },
   settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
 };
@@ -557,7 +568,7 @@ async function viewDocDetail(id) {
       <div class="appr-step approved">
         <div class="step-role">기안</div>
         <div class="step-name">${userName(d.drafter_id)}</div>
-        <div class="step-date">${esc((d.created_at || "").slice(0, 16).replace("T", " "))}</div>
+        <div class="step-date">${esc(localDT(d.created_at))}</div>
       </div>
       ${d.approval_line.map((s, i) => {
         let cls = "", label = "대기";
@@ -772,13 +783,44 @@ function exportProductsCSV() {
   downloadFile(csv, `리버스_제품마스터_${today()}.csv`, "text/csv");
 }
 
-/* ==================== ERP: 매출 / 매입 / 재고 ==================== */
+/* ==================== ERP: 매출 / 매입 / 재고 / 리포트 ==================== */
 const CHANNELS = ["스마트스토어", "쿠팡", "자사몰", "오픈마켓", "기타"];
 let erpMonth = today().slice(0, 7);
 let erpProducts = [];
+let erpStock = {};      // product_id → {stock, lastCost}
+let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
+let erpSuppliers = [];
+let erpChannels = [];
 
 const prodName = id => (erpProducts.find(p => p.id === id) || {}).name || "?";
 const monthOf = r => (r.date || "").slice(0, 7);
+
+/* 제품·재고·거래처·채널 공통 로드 */
+async function loadErpBase() {
+  const [prodRes, buyRes, saleRes] = await Promise.all([
+    sb.from("products").select("*").order("name"),
+    sb.from("purchases").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
+    sb.from("sales").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
+  ]);
+  erpProducts = prodRes.data || [];
+  const buys = buyRes.data || [];
+  const sales = saleRes.data || [];
+  erpStock = {};
+  erpProducts.forEach(p => {
+    const myBuys = buys.filter(b => b.product_id === p.id);
+    const bought = myBuys.reduce((s, b) => s + Number(b.qty), 0);
+    const sold = sales.filter(x => x.product_id === p.id).reduce((s, x) => s + Number(x.qty), 0);
+    erpStock[p.id] = { stock: bought - sold, lastCost: myBuys.length ? Number(myBuys[0].unit_cost) : 0 };
+  });
+  erpSuppliers = [...new Set(buys.map(b => b.supplier).filter(Boolean))];
+  erpChannels = [...new Set([...CHANNELS, ...sales.map(s => s.channel).filter(Boolean)])];
+  return { buys, sales };
+}
+
+function productOptions(sel) {
+  return `<option value="">품목 선택</option>` + erpProducts.map(p =>
+    `<option value="${p.id}" ${p.id === sel ? "selected" : ""}>${esc(p.name)} (재고 ${fmt(erpStock[p.id]?.stock || 0)})</option>`).join("");
+}
 
 function erpSummaryCards(rows, label) {
   const total = rows.reduce((s, r) => s + Number(r.amount), 0);
@@ -796,44 +838,43 @@ function monthPicker() {
     onchange="erpMonth=this.value;route()">`;
 }
 
-/* ---------- 매출 ---------- */
+/* ---------- 매출 (전표식 다품목 입력) ---------- */
 async function viewSales() {
-  const [prodRes, res] = await Promise.all([
-    sb.from("products").select("*").order("name"),
-    sb.from("sales").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }).limit(500),
-  ]);
-  erpProducts = prodRes.data || [];
-  const rows = (res.data || []).filter(r => monthOf(r) === erpMonth);
+  const { sales } = await loadErpBase();
+  const rows = sales.filter(r => monthOf(r) === erpMonth);
+  erpRowsCache = rows;
   const byChannel = {};
   rows.forEach(r => { byChannel[r.channel || "기타"] = (byChannel[r.channel || "기타"] || 0) + Number(r.amount); });
 
   return `
     <div class="card">
-      <h2>매출 입력</h2>
-      <div class="form-grid">
+      <div class="card-head"><h2>매출 입력</h2>
+        <button class="btn sm secondary" onclick="addSaleRow()">＋ 품목 추가</button></div>
+      <div class="form-grid" style="margin-bottom:10px">
         <div class="field"><label>판매일 *</label><input id="s-date" type="date" value="${today()}"></div>
         <div class="field"><label>판매 채널</label>
-          <select id="s-channel">${CHANNELS.map(c => `<option>${c}</option>`).join("")}</select></div>
-        <div class="field"><label>제품 *</label>
-          <select id="s-product" onchange="onSaleProductChange()">
-            <option value="">제품 선택</option>
-            ${erpProducts.map(p => `<option value="${p.id}" data-price="${p.price}">${esc(p.name)} (${esc(p.code)})</option>`).join("")}
-          </select></div>
-        <div class="field"><label>수량 *</label><input id="s-qty" type="number" min="1" value="1" oninput="calcSaleAmount()"></div>
-        <div class="field"><label>판매 단가(원) *</label><input id="s-price" type="number" min="0" oninput="calcSaleAmount()"></div>
-        <div class="field"><label>합계</label><input id="s-amount" readonly style="background:var(--gray-bg);font-weight:700"></div>
-        <div class="field full"><label>메모</label><input id="s-memo" placeholder="주문번호, 특이사항 등" maxlength="100"></div>
+          <input id="s-channel" list="channel-list" value="${esc(erpChannels[0] || "")}" placeholder="채널 입력 또는 선택">
+          <datalist id="channel-list">${erpChannels.map(c => `<option value="${esc(c)}">`).join("")}</datalist></div>
       </div>
-      <div class="modal-actions"><button class="btn" onclick="saveSale()">매출 저장</button></div>
+      <div class="table-wrap"><table class="items-table">
+        <thead><tr><th style="min-width:190px">품목 (현재 재고)</th><th style="width:85px" class="num">수량</th><th style="width:115px" class="num">단가(원)</th><th style="width:110px" class="num">금액</th><th>적요</th><th style="width:40px"></th></tr></thead>
+        <tbody id="sale-rows"></tbody>
+      </table></div>
+      <div class="total-line">합계 <b id="s-total">₩0</b></div>
+      <div class="modal-actions"><button class="btn" id="btn-save-sales" onclick="saveSales()">매출 저장</button></div>
     </div>
 
     <div class="card">
-      <div class="card-head"><h2>매출 내역</h2>${monthPicker()}</div>
+      <div class="card-head"><h2>매출 내역</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${monthPicker()}
+          <button class="btn sm secondary" onclick="exportErpCSV('sales')">CSV</button>
+        </div></div>
       ${erpSummaryCards(rows, "매출")}
       ${Object.keys(byChannel).length ? `<p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">채널별: ${
-        Object.entries(byChannel).map(([c, v]) => `${c} ₩${fmt(v)}`).join(" · ")}</p>` : ""}
+        Object.entries(byChannel).map(([c, v]) => `${esc(c)} ₩${fmt(v)}`).join(" · ")}</p>` : ""}
       <div class="table-wrap"><table>
-        <thead><tr><th>판매일</th><th>제품</th><th>채널</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>메모</th><th>입력자</th><th></th></tr></thead>
+        <thead><tr><th>판매일</th><th>품목</th><th>채널</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>적요</th><th>입력자</th><th></th></tr></thead>
         <tbody>${rows.length ? rows.map(r => `
           <tr>
             <td>${esc(r.date)}</td>
@@ -844,78 +885,106 @@ async function viewSales() {
             <td class="num"><b>₩${fmt(r.amount)}</b></td>
             <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(r.memo)}</td>
             <td>${esc(r.created_by)}</td>
-            <td><button class="btn sm danger" onclick="deleteErpRow('sales','${r.id}')">삭제</button></td>
+            <td style="white-space:nowrap">
+              <button class="btn sm secondary" onclick="openErpEditModal('sales','${r.id}')">수정</button>
+              <button class="btn sm danger" onclick="deleteErpRow('sales','${r.id}')">삭제</button></td>
           </tr>`).join("") : `<tr><td colspan="9" class="empty">${erpMonth}월 매출이 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>`;
 }
 
-function onSaleProductChange() {
-  const sel = document.getElementById("s-product");
-  const price = sel.selectedOptions[0]?.dataset.price;
-  if (price) document.getElementById("s-price").value = price;
-  calcSaleAmount();
+function addSaleRow() {
+  const tbody = document.getElementById("sale-rows");
+  if (!tbody) return;
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td><select class="sr-prod" onchange="onSaleRowProduct(this)">${productOptions()}</select></td>
+    <td><input class="sr-qty" type="number" min="1" value="1" oninput="calcSalesTotal()"></td>
+    <td><input class="sr-price" type="number" min="0" placeholder="0" oninput="calcSalesTotal()"></td>
+    <td class="num sr-amt" style="font-weight:700">₩0</td>
+    <td><input class="sr-memo" placeholder="주문번호 등" maxlength="100"></td>
+    <td><button class="btn-row-del" title="삭제" onclick="this.closest('tr').remove();calcSalesTotal()">✕</button></td>`;
+  tbody.appendChild(tr);
 }
-function calcSaleAmount() {
-  const qty = Number(document.getElementById("s-qty").value) || 0;
-  const price = Number(document.getElementById("s-price").value) || 0;
-  document.getElementById("s-amount").value = "₩" + fmt(qty * price);
+function onSaleRowProduct(sel) {
+  const p = erpProducts.find(x => x.id === sel.value);
+  if (p) sel.closest("tr").querySelector(".sr-price").value = p.price || "";
+  calcSalesTotal();
+}
+function calcSalesTotal() {
+  let total = 0;
+  document.querySelectorAll("#sale-rows tr").forEach(tr => {
+    const amt = (Number(tr.querySelector(".sr-qty").value) || 0) * (Number(tr.querySelector(".sr-price").value) || 0);
+    tr.querySelector(".sr-amt").textContent = "₩" + fmt(amt);
+    total += amt;
+  });
+  const el = document.getElementById("s-total");
+  if (el) el.textContent = "₩" + fmt(total);
 }
 
-async function saveSale() {
-  const product_id = document.getElementById("s-product").value;
+async function saveSales() {
   const date = document.getElementById("s-date").value;
-  const qty = Number(document.getElementById("s-qty").value) || 0;
-  const unit_price = Number(document.getElementById("s-price").value) || 0;
-  if (!product_id) return toast("제품을 선택해 주세요");
+  const channel = document.getElementById("s-channel").value.trim() || "기타";
   if (!date) return toast("판매일을 선택해 주세요");
-  if (qty <= 0) return toast("수량을 입력해 주세요");
-  const { error } = await sb.from("sales").insert({
-    date, product_id, qty, unit_price, amount: qty * unit_price,
-    channel: document.getElementById("s-channel").value,
-    memo: document.getElementById("s-memo").value.trim(),
-    created_by: me.name,
-  });
-  if (error) return toast("저장에 실패했습니다");
-  toast("매출이 저장되었습니다");
+  const recs = [];
+  let stockWarn = "";
+  for (const tr of document.querySelectorAll("#sale-rows tr")) {
+    const pid = tr.querySelector(".sr-prod").value;
+    const qty = Number(tr.querySelector(".sr-qty").value) || 0;
+    const price = Number(tr.querySelector(".sr-price").value) || 0;
+    if (!pid && !price) continue; // 빈 줄은 건너뜀
+    if (!pid) return toast("품목을 선택해 주세요");
+    if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
+    const st = erpStock[pid]?.stock ?? 0;
+    if (qty > st) stockWarn = `'${prodName(pid)}' 재고(${fmt(st)})보다 많은 수량(${fmt(qty)})입니다.`;
+    recs.push({ date, channel, product_id: pid, qty, unit_price: price, amount: qty * price,
+      memo: tr.querySelector(".sr-memo").value.trim(), created_by: me.name });
+  }
+  if (!recs.length) return toast("품목을 1개 이상 입력해 주세요");
+  if (stockWarn && !confirm(stockWarn + "\n그래도 저장할까요?")) return;
+  const btn = document.getElementById("btn-save-sales");
+  btn.disabled = true;
+  const { error } = await sb.from("sales").insert(recs);
+  if (error) { btn.disabled = false; return toast("저장에 실패했습니다"); }
+  toast(`매출 ${recs.length}건 저장되었습니다`);
   erpMonth = date.slice(0, 7);
   route();
 }
 
-/* ---------- 매입 ---------- */
+/* ---------- 매입 (전표식 다품목 입력) ---------- */
 async function viewPurchases() {
-  const [prodRes, res] = await Promise.all([
-    sb.from("products").select("*").order("name"),
-    sb.from("purchases").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }).limit(500),
-  ]);
-  erpProducts = prodRes.data || [];
-  const rows = (res.data || []).filter(r => monthOf(r) === erpMonth);
+  const { buys } = await loadErpBase();
+  const rows = buys.filter(r => monthOf(r) === erpMonth);
+  erpRowsCache = rows;
 
   return `
     <div class="card">
-      <h2>매입 입력 (사입)</h2>
-      <div class="form-grid">
+      <div class="card-head"><h2>매입 입력 (사입)</h2>
+        <button class="btn sm secondary" onclick="addBuyRow()">＋ 품목 추가</button></div>
+      <div class="form-grid" style="margin-bottom:10px">
         <div class="field"><label>매입일 *</label><input id="b-date" type="date" value="${today()}"></div>
-        <div class="field"><label>거래처</label><input id="b-supplier" placeholder="예) OO상사" maxlength="40"></div>
-        <div class="field"><label>제품 *</label>
-          <select id="b-product">
-            <option value="">제품 선택</option>
-            ${erpProducts.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.code)})</option>`).join("")}
-          </select></div>
-        <div class="field"><label>수량 *</label><input id="b-qty" type="number" min="1" value="1" oninput="calcBuyAmount()"></div>
-        <div class="field"><label>매입 단가(원) *</label><input id="b-cost" type="number" min="0" oninput="calcBuyAmount()"></div>
-        <div class="field"><label>합계</label><input id="b-amount" readonly style="background:var(--gray-bg);font-weight:700"></div>
-        <div class="field full"><label>메모</label><input id="b-memo" placeholder="발주번호, 특이사항 등" maxlength="100"></div>
+        <div class="field"><label>거래처</label>
+          <input id="b-supplier" list="supplier-list" placeholder="거래처 입력 또는 선택" maxlength="40">
+          <datalist id="supplier-list">${erpSuppliers.map(s => `<option value="${esc(s)}">`).join("")}</datalist></div>
       </div>
-      <div class="modal-actions"><button class="btn" onclick="savePurchase()">매입 저장</button></div>
+      <div class="table-wrap"><table class="items-table">
+        <thead><tr><th style="min-width:190px">품목 (현재 재고)</th><th style="width:85px" class="num">수량</th><th style="width:115px" class="num">단가(원)</th><th style="width:110px" class="num">금액</th><th>적요</th><th style="width:40px"></th></tr></thead>
+        <tbody id="buy-rows"></tbody>
+      </table></div>
+      <div class="total-line">합계 <b id="b-total">₩0</b></div>
+      <div class="modal-actions"><button class="btn" id="btn-save-buys" onclick="savePurchases()">매입 저장</button></div>
     </div>
 
     <div class="card">
-      <div class="card-head"><h2>매입 내역</h2>${monthPicker()}</div>
+      <div class="card-head"><h2>매입 내역</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${monthPicker()}
+          <button class="btn sm secondary" onclick="exportErpCSV('purchases')">CSV</button>
+        </div></div>
       ${erpSummaryCards(rows, "매입")}
       <div class="table-wrap"><table>
-        <thead><tr><th>매입일</th><th>제품</th><th>거래처</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>메모</th><th>입력자</th><th></th></tr></thead>
+        <thead><tr><th>매입일</th><th>품목</th><th>거래처</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>적요</th><th>입력자</th><th></th></tr></thead>
         <tbody>${rows.length ? rows.map(r => `
           <tr>
             <td>${esc(r.date)}</td>
@@ -926,36 +995,116 @@ async function viewPurchases() {
             <td class="num"><b>₩${fmt(r.amount)}</b></td>
             <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(r.memo)}</td>
             <td>${esc(r.created_by)}</td>
-            <td><button class="btn sm danger" onclick="deleteErpRow('purchases','${r.id}')">삭제</button></td>
+            <td style="white-space:nowrap">
+              <button class="btn sm secondary" onclick="openErpEditModal('purchases','${r.id}')">수정</button>
+              <button class="btn sm danger" onclick="deleteErpRow('purchases','${r.id}')">삭제</button></td>
           </tr>`).join("") : `<tr><td colspan="9" class="empty">${erpMonth}월 매입이 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>`;
 }
 
-function calcBuyAmount() {
-  const qty = Number(document.getElementById("b-qty").value) || 0;
-  const cost = Number(document.getElementById("b-cost").value) || 0;
-  document.getElementById("b-amount").value = "₩" + fmt(qty * cost);
+function addBuyRow() {
+  const tbody = document.getElementById("buy-rows");
+  if (!tbody) return;
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td><select class="br-prod" onchange="onBuyRowProduct(this)">${productOptions()}</select></td>
+    <td><input class="br-qty" type="number" min="1" value="1" oninput="calcBuysTotal()"></td>
+    <td><input class="br-cost" type="number" min="0" placeholder="0" oninput="calcBuysTotal()"></td>
+    <td class="num br-amt" style="font-weight:700">₩0</td>
+    <td><input class="br-memo" placeholder="발주번호 등" maxlength="100"></td>
+    <td><button class="btn-row-del" title="삭제" onclick="this.closest('tr').remove();calcBuysTotal()">✕</button></td>`;
+  tbody.appendChild(tr);
+}
+function onBuyRowProduct(sel) {
+  // 해당 품목의 최근 매입단가 자동 입력
+  const st = erpStock[sel.value];
+  if (st?.lastCost) sel.closest("tr").querySelector(".br-cost").value = st.lastCost;
+  calcBuysTotal();
+}
+function calcBuysTotal() {
+  let total = 0;
+  document.querySelectorAll("#buy-rows tr").forEach(tr => {
+    const amt = (Number(tr.querySelector(".br-qty").value) || 0) * (Number(tr.querySelector(".br-cost").value) || 0);
+    tr.querySelector(".br-amt").textContent = "₩" + fmt(amt);
+    total += amt;
+  });
+  const el = document.getElementById("b-total");
+  if (el) el.textContent = "₩" + fmt(total);
 }
 
-async function savePurchase() {
-  const product_id = document.getElementById("b-product").value;
+async function savePurchases() {
   const date = document.getElementById("b-date").value;
-  const qty = Number(document.getElementById("b-qty").value) || 0;
-  const unit_cost = Number(document.getElementById("b-cost").value) || 0;
-  if (!product_id) return toast("제품을 선택해 주세요");
+  const supplier = document.getElementById("b-supplier").value.trim();
   if (!date) return toast("매입일을 선택해 주세요");
-  if (qty <= 0) return toast("수량을 입력해 주세요");
-  const { error } = await sb.from("purchases").insert({
-    date, product_id, qty, unit_cost, amount: qty * unit_cost,
-    supplier: document.getElementById("b-supplier").value.trim(),
-    memo: document.getElementById("b-memo").value.trim(),
-    created_by: me.name,
-  });
-  if (error) return toast("저장에 실패했습니다");
-  toast("매입이 저장되었습니다");
+  const recs = [];
+  for (const tr of document.querySelectorAll("#buy-rows tr")) {
+    const pid = tr.querySelector(".br-prod").value;
+    const qty = Number(tr.querySelector(".br-qty").value) || 0;
+    const cost = Number(tr.querySelector(".br-cost").value) || 0;
+    if (!pid && !cost) continue;
+    if (!pid) return toast("품목을 선택해 주세요");
+    if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
+    recs.push({ date, supplier, product_id: pid, qty, unit_cost: cost, amount: qty * cost,
+      memo: tr.querySelector(".br-memo").value.trim(), created_by: me.name });
+  }
+  if (!recs.length) return toast("품목을 1개 이상 입력해 주세요");
+  const btn = document.getElementById("btn-save-buys");
+  btn.disabled = true;
+  const { error } = await sb.from("purchases").insert(recs);
+  if (error) { btn.disabled = false; return toast("저장에 실패했습니다"); }
+  toast(`매입 ${recs.length}건 저장되었습니다`);
   erpMonth = date.slice(0, 7);
+  route();
+}
+
+/* ---------- 내역 수정 / 삭제 / CSV ---------- */
+function openErpEditModal(table, id) {
+  const r = erpRowsCache.find(x => x.id === id);
+  if (!r) return;
+  const isSale = table === "sales";
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>${isSale ? "매출" : "매입"} 내역 수정</h3>
+        <div class="form-grid">
+          <div class="field"><label>${isSale ? "판매일" : "매입일"}</label><input id="e-date" type="date" value="${esc(r.date)}"></div>
+          <div class="field"><label>${isSale ? "채널" : "거래처"}</label>
+            <input id="e-party" list="${isSale ? "channel-list" : "supplier-list"}" value="${esc(isSale ? r.channel : r.supplier)}"></div>
+          <div class="field full"><label>품목</label><select id="e-prod">${productOptions(r.product_id)}</select></div>
+          <div class="field"><label>수량</label><input id="e-qty" type="number" min="1" value="${r.qty}"></div>
+          <div class="field"><label>단가(원)</label><input id="e-price" type="number" min="0" value="${isSale ? r.unit_price : r.unit_cost}"></div>
+          <div class="field full"><label>적요</label><input id="e-memo" value="${esc(r.memo)}" maxlength="100"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" onclick="saveErpEdit('${table}','${id}')">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveErpEdit(table, id) {
+  const isSale = table === "sales";
+  const pid = document.getElementById("e-prod").value;
+  const qty = Number(document.getElementById("e-qty").value) || 0;
+  const price = Number(document.getElementById("e-price").value) || 0;
+  if (!pid) return toast("품목을 선택해 주세요");
+  if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
+  const patch = {
+    date: document.getElementById("e-date").value,
+    product_id: pid, qty, amount: qty * price,
+    memo: document.getElementById("e-memo").value.trim(),
+  };
+  const party = document.getElementById("e-party").value.trim();
+  if (isSale) { patch.unit_price = price; patch.channel = party || "기타"; }
+  else { patch.unit_cost = price; patch.supplier = party; }
+  const { error } = await sb.from(table).update(patch).eq("id", id);
+  if (error) return toast("수정에 실패했습니다");
+  toast("수정되었습니다");
+  closeModal();
   route();
 }
 
@@ -967,25 +1116,28 @@ async function deleteErpRow(table, id) {
   route();
 }
 
+function exportErpCSV(table) {
+  const isSale = table === "sales";
+  const head = isSale
+    ? ["판매일", "품목", "채널", "수량", "단가", "금액", "적요", "입력자"]
+    : ["매입일", "품목", "거래처", "수량", "단가", "금액", "적요", "입력자"];
+  const rows = erpRowsCache.map(r => [
+    r.date, prodName(r.product_id), isSale ? r.channel : r.supplier,
+    r.qty, isSale ? r.unit_price : r.unit_cost, r.amount, r.memo, r.created_by]);
+  const csv = "﻿" + [head, ...rows]
+    .map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\r\n");
+  downloadFile(csv, `리버스_${isSale ? "매출" : "매입"}_${erpMonth}.csv`, "text/csv");
+}
+
 /* ---------- 재고 현황 ---------- */
 async function viewInventory() {
-  const [prodRes, buyRes, saleRes] = await Promise.all([
-    sb.from("products").select("*").order("name"),
-    sb.from("purchases").select("product_id,qty,unit_cost,date"),
-    sb.from("sales").select("product_id,qty"),
-  ]);
-  erpProducts = prodRes.data || [];
-  const buys = buyRes.data || [];
-  const sales = saleRes.data || [];
+  const { buys, sales } = await loadErpBase();
 
   const inv = erpProducts.map(p => {
-    const myBuys = buys.filter(b => b.product_id === p.id);
-    const bought = myBuys.reduce((s, b) => s + Number(b.qty), 0);
+    const bought = buys.filter(b => b.product_id === p.id).reduce((s, b) => s + Number(b.qty), 0);
     const sold = sales.filter(x => x.product_id === p.id).reduce((s, x) => s + Number(x.qty), 0);
-    const lastBuy = myBuys.sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
-    const lastCost = lastBuy ? Number(lastBuy.unit_cost) : 0;
-    const stock = bought - sold;
-    return { p, bought, sold, stock, lastCost, value: stock * lastCost };
+    const st = erpStock[p.id] || { stock: 0, lastCost: 0 };
+    return { p, bought, sold, stock: st.stock, lastCost: st.lastCost, value: st.stock * st.lastCost };
   });
   const totalValue = inv.reduce((s, r) => s + r.value, 0);
 
@@ -1015,6 +1167,86 @@ async function viewInventory() {
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
         ※ 재고 = 매입 수량 − 판매 수량. 재고가 음수면 매입 입력이 누락된 것입니다.
       </p>
+    </div>`;
+}
+
+/* ---------- 월별 리포트 ---------- */
+async function viewReport() {
+  const { buys, sales } = await loadErpBase();
+
+  // 최근 6개월 매출/매입/차액
+  const months = [];
+  const now = new Date();
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
+  }
+  const monthRows = months.map(m => {
+    const sale = sales.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
+    const buy = buys.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
+    return { m, sale, buy, diff: sale - buy };
+  });
+
+  // 이번 달 채널별 / 품목별
+  const nowMonth = months[0];
+  const monthSales = sales.filter(r => monthOf(r) === nowMonth);
+  const byChannel = {};
+  monthSales.forEach(r => {
+    const c = r.channel || "기타";
+    byChannel[c] = (byChannel[c] || 0) + Number(r.amount);
+  });
+  const byProduct = {};
+  monthSales.forEach(r => {
+    if (!byProduct[r.product_id]) byProduct[r.product_id] = { qty: 0, amount: 0 };
+    byProduct[r.product_id].qty += Number(r.qty);
+    byProduct[r.product_id].amount += Number(r.amount);
+  });
+  const topProducts = Object.entries(byProduct)
+    .sort((a, b) => b[1].amount - a[1].amount).slice(0, 5);
+
+  return `
+    <div class="card">
+      <h2>최근 6개월 매출 · 매입</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>월</th><th class="num">매출</th><th class="num">매입</th><th class="num">차액 (매출−매입)</th></tr></thead>
+        <tbody>${monthRows.map(r => `
+          <tr>
+            <td><b>${r.m}</b></td>
+            <td class="num">₩${fmt(r.sale)}</td>
+            <td class="num">₩${fmt(r.buy)}</td>
+            <td class="num" style="font-weight:700;color:${r.diff >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(r.diff)}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>
+      <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
+        ※ 차액은 단순 매출−매입입니다. (기간 내 재고 변동·경비 미반영)
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>${nowMonth} 채널별 매출</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>채널</th><th class="num">매출액</th><th class="num">비중</th></tr></thead>
+        <tbody>${Object.keys(byChannel).length ? Object.entries(byChannel)
+          .sort((a, b) => b[1] - a[1]).map(([c, v]) => {
+            const total = Object.values(byChannel).reduce((s, x) => s + x, 0);
+            return `<tr><td><b>${esc(c)}</b></td><td class="num">₩${fmt(v)}</td>
+              <td class="num">${total ? Math.round(v / total * 100) : 0}%</td></tr>`;
+          }).join("") : `<tr><td colspan="3" class="empty">이번 달 매출이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h2>${nowMonth} 품목별 매출 TOP 5</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>품목</th><th class="num">판매 수량</th><th class="num">매출액</th></tr></thead>
+        <tbody>${topProducts.length ? topProducts.map(([pid, v]) => `
+          <tr><td><b>${esc(prodName(pid))}</b></td>
+            <td class="num">${fmt(v.qty)}</td><td class="num">₩${fmt(v.amount)}</td></tr>`).join("")
+          : `<tr><td colspan="3" class="empty">이번 달 매출이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
     </div>`;
 }
 
