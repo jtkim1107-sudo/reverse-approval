@@ -232,6 +232,7 @@ const routes = {
   drafts: { title: "내 기안함", render: viewDrafts },
   docs: { title: "전체 문서함", render: viewAllDocs },
   products: { title: "제품 마스터", render: viewProducts },
+  channels: { title: "판매채널·SCM 계정", render: viewChannels },
   sales: { title: "매출 입력·조회", render: viewSales, after: () => addSaleRow() },
   purchases: { title: "매입 입력·조회", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
@@ -821,6 +822,7 @@ function exportProductsCSV() {
 
 /* ==================== ERP: 매출 / 매입 / 재고 / 리포트 ==================== */
 const CHANNELS = ["스마트스토어", "쿠팡", "자사몰", "오픈마켓", "기타"];
+let erpChannelList = [];  // sales_channels 테이블
 let erpMonth = today().slice(0, 7);
 let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
@@ -834,16 +836,18 @@ const monthOf = r => (r.date || "").slice(0, 7);
 
 /* 제품·재고·거래처·채널 공통 로드 */
 async function loadErpBase() {
-  const [prodRes, buyRes, saleRes, costRes] = await Promise.all([
+  const [prodRes, buyRes, saleRes, costRes, chRes] = await Promise.all([
     sb.from("products").select("*").order("name"),
     sb.from("purchases").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("sales").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("purchase_costs").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
+    sb.from("sales_channels").select("*").order("created_at"),
   ]);
   erpProducts = prodRes.data || [];
   const buys = buyRes.data || [];
   const sales = saleRes.data || [];
   const costs = costRes.data || [];
+  erpChannelList = chRes.data || [];
   erpStock = {};
   erpProducts.forEach(p => {
     const myBuys = buys.filter(b => b.product_id === p.id);
@@ -852,7 +856,8 @@ async function loadErpBase() {
     erpStock[p.id] = { stock: bought - sold, lastCost: myBuys.length ? Number(myBuys[0].unit_cost) : 0 };
   });
   erpSuppliers = [...new Set([...buys.map(b => b.supplier), ...costs.map(c => c.supplier)].filter(Boolean))];
-  erpChannels = [...new Set([...CHANNELS, ...sales.map(s => s.channel).filter(Boolean)])];
+  // 채널 목록: 등록된 채널 + 과거 매출에 쓰인 채널
+  erpChannels = [...new Set([...erpChannelList.map(c => c.name), ...sales.map(s => s.channel).filter(Boolean)])];
   return { buys, sales, costs };
 }
 
@@ -898,9 +903,12 @@ async function viewSales() {
         <button class="btn sm secondary" onclick="addSaleRow()">＋ 품목 추가</button></div>
       <div class="form-grid" style="margin-bottom:10px">
         <div class="field"><label>판매일 *</label><input id="s-date" type="date" value="${today()}"></div>
-        <div class="field"><label>판매 채널</label>
-          <input id="s-channel" list="channel-list" value="${esc(erpChannels[0] || "")}" placeholder="채널 입력 또는 선택">
-          <datalist id="channel-list">${erpChannels.map(c => `<option value="${esc(c)}">`).join("")}</datalist></div>
+        <div class="field"><label>판매 채널
+          <a onclick="location.hash='#/channels'" style="color:var(--brand);font-size:12px;cursor:pointer;font-weight:400">＋채널 관리</a></label>
+          <select id="s-channel">
+            ${erpChannels.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+            <option value="기타">기타</option>
+          </select></div>
       </div>
       <div class="table-wrap"><table class="items-table">
         <thead><tr><th style="min-width:190px">품목 (현재 재고)</th><th style="width:85px" class="num">수량</th><th style="width:115px" class="num">단가(원)</th><th style="width:110px" class="num">금액</th><th>적요</th><th style="width:40px"></th></tr></thead>
@@ -1166,7 +1174,9 @@ function openErpEditModal(table, id) {
         <div class="form-grid">
           <div class="field"><label>${isSale ? "판매일" : "매입일"}</label><input id="e-date" type="date" value="${esc(r.date)}"></div>
           <div class="field"><label>${isSale ? "채널" : "거래처"}</label>
-            <input id="e-party" list="${isSale ? "channel-list" : "supplier-list"}" value="${esc(isSale ? r.channel : r.supplier)}"></div>
+            ${isSale
+              ? `<select id="e-party">${[...new Set([...erpChannels, r.channel, "기타"])].filter(Boolean).map(c => `<option ${c === r.channel ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`
+              : `<input id="e-party" list="supplier-list" value="${esc(r.supplier)}">`}</div>
           <div class="field full"><label>품목</label><select id="e-prod">${productOptions(r.product_id, isSale ? "" : "buy")}</select></div>
           <div class="field"><label>수량</label><input id="e-qty" type="number" min="1" value="${r.qty}"></div>
           <div class="field"><label>단가(원)</label><input id="e-price" type="number" min="0" value="${isSale ? r.unit_price : r.unit_cost}"></div>
@@ -1362,6 +1372,103 @@ async function viewReport() {
         </tbody>
       </table></div>
     </div>`;
+}
+
+/* ---------- 판매채널 · SCM 계정 ---------- */
+async function viewChannels() {
+  const { data } = await sb.from("sales_channels").select("*").order("created_at");
+  const list = data || [];
+  return `
+    <div class="card">
+      <div class="card-head"><h2>판매채널 · SCM 계정 (${list.length}개)</h2>
+        <button class="btn sm" onclick="openChannelModal()">＋ 채널 추가</button></div>
+      <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
+        판매 채널과 각 채널 관리시스템(SCM)의 접속 정보를 관리합니다. 여기 등록한 채널이 매출 입력 시 선택지로 나옵니다.<br>
+        ⚠️ 비밀번호는 로그인한 직원이 볼 수 있으니, 이 앱의 로그인 비밀번호를 잘 관리하세요.
+      </p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>채널명</th><th>사이트</th><th>아이디</th><th>비밀번호</th><th>메모</th><th></th></tr></thead>
+        <tbody>${list.length ? list.map(c => `
+          <tr>
+            <td><b>${esc(c.name)}</b></td>
+            <td>${c.url ? `<a href="${esc(c.url)}" target="_blank" rel="noopener" style="color:var(--brand)">바로가기 ↗</a>` : "—"}</td>
+            <td>${c.login_id ? `${esc(c.login_id)} <button class="btn-ghost" style="font-size:12px" title="복사" onclick="copyText('${esc(c.login_id)}')">📋</button>` : "—"}</td>
+            <td>${c.login_pw
+              ? `<span id="pw-${c.id}" data-pw="${esc(c.login_pw)}">••••••</span>
+                 <button class="btn-ghost" style="font-size:12px" title="보기" onclick="togglePw('${c.id}')">👁</button>
+                 <button class="btn-ghost" style="font-size:12px" title="복사" onclick="copyText('${esc(c.login_pw)}')">📋</button>`
+              : "—"}</td>
+            <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis">${esc(c.memo)}</td>
+            <td style="white-space:nowrap">
+              <button class="btn sm secondary" onclick="openChannelModal('${c.id}')">수정</button>
+              <button class="btn sm danger" onclick="deleteChannel('${c.id}')">삭제</button></td>
+          </tr>`).join("") : `<tr><td colspan="6" class="empty">등록된 채널이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+let channelCache = [];
+function togglePw(id) {
+  const el = document.getElementById("pw-" + id);
+  if (!el) return;
+  const shown = el.textContent !== "••••••";
+  el.textContent = shown ? "••••••" : el.dataset.pw;
+}
+function copyText(t) {
+  navigator.clipboard.writeText(t).then(() => toast("복사되었습니다")).catch(() => toast("복사 실패"));
+}
+
+async function openChannelModal(id) {
+  if (!channelCache.length || id) {
+    const { data } = await sb.from("sales_channels").select("*");
+    channelCache = data || [];
+  }
+  const c = id ? channelCache.find(x => x.id === id) : null;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>${c ? "채널 수정" : "채널 추가"}</h3>
+        <div class="form-grid">
+          <div class="field full"><label>채널명 *</label><input id="ch-name" value="${esc(c?.name || "")}" placeholder="예) 11번가" maxlength="30"></div>
+          <div class="field full"><label>관리시스템(SCM) 주소</label><input id="ch-url" value="${esc(c?.url || "")}" placeholder="https://..." maxlength="200"></div>
+          <div class="field"><label>아이디</label><input id="ch-id" value="${esc(c?.login_id || "")}" maxlength="60" autocomplete="off"></div>
+          <div class="field"><label>비밀번호</label><input id="ch-pw" value="${esc(c?.login_pw || "")}" maxlength="60" autocomplete="off"></div>
+          <div class="field full"><label>메모</label><textarea id="ch-memo" maxlength="200">${esc(c?.memo || "")}</textarea></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" onclick="saveChannel('${id || ""}')">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveChannel(id) {
+  const name = document.getElementById("ch-name").value.trim();
+  if (!name) return toast("채널명을 입력해 주세요");
+  const data = {
+    name,
+    url: document.getElementById("ch-url").value.trim(),
+    login_id: document.getElementById("ch-id").value.trim(),
+    login_pw: document.getElementById("ch-pw").value,
+    memo: document.getElementById("ch-memo").value.trim(),
+  };
+  const res = id
+    ? await sb.from("sales_channels").update(data).eq("id", id)
+    : await sb.from("sales_channels").insert(data);
+  if (res.error) return toast(res.error.code === "23505" ? "이미 있는 채널명입니다" : "저장에 실패했습니다");
+  toast(id ? "수정되었습니다" : "채널이 추가되었습니다");
+  closeModal();
+  route();
+}
+
+async function deleteChannel(id) {
+  if (!confirm("이 채널을 삭제할까요? (기존 매출 기록은 그대로 유지됩니다)")) return;
+  const { error } = await sb.from("sales_channels").delete().eq("id", id);
+  if (error) return toast("삭제에 실패했습니다");
+  toast("삭제되었습니다");
+  route();
 }
 
 /* ---------- AI 리포트 ---------- */
