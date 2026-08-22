@@ -67,6 +67,23 @@ const buyVat = (amount, p) => (isTaxable(p) ? vatAmt(amount, vatCfg.purchaseCost
 const expNet = amount => netAmt(amount, vatCfg.expenseIncludesVat);
 const expVat = amount => vatAmt(amount, vatCfg.expenseIncludesVat);
 
+/* 입력칸 옆에 '부가세 포함/별도'를 항상 붙여 준다 — 이걸 헷갈리면 이익이 10% 틀어짐 */
+function vatTag(kind) {
+  if (!vatCfg.enabled) return "";
+  const inc = { sale: vatCfg.salePriceIncludesVat, buy: vatCfg.purchaseCostIncludesVat, exp: vatCfg.expenseIncludesVat }[kind];
+  const label = inc ? "부가세 포함" : "부가세 별도";
+  const color = inc ? "#2b8a3e" : "#d9480f";
+  const bg = inc ? "#ebfbee" : "#fff4e6";
+  const tip = inc
+    ? "부가세가 들어 있는 금액으로 입력하세요 (고객에게 받는 금액 / 청구된 금액 그대로)"
+    : "부가세를 뺀 금액(공급가액)으로 입력하세요 (세금계산서의 '공급가액')";
+  return `<span title="${tip}" style="background:${bg};color:${color};border-radius:5px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:4px">${label}</span>`;
+}
+// 실제로 오간 현금은 언제나 부가세까지 포함된 금액
+const vatTagCash = () => vatCfg.enabled
+  ? `<span title="통장에 실제로 오간 금액 그대로 입력하세요" style="background:#ebfbee;color:#2b8a3e;border-radius:5px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:4px">부가세 포함</span>`
+  : "";
+
 async function loadVatCfg() {
   const { data } = await sb.from("settings").select("value").eq("key", "vat").maybeSingle();
   if (data?.value) vatCfg = { ...vatCfg, ...data.value };
@@ -756,6 +773,11 @@ async function viewProducts() {
           <button class="btn sm" onclick="openProductModal()">＋ 제품 등록</button>
         </div>
       </div>
+      ${vatCfg.enabled ? `<p style="font-size:12.5px;color:var(--text-sub);margin:-4px 0 12px">
+        🧾 원가는 <b>${vatCfg.purchaseCostIncludesVat ? "부가세 포함" : "부가세 별도(공급가액)"}</b>,
+        판매가·MSRP는 <b>${vatCfg.salePriceIncludesVat ? "부가세 포함" : "부가세 별도"}</b>로 입력합니다.
+        마진은 양쪽 모두 부가세를 뺀 금액으로 계산합니다.
+        (<a onclick="location.hash='#/settings'" style="color:var(--brand);cursor:pointer">기준 변경</a>)</p>` : ""}
       <div class="searchbar" style="margin-bottom:14px">
         <input placeholder="제품명, 코드, 분류 검색" value="${esc(prodFilter)}"
           oninput="prodFilter=this.value;refreshProductTable()">
@@ -842,11 +864,11 @@ function openProductModal(id) {
             </select></div>
           <div class="field"><label>규격</label><input id="p-spec" value="${esc(p?.spec || "")}" placeholder="예) 30g x 10입" maxlength="40"></div>
           <div class="field"><label>단위</label><input id="p-unit" value="${esc(p?.unit || "")}" placeholder="BOX / EA / 병" maxlength="10"></div>
-          <div class="field"><label>원가(원) — 매입 단가</label>
+          <div class="field"><label>원가(원) — 매입 단가${vatTag("buy")}</label>
             <input id="p-cost" type="number" min="0" value="${p?.cost_price ?? ""}" oninput="calcMarginHint()"></div>
-          <div class="field"><label>판매가(원) — 실제 판매</label>
+          <div class="field"><label>판매가(원) — 실제 판매${vatTag("sale")}</label>
             <input id="p-price" type="number" min="0" value="${p?.price ?? ""}" oninput="calcMarginHint()"></div>
-          <div class="field"><label>MSRP(원) — 권장소비자가</label>
+          <div class="field"><label>MSRP(원) — 권장소비자가${vatTag("sale")}</label>
             <input id="p-msrp" type="number" min="0" value="${p?.msrp ?? ""}"></div>
           <div class="field"><label>박스입수(개)</label>
             <input id="p-box" type="number" min="0" value="${p?.box_qty ?? ""}" placeholder="예) 40"></div>
@@ -1097,10 +1119,16 @@ async function viewSales() {
           </select></div>
       </div>
       <div class="table-wrap"><table class="items-table">
-        <thead><tr><th style="min-width:190px">품목 (현재 재고)</th><th style="width:85px" class="num">수량</th><th style="width:115px" class="num">단가(원)</th><th style="width:110px" class="num">금액</th><th>적요</th><th style="width:40px"></th></tr></thead>
+        <thead><tr><th style="min-width:190px">품목 (현재 재고)</th><th style="width:85px" class="num">수량</th>
+          <th style="width:150px" class="num">판매 단가${vatTag("sale")}</th>
+          <th style="width:110px" class="num">금액</th><th>적요 (주문번호)</th><th style="width:40px"></th></tr></thead>
         <tbody id="sale-rows"></tbody>
       </table></div>
-      <div class="total-line">합계 <b id="s-total">₩0</b></div>
+      <p style="font-size:12px;color:var(--text-sub);margin:6px 0 0">
+        ※ 단가는 <b>${vatCfg.salePriceIncludesVat ? "고객이 실제로 낸 금액(부가세 포함)" : "부가세를 뺀 공급가액"}</b>으로 입력하세요.
+        ${vatCfg.salePriceIncludesVat ? "예) 쿠팡 판매가 11,900원 → 11900" : "예) 공급가액 10,818원 → 10818"}<br>
+        ※ 같은 주문의 여러 품목은 <b>적요에 같은 주문번호</b>를 적어 주세요 — 배송비가 주문당 1회만 계산됩니다.</p>
+      <div class="total-line">합계${vatTag("sale")} <b id="s-total">₩0</b></div>
       <div class="modal-actions"><button class="btn" id="btn-save-sales" onclick="saveSales()">매출 저장</button></div>
     </div>
 
@@ -1234,14 +1262,19 @@ async function viewPurchases() {
         <div class="field"><label>거래처 *
           <a onclick="location.hash='#/suppliers'" style="color:var(--brand);font-size:12px;cursor:pointer;font-weight:400">＋거래처 관리</a></label>
           ${supplierOptionsHtml()}</div>
-        <div class="field"><label>택배비(원) — 상품값과 별도</label><input id="b-ship" type="number" min="0" placeholder="0"></div>
-        <div class="field"><label>운송비(원) — 상품값과 별도</label><input id="b-freight" type="number" min="0" placeholder="0"></div>
+        <div class="field"><label>택배비(원) — 상품값과 별도${vatTag("exp")}</label><input id="b-ship" type="number" min="0" placeholder="0"></div>
+        <div class="field"><label>운송비(원) — 상품값과 별도${vatTag("exp")}</label><input id="b-freight" type="number" min="0" placeholder="0"></div>
       </div>
       <div class="table-wrap"><table class="items-table">
-        <thead><tr><th style="min-width:190px">품목 (현재 재고)</th><th style="width:85px" class="num">수량</th><th style="width:115px" class="num">단가(원)</th><th style="width:110px" class="num">금액</th><th>적요</th><th style="width:40px"></th></tr></thead>
+        <thead><tr><th style="min-width:190px">품목 (등록 원가)</th><th style="width:85px" class="num">수량</th>
+          <th style="width:150px" class="num">매입 단가${vatTag("buy")}</th>
+          <th style="width:110px" class="num">금액</th><th>적요 (발주번호)</th><th style="width:40px"></th></tr></thead>
         <tbody id="buy-rows"></tbody>
       </table></div>
-      <div class="total-line">상품 합계 <b id="b-total">₩0</b></div>
+      <p style="font-size:12px;color:var(--text-sub);margin:6px 0 0">
+        ※ 단가는 <b>${vatCfg.purchaseCostIncludesVat ? "부가세까지 낸 금액" : "세금계산서의 공급가액(부가세 뺀 금액)"}</b>으로 입력하세요.
+        ${vatCfg.purchaseCostIncludesVat ? "예) 총 6,050원 지급 → 6050" : "예) 공급가액 5,500 + 부가세 550 = 6,050원 지급이면 → 5500"}</p>
+      <div class="total-line">상품 합계${vatTag("buy")} <b id="b-total">₩0</b></div>
       <div class="modal-actions"><button class="btn" id="btn-save-buys" onclick="savePurchases()">매입 저장</button></div>
     </div>
 
@@ -1558,7 +1591,7 @@ function renderExcelPreview() {
         </details>` : ""}
         <div class="table-wrap" style="max-height:52vh;overflow:auto"><table>
           <thead><tr><th></th><th>상태</th><th>날짜</th><th style="min-width:200px">품목</th>
-            <th class="num">수량</th><th class="num">단가</th><th class="num">금액</th>
+            <th class="num">수량</th><th class="num">단가${vatTag(isSale ? "sale" : "buy")}</th><th class="num">금액</th>
             <th>${isSale ? "채널" : "거래처"}</th><th>적요</th></tr></thead>
           <tbody id="xls-rows">${d.rows.map((r, i) => xlsRowHtml(r, i, isSale)).join("")}</tbody>
           <datalist id="xls-channel-list">${erpChannels.map(c => `<option value="${esc(c)}">`).join("")}</datalist>
@@ -1666,11 +1699,14 @@ async function confirmExcelImport() {
 
 function downloadXlsTemplate(mode) {
   const isSale = mode === "sales";
+  const vTag = isSale
+    ? (vatCfg.salePriceIncludesVat ? "부가세포함" : "부가세별도")
+    : (vatCfg.purchaseCostIncludesVat ? "부가세포함" : "부가세별도");
   const rows = isSale
-    ? [["판매일", "채널", "상품명", "수량", "단가", "적요"],
-       [today(), "쿠팡", "(상품명 또는 상품코드)", "3", "15000", "주문번호 등"]]
-    : [["매입일", "거래처", "상품명", "수량", "단가", "적요"],
-       [today(), "아가드", "(상품명 또는 상품코드)", "10", "8000", "발주번호 등"]];
+    ? [["판매일", "채널", "상품명", "수량", `단가(${vTag})`, "적요(주문번호)"],
+       [today(), "쿠팡", "(상품명 또는 상품코드)", "3", "15000", "ORD-0001"]]
+    : [["매입일", "거래처", "상품명", "수량", `단가(${vTag})`, "적요(발주번호)"],
+       [today(), "(등록한 거래처명)", "(상품명 또는 상품코드)", "10", "8000", "PO-0001"]];
   const csv = "﻿" + rows.map(r => r.join(",")).join("\r\n");
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
@@ -2398,7 +2434,9 @@ function openAdModal() {
           <div class="field"><label>일자 *</label><input id="ad-date" type="date" value="${today()}"></div>
           <div class="field"><label>채널</label>
             <select id="ad-ch"><option value="">전체 (공통)</option>${chOpts}</select></div>
-          <div class="field full"><label>금액(원) *</label><input id="ad-amt" type="number" min="0" placeholder="0"></div>
+          <div class="field full"><label>금액(원) *${vatTag("exp")}</label><input id="ad-amt" type="number" min="0" placeholder="0">
+            <p style="font-size:12px;color:var(--text-sub);margin-top:4px">
+              ${vatCfg.expenseIncludesVat ? "광고비 청구서에 적힌 금액 그대로 입력하세요 (부가세 포함)." : "부가세를 뺀 금액으로 입력하세요."}</p></div>
           <div class="field full"><label>메모</label><input id="ad-memo" maxlength="100" placeholder="예) 쿠팡 광고 8월 1주차"></div>
         </div>
         <div class="modal-actions">
@@ -3206,9 +3244,12 @@ async function viewCash() {
           </select></div>
         <div class="field"><label>분류</label>
           <select id="c-cat">${CASH_CATS_IN.map(c => `<option>${c}</option>`).join("")}</select></div>
-        <div class="field"><label>금액(원) *</label><input id="c-amount" type="number" min="1" placeholder="0"></div>
+        <div class="field"><label>금액(원) *${vatTagCash()}</label><input id="c-amount" type="number" min="1" placeholder="0"></div>
         <div class="field"><label>적요</label><input id="c-memo" placeholder="예) 쿠팡 정산, OO상사 대금" maxlength="100"></div>
       </div>
+      <p style="font-size:12px;color:var(--text-sub);margin:-4px 0 8px">
+        ※ 자금일보는 <b>통장에 실제로 오간 금액</b>을 그대로 적습니다. 부가세를 따로 계산하지 마세요.
+        (부가세 신고용 계산은 🧾 부가세 화면에서 자동으로 합니다)</p>
       <div class="modal-actions"><button class="btn" id="btn-save-txn" onclick="saveCashTxn()">저장</button></div>
     </div>
 
