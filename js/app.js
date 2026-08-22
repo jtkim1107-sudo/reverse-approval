@@ -299,6 +299,16 @@ async function updateBadge() {
     tb.textContent = count || 0;
     tb.classList.toggle("hidden", !count);
   }
+  // 발주서: 내 결재 차례 + 입고 대기
+  const pb = document.getElementById("badge-po");
+  if (pb) {
+    const { data: pos } = await sb.from("purchase_orders").select("status,approval_line,current_step");
+    const n2 = (pos || []).filter(p =>
+      (p.status === "progress" && p.approval_line?.[p.current_step]?.userId === me.id) ||
+      ["ordered", "partial"].includes(p.status)).length;
+    pb.textContent = n2;
+    pb.classList.toggle("hidden", !n2);
+  }
 }
 
 /* ---------- 라우터 ---------- */
@@ -312,6 +322,7 @@ const routes = {
   channels: { title: "판매채널·SCM 계정", render: viewChannels },
   suppliers: { title: "매입 거래처", render: viewSuppliers },
   sales: { title: "매출 입력", render: viewSales, after: () => addSaleRow() },
+  po: { title: "발주서", render: viewPurchaseOrders },
   purchases: { title: "매입 입력", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
   profit: { title: "공헌이익", render: viewProfit },
@@ -1730,20 +1741,28 @@ async function loadErpBase() {
   const upTo = arr => arr.filter(x => (x.date || "") <= td);
   erpProducts.forEach(p => {
     const myBuys = upTo(buys.filter(b => b.product_id === p.id));
-    const bought = myBuys.reduce((s, b) => s + Number(b.qty), 0);
+    // 매입이 어디로 들어왔는지로 나눈다 — 리파코→로켓그로스 직송처럼 자사창고를 안 거치는 경우가 있음
+    const boughtCoupang = myBuys.filter(b => b.warehouse === "쿠팡").reduce((s, b) => s + Number(b.qty), 0);
+    const boughtHouse = myBuys.filter(b => b.warehouse !== "쿠팡").reduce((s, b) => s + Number(b.qty), 0);
+    const bought = boughtHouse + boughtCoupang;
     const mySales = upTo(sales.filter(x => x.product_id === p.id));
     const sold = mySales.reduce((s, x) => s + Number(x.qty), 0);
-    // 쿠팡 사외재고: 쿠팡으로 보낸(입고) − 회수 − 쿠팡 채널 판매
+    // 창고에서 쿠팡으로 보낸(입고) − 회수
     const moved = upTo(erpTransfers.filter(t => t.product_id === p.id))
       .reduce((s, t) => s + (t.kind === "쿠팡입고" ? 1 : -1) * Number(t.qty), 0);
     const coupangSold = mySales.filter(x => (x.channel || "").includes("쿠팡"))
       .reduce((s, x) => s + Number(x.qty), 0);
-    // 이동 기록 없이 쿠팡 매출부터 넣으면 atCoupang이 음수가 되고, 그만큼 자사창고가 부풀려짐 → 0에서 끊음
-    const atCoupang = Math.max(0, moved - coupangSold);
+    const houseSold = sold - coupangSold;
+    // 쿠팡 재고 = 직송 입고 + 창고에서 보낸 것 − 쿠팡 판매
+    const atCoupangRaw = boughtCoupang + moved - coupangSold;
+    const atCoupang = Math.max(0, atCoupangRaw);
+    // 자사창고 = 창고 입고 − 쿠팡으로 보낸 것 − 창고 출고 판매
+    const inHouse = boughtHouse - moved - houseSold;
     const stock = bought - sold;
     erpStock[p.id] = {
-      stock, atCoupang, inHouse: stock - atCoupang,
-      coupangUntracked: moved - coupangSold < 0 ? coupangSold - moved : 0, // 이동 누락 의심 수량
+      stock, atCoupang, inHouse,
+      boughtHouse, boughtCoupang,
+      coupangUntracked: atCoupangRaw < 0 ? -atCoupangRaw : 0, // 입고/이동 기록 누락 의심 수량
       // 최근 매입단가 우선, 없으면 제품 마스터의 등록 원가
       lastCost: (myBuys.length && Number(myBuys[0].unit_cost)) || Number(p.cost_price) || 0,
     };
@@ -1954,6 +1973,11 @@ async function viewPurchases() {
         <div class="field"><label>거래처 *
           <a onclick="location.hash='#/suppliers'" style="color:var(--brand);font-size:12px;cursor:pointer;font-weight:400">＋거래처 관리</a></label>
           ${supplierOptionsHtml()}</div>
+        <div class="field"><label>입고처 *</label>
+          <select id="b-warehouse">
+            <option value="자사창고">자사창고 — 우리 창고로 들어옴</option>
+            <option value="쿠팡">쿠팡 (로켓그로스) — 공급처에서 바로 입고</option>
+          </select></div>
         <div class="field"><label>택배비(원) — 상품값과 별도${vatTag("exp")}</label><input id="b-ship" type="number" min="0" placeholder="0"></div>
         <div class="field"><label>운송비(원) — 상품값과 별도${vatTag("exp")}</label><input id="b-freight" type="number" min="0" placeholder="0"></div>
       </div>
@@ -1987,12 +2011,13 @@ async function viewPurchases() {
           <div class="stat-value">₩${fmt(goodsTotal + shipTotal + freightTotal)}</div></div>
       </div>
       <div class="table-wrap"><table>
-        <thead><tr><th>매입일</th><th>품목</th><th>거래처</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>적요</th><th>입력자</th><th></th></tr></thead>
+        <thead><tr><th>매입일</th><th>품목</th><th>거래처</th><th>입고처</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>적요</th><th>입력자</th><th></th></tr></thead>
         <tbody>${rows.length ? rows.map(r => `
           <tr>
             <td>${esc(r.date)}</td>
             <td><b>${esc(prodName(r.product_id))}</b></td>
             <td>${esc(r.supplier)}</td>
+            <td>${r.warehouse === "쿠팡" ? '<span class="chip mine">쿠팡 직송</span>' : '<span style="color:var(--text-sub)">자사창고</span>'}</td>
             <td class="num">${fmt(r.qty)}</td>
             <td class="num">₩${fmt(r.unit_cost)}</td>
             <td class="num"><b>₩${fmt(r.amount)}</b></td>
@@ -2001,7 +2026,7 @@ async function viewPurchases() {
             <td style="white-space:nowrap">
               <button class="btn sm secondary" onclick="openErpEditModal('purchases','${r.id}')">수정</button>
               <button class="btn sm danger" onclick="deleteErpRow('purchases','${r.id}')">삭제</button></td>
-          </tr>`).join("") : `<tr><td colspan="9" class="empty">${erpMonth}월 매입이 없습니다</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="10" class="empty">${erpMonth}월 매입이 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>
@@ -2076,6 +2101,7 @@ async function savePurchases() {
     // 0원 매입이 들어가면 그 상품의 '최근 매입단가'가 0이 되어 재고 평가액과 이익이 전부 망가짐
     if (cost <= 0) return toast(`'${prodName(pid)}'의 매입 단가를 입력해 주세요`);
     recs.push({ date, supplier, product_id: pid, qty, unit_cost: cost, amount: qty * cost,
+      warehouse: document.getElementById("b-warehouse")?.value || "자사창고",
       memo: tr.querySelector(".br-memo").value.trim(), created_by: me.name });
   }
   if (!recs.length && !ship && !freight) return toast("품목 또는 부대비용을 입력해 주세요");
@@ -3381,6 +3407,436 @@ async function viewReport() {
     </div>`;
 }
 
+/* ==================== 발주서 ====================
+   발주(예정) 과 매입(실적)은 분리한다. 발주만 하고 안 들어온 물건이 재고로 잡히면 안 되기 때문.
+   흐름: 작성 → 결재 → 발주 완료 → 입고 처리(부분 가능) → 매입 자동 생성 */
+let poCache = [], poItemCache = {};
+
+const PO_STATUS = {
+  progress: { label: "결재 대기", chip: "progress" },
+  approved: { label: "승인 완료", chip: "approved" },
+  rejected: { label: "반려", chip: "rejected" },
+  ordered:  { label: "발주 완료", chip: "mine" },
+  partial:  { label: "부분 입고", chip: "progress" },
+  done:     { label: "입고 완료", chip: "approved" },
+  canceled: { label: "취소", chip: "waiting" },
+};
+const poChip = s => { const t = PO_STATUS[s] || PO_STATUS.progress;
+  return `<span class="chip ${t.chip}">${t.label}</span>`; };
+
+async function loadPOs() {
+  const [poRes, itRes] = await Promise.all([
+    sb.from("purchase_orders").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
+    sb.from("purchase_order_items").select("*"),
+  ]);
+  poCache = poRes.data || [];
+  poItemCache = {};
+  (itRes.data || []).forEach(it => { (poItemCache[it.po_id] ||= []).push(it); });
+  return poCache;
+}
+
+const poRemain = id => (poItemCache[id] || []).reduce((s, it) => s + (Number(it.qty) - Number(it.received_qty)), 0);
+const poOrdered = id => (poItemCache[id] || []).reduce((s, it) => s + Number(it.qty), 0);
+
+async function viewPurchaseOrders() {
+  await loadErpBase();
+  await loadPOs();
+  const waiting = poCache.filter(p => p.status === "progress" &&
+    p.approval_line?.[p.current_step]?.userId === me.id).length;
+  const open = poCache.filter(p => ["ordered", "partial"].includes(p.status));
+
+  return `
+    <div class="card">
+      <div class="card-head"><h2>📦 발주서</h2>
+        <button class="btn" onclick="openPOModal()">＋ 발주서 작성</button></div>
+      <p style="font-size:13px;color:var(--text-sub)">
+        발주는 <b>주문</b>이고 매입은 <b>실제 입고</b>입니다. 발주만 한 물건은 재고에 잡히지 않고,
+        <b>[입고 처리]</b>를 눌러야 매입으로 기록되어 재고가 늘어납니다.</p>
+      ${waiting ? `<div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:9px;padding:10px 12px;margin-top:12px;font-size:13.5px">
+        ⏳ 내 결재를 기다리는 발주서가 <b>${waiting}건</b> 있습니다.</div>` : ""}
+    </div>
+
+    ${open.length ? `
+    <div class="card">
+      <h2>🚚 입고 대기 중 (${open.length}건)</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>발주번호</th><th>거래처</th><th>입고처</th><th class="num">발주 수량</th><th class="num">미입고</th><th>상태</th><th></th></tr></thead>
+        <tbody>${open.map(p => `
+          <tr>
+            <td><b>${esc(p.po_no)}</b><br><small style="color:var(--text-sub)">${esc(p.date)}</small></td>
+            <td>${esc(p.supplier)}</td>
+            <td>${p.deliver_to === "쿠팡" ? '<span class="chip mine">쿠팡 직송</span>' : "자사창고"}</td>
+            <td class="num">${fmt(poOrdered(p.id))}</td>
+            <td class="num"><b style="color:var(--amber)">${fmt(poRemain(p.id))}</b></td>
+            <td>${poChip(p.status)}</td>
+            <td><button class="btn sm" onclick="openReceiveModal('${p.id}')">입고 처리</button></td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>
+    </div>` : ""}
+
+    <div class="card">
+      <h2>전체 발주 내역 (${poCache.length}건)</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>발주번호</th><th>발주일</th><th>거래처</th><th>입고처</th><th class="num">금액</th><th class="num">운송비(예상)</th><th>상태</th><th>기안</th><th></th></tr></thead>
+        <tbody>${poCache.length ? poCache.map(p => `
+          <tr class="clickable" onclick="openPODetail('${p.id}')">
+            <td><b>${esc(p.po_no)}</b></td>
+            <td>${esc(p.date)}</td>
+            <td>${esc(p.supplier)}</td>
+            <td>${p.deliver_to === "쿠팡" ? "쿠팡 직송" : "자사창고"}</td>
+            <td class="num">₩${fmt(p.total)}</td>
+            <td class="num">${p.freight_est ? "₩" + fmt(p.freight_est) : "—"}</td>
+            <td>${poChip(p.status)}</td>
+            <td>${esc(userName(p.drafter_id))}</td>
+            <td><button class="btn sm secondary" onclick="event.stopPropagation();openPODetail('${p.id}')">열기</button></td>
+          </tr>`).join("") : `<tr><td colspan="9" class="empty">작성된 발주서가 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+function openPOModal() {
+  const approvers = USERS.filter(u => u.id !== me.id && (Number(u.rank) || 0) > (Number(me.rank) || 0));
+  const isJeongyeol = approvers.length === 0;   // 최상위가 기안하면 전결
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:820px;width:96vw">
+        <h3>📦 발주서 작성</h3>
+        <div class="form-grid">
+          <div class="field"><label>발주일 *</label><input id="po-date" type="date" value="${today()}"></div>
+          <div class="field"><label>거래처 *
+            <a onclick="closeModal();location.hash='#/suppliers'" style="color:var(--brand);font-size:12px;cursor:pointer;font-weight:400">＋거래처 관리</a></label>
+            ${supplierOptionsHtml().replace(/id="b-supplier"/, 'id="po-supplier"')}</div>
+          <div class="field"><label>입고처 *</label>
+            <select id="po-deliver">
+              <option value="쿠팡">쿠팡 (로켓그로스) — 공급처에서 바로 입고</option>
+              <option value="자사창고">자사창고 — 우리 창고로 받음</option>
+            </select></div>
+          <div class="field"><label>예상 운송비(원) ${vatTag("exp")}</label>
+            <input id="po-freight" type="number" min="0" placeholder="0">
+            <p style="font-size:12px;color:var(--text-sub);margin-top:4px">우리가 운송업체에 직접 내는 금액입니다.</p></div>
+          ${isJeongyeol ? "" : `
+          <div class="field full"><label>결재자 *</label>
+            <select id="po-appr">${approvers.map(u =>
+              `<option value="${u.id}">${esc(u.name)} ${esc(u.role)}</option>`).join("")}</select></div>`}
+          <div class="field full"><label>메모</label><input id="po-memo" maxlength="100" placeholder="예) 로켓그로스 8월 보충"></div>
+        </div>
+        <div class="table-wrap" style="margin-top:8px"><table class="items-table">
+          <thead><tr><th style="min-width:190px">품목</th><th style="width:85px" class="num">수량</th>
+            <th style="width:130px" class="num">단가${vatTag("buy")}</th><th style="width:110px" class="num">금액</th><th style="width:40px"></th></tr></thead>
+          <tbody id="po-rows"></tbody>
+        </table></div>
+        <button class="btn sm secondary" onclick="addPORow()" style="margin-top:8px">＋ 품목 추가</button>
+        <div class="total-line">상품 합계 <b id="po-total">₩0</b></div>
+        ${isJeongyeol ? `<p style="font-size:13px;color:var(--text-sub)">
+          ※ 상위 결재자가 없어 <b>전결</b>로 바로 승인 처리됩니다.</p>` : ""}
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-po-save" onclick="savePO(${isJeongyeol})">${isJeongyeol ? "발주서 등록 (전결)" : "결재 올리기"}</button>
+        </div>
+      </div>
+    </div>`;
+  addPORow();
+}
+
+function addPORow() {
+  const tb = document.getElementById("po-rows");
+  if (!tb) return;
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td><select class="po-prod" onchange="onPORowProduct(this)">${productOptions("", "buy")}</select></td>
+    <td><input class="po-qty" type="number" min="1" value="1" oninput="calcPOTotal()"></td>
+    <td><input class="po-cost" type="number" min="0" placeholder="0" oninput="calcPOTotal()"></td>
+    <td class="num po-amt" style="font-weight:700">₩0</td>
+    <td><button class="btn-row-del" title="삭제" onclick="this.closest('tr').remove();calcPOTotal()">✕</button></td>`;
+  tb.appendChild(tr);
+}
+function onPORowProduct(sel) {
+  const st = erpStock[sel.value];
+  if (st?.lastCost) sel.closest("tr").querySelector(".po-cost").value = st.lastCost;
+  calcPOTotal();
+}
+function calcPOTotal() {
+  let total = 0;
+  document.querySelectorAll("#po-rows tr").forEach(tr => {
+    const amt = (Number(tr.querySelector(".po-qty").value) || 0) * (Number(tr.querySelector(".po-cost").value) || 0);
+    tr.querySelector(".po-amt").textContent = "₩" + fmt(amt);
+    total += amt;
+  });
+  const el = document.getElementById("po-total");
+  if (el) el.textContent = "₩" + fmt(total);
+}
+
+async function savePO(isJeongyeol) {
+  const date = document.getElementById("po-date").value;
+  const supplier = document.getElementById("po-supplier")?.value.trim() || "";
+  if (!date) return toast("발주일을 선택해 주세요");
+  if (!supplier) return toast("거래처를 선택해 주세요");
+  const items = [];
+  for (const tr of document.querySelectorAll("#po-rows tr")) {
+    const pid = tr.querySelector(".po-prod").value;
+    const qty = Number(tr.querySelector(".po-qty").value) || 0;
+    const cost = Number(tr.querySelector(".po-cost").value) || 0;
+    if (!pid && !cost) continue;
+    if (!pid) return toast("품목을 선택해 주세요");
+    if (qty <= 0 || !Number.isInteger(qty)) return toast("수량은 1 이상 정수로 입력해 주세요");
+    if (cost <= 0) return toast(`'${prodName(pid)}'의 단가를 입력해 주세요`);
+    items.push({ product_id: pid, qty, unit_cost: cost, amount: qty * cost });
+  }
+  if (!items.length) return toast("품목을 1개 이상 입력해 주세요");
+  const btn = document.getElementById("btn-po-save");
+  btn.disabled = true;
+
+  const { data: noData } = await sb.rpc("next_po_no");
+  const line = isJeongyeol ? [] : [{ userId: document.getElementById("po-appr").value, status: "pending", date: "" }];
+  const { data: po, error } = await sb.from("purchase_orders").insert({
+    po_no: noData || `리버스-발주-${today().slice(0, 4)}-${Date.now().toString().slice(-3)}`,
+    date, supplier,
+    deliver_to: document.getElementById("po-deliver").value,
+    freight_est: Number(document.getElementById("po-freight").value) || 0,
+    total: items.reduce((s, i) => s + i.amount, 0),
+    memo: document.getElementById("po-memo").value.trim(),
+    status: isJeongyeol ? "ordered" : "progress",
+    drafter_id: me.id, approval_line: line, current_step: 0,
+    ordered_at: isJeongyeol ? new Date().toISOString() : null,
+  }).select("id").single();
+  if (error || !po) { btn.disabled = false; return toast("발주서 등록에 실패했습니다"); }
+
+  const { error: e2 } = await sb.from("purchase_order_items")
+    .insert(items.map(i => ({ ...i, po_id: po.id })));
+  if (e2) { await sb.from("purchase_orders").delete().eq("id", po.id); btn.disabled = false; return toast("품목 저장에 실패했습니다"); }
+
+  toast(isJeongyeol ? "발주서가 등록되었습니다 (전결)" : "결재를 올렸습니다 (알림 발송)");
+  closeModal();
+  route();
+}
+
+function openPODetail(id) {
+  const p = poCache.find(x => x.id === id);
+  if (!p) return;
+  const items = poItemCache[id] || [];
+  const step = p.approval_line?.[p.current_step];
+  const canDecide = p.status === "progress" && step?.userId === me.id;
+  const canOrder = p.status === "approved";
+  const canReceive = ["ordered", "partial"].includes(p.status);
+  const sup = erpSupplierList.find(s => s.name === p.supplier);
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:820px;width:96vw">
+        <div class="card-head" style="margin-bottom:10px">
+          <h3>${esc(p.po_no)}</h3>${poChip(p.status)}
+        </div>
+        <div class="table-wrap"><table><tbody>
+          <tr><td style="width:110px;color:var(--text-sub)">발주일</td><td>${esc(p.date)}</td>
+              <td style="width:110px;color:var(--text-sub)">거래처</td><td>${esc(p.supplier)}${sup?.pay_terms ? ` <span class="chip waiting">${esc(sup.pay_terms)}</span>` : ""}</td></tr>
+          <tr><td style="color:var(--text-sub)">입고처</td><td>${p.deliver_to === "쿠팡" ? "쿠팡 (로켓그로스 직송)" : "자사창고"}</td>
+              <td style="color:var(--text-sub)">기안</td><td>${esc(userName(p.drafter_id))}</td></tr>
+          <tr><td style="color:var(--text-sub)">예상 운송비</td><td>${p.freight_est ? "₩" + fmt(p.freight_est) : "—"}</td>
+              <td style="color:var(--text-sub)">메모</td><td>${esc(p.memo) || "—"}</td></tr>
+        </tbody></table></div>
+
+        <h3 style="font-size:15px;margin:16px 0 8px">품목</h3>
+        <div class="table-wrap"><table>
+          <thead><tr><th>품목</th><th class="num">발주</th><th class="num">입고</th><th class="num">미입고</th><th class="num">단가</th><th class="num">금액</th></tr></thead>
+          <tbody>${items.map(it => `
+            <tr>
+              <td><b>${esc(prodName(it.product_id))}</b></td>
+              <td class="num">${fmt(it.qty)}</td>
+              <td class="num" style="color:var(--green)">${fmt(it.received_qty)}</td>
+              <td class="num" style="color:${it.qty - it.received_qty > 0 ? "var(--amber)" : "var(--text-sub)"}">${fmt(it.qty - it.received_qty)}</td>
+              <td class="num">₩${fmt(it.unit_cost)}</td>
+              <td class="num"><b>₩${fmt(it.amount)}</b></td>
+            </tr>`).join("")}
+          </tbody>
+          <tfoot><tr><td colspan="5"><b>합계</b></td><td class="num"><b>₩${fmt(p.total)}</b></td></tr></tfoot>
+        </table></div>
+
+        ${p.approval_line?.length ? `
+          <h3 style="font-size:15px;margin:16px 0 8px">결재</h3>
+          <div class="table-wrap"><table><tbody>${p.approval_line.map((s, i) => `
+            <tr><td>${esc(userName(s.userId))}</td>
+              <td>${s.status === "approved" ? '<span class="chip approved">승인</span>'
+                  : s.status === "rejected" ? '<span class="chip rejected">반려</span>'
+                  : i === p.current_step ? '<span class="chip progress">차례</span>' : '<span class="chip waiting">대기</span>'}</td>
+              <td>${esc(s.date) || "—"}</td></tr>`).join("")}
+          </tbody></table></div>` : `
+          <p style="font-size:13px;color:var(--text-sub);margin-top:12px">전결 처리된 발주서입니다.</p>`}
+
+        <div class="modal-actions" style="flex-wrap:wrap;gap:8px">
+          <button class="btn secondary" onclick="closeModal()">닫기</button>
+          <button class="btn secondary" onclick="copyPOText('${p.id}')">📋 발주 내용 복사</button>
+          ${canDecide ? `
+            <button class="btn danger" onclick="decidePO('${p.id}','rejected')">반려</button>
+            <button class="btn green" onclick="decidePO('${p.id}','approved')">승인</button>` : ""}
+          ${canOrder ? `<button class="btn" onclick="markOrdered('${p.id}')">거래처에 발주 완료</button>` : ""}
+          ${canReceive ? `<button class="btn" onclick="openReceiveModal('${p.id}')">입고 처리</button>` : ""}
+          ${["progress", "approved"].includes(p.status) && p.drafter_id === me.id
+            ? `<button class="btn danger" onclick="cancelPO('${p.id}')">발주 취소</button>` : ""}
+        </div>
+      </div>
+    </div>`;
+}
+
+// 거래처에 그대로 붙여넣어 보낼 수 있는 텍스트
+function copyPOText(id) {
+  const p = poCache.find(x => x.id === id);
+  const items = poItemCache[id] || [];
+  const txt = [
+    `[발주서] ${p.po_no}`,
+    `발주일: ${p.date}`,
+    `거래처: ${p.supplier}`,
+    `입고처: ${p.deliver_to === "쿠팡" ? "쿠팡 물류센터 (로켓그로스)" : "주식회사 리버스 자사창고"}`,
+    "",
+    ...items.map(it => `- ${prodName(it.product_id)} / ${fmt(it.qty)}개 / 단가 ${fmt(it.unit_cost)}원 / ${fmt(it.amount)}원`),
+    "",
+    `합계: ${fmt(p.total)}원 (부가세 ${vatCfg.purchaseCostIncludesVat ? "포함" : "별도"})`,
+    p.memo ? `메모: ${p.memo}` : "",
+    "",
+    "주식회사 리버스",
+  ].filter(x => x !== "").join("\n");
+  copyText(txt);
+}
+
+async function decidePO(id, decision) {
+  const { data: fresh } = await sb.from("purchase_orders").select("*").eq("id", id).maybeSingle();
+  if (!fresh || fresh.status !== "progress") { toast("이미 처리된 발주서입니다"); closeModal(); return route(); }
+  const line = [...(fresh.approval_line || [])];
+  const step = line[fresh.current_step];
+  if (!step || step.userId !== me.id) { toast("결재 차례가 아닙니다"); closeModal(); return route(); }
+  step.status = decision; step.date = nowStr();
+  const last = fresh.current_step >= line.length - 1;
+  const patch = decision === "rejected"
+    ? { approval_line: line, status: "rejected" }
+    : { approval_line: line, status: last ? "approved" : "progress", current_step: last ? fresh.current_step : fresh.current_step + 1 };
+  const { data, error } = await sb.from("purchase_orders").update(patch)
+    .eq("id", id).eq("current_step", fresh.current_step).select("id");
+  if (error || !data?.length) return toast("처리에 실패했습니다");
+  toast(decision === "approved" ? "승인되었습니다" : "반려되었습니다");
+  closeModal();
+  route();
+}
+
+// 승인된 발주서를 실제로 거래처에 보냈을 때 → 결제 예정도 함께 등록
+async function markOrdered(id) {
+  const p = poCache.find(x => x.id === id);
+  const sup = erpSupplierList.find(s => s.name === p.supplier);
+  const { data, error } = await sb.from("purchase_orders")
+    .update({ status: "ordered", ordered_at: new Date().toISOString() }).eq("id", id).select("id");
+  if (error || !data?.length) return toast("처리에 실패했습니다");
+
+  // 결제조건이 있으면 '나갈 돈'으로 미리 잡아둔다
+  const total = Number(p.total) + Number(p.freight_est || 0);
+  if (total > 0 && confirm(
+    `발주 완료로 처리했습니다.\n\n대금 ₩${fmt(total)}${p.freight_est ? " (운송비 포함)" : ""}을(를)\n`
+    + `자금일보의 '나갈 돈'에 미리 등록할까요?${sup?.pay_terms ? `\n(${p.supplier} 결제조건: ${sup.pay_terms})` : ""}`)) {
+    const due = addDaysStr(today(), 30);
+    await sb.from("cash_plans").insert({
+      date: due, kind: "출금", title: `${p.supplier} 발주대금 (${p.po_no})`,
+      amount: total, repeat: "없음", created_by: me.name });
+    toast("자금일보 '나갈 돈'에 등록했습니다 (날짜는 자금일보에서 조정하세요)");
+  } else {
+    toast("발주 완료로 처리했습니다");
+  }
+  closeModal();
+  route();
+}
+
+async function cancelPO(id) {
+  if (!confirm("이 발주서를 취소할까요?\n(이미 입고된 매입 기록은 남습니다)")) return;
+  const { data, error } = await sb.from("purchase_orders").update({ status: "canceled" }).eq("id", id).select("id");
+  if (error || !data?.length) return toast("처리에 실패했습니다");
+  toast("취소되었습니다");
+  closeModal();
+  route();
+}
+
+/* 입고 처리 — 실제로 들어온 수량만 매입으로 만든다 (부분 입고 지원) */
+function openReceiveModal(id) {
+  const p = poCache.find(x => x.id === id);
+  const items = (poItemCache[id] || []).filter(it => it.qty - it.received_qty > 0);
+  if (!items.length) return toast("입고할 수량이 없습니다");
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:760px;width:96vw">
+        <h3>🚚 입고 처리 — ${esc(p.po_no)}</h3>
+        <p style="font-size:13px;color:var(--text-sub);margin:4px 0 12px">
+          실제로 들어온 수량만 입력하세요. 입력한 만큼 <b>매입으로 기록되고 재고가 늘어납니다</b>.<br>
+          입고처: <b>${p.deliver_to === "쿠팡" ? "쿠팡 (로켓그로스)" : "자사창고"}</b> · 거래처: <b>${esc(p.supplier)}</b></p>
+        <div class="form-grid">
+          <div class="field"><label>입고일 *</label><input id="rc-date" type="date" value="${today()}"></div>
+          <div class="field"><label>실제 운송비(원) ${vatTag("exp")}</label>
+            <input id="rc-freight" type="number" min="0" value="${p.freight_est || ""}"></div>
+        </div>
+        <div class="table-wrap" style="margin-top:8px"><table>
+          <thead><tr><th>품목</th><th class="num">발주</th><th class="num">기입고</th><th class="num">미입고</th><th style="width:110px" class="num">이번 입고</th></tr></thead>
+          <tbody>${items.map(it => `
+            <tr data-item="${it.id}" data-pid="${it.product_id}" data-cost="${it.unit_cost}" data-remain="${it.qty - it.received_qty}">
+              <td><b>${esc(prodName(it.product_id))}</b></td>
+              <td class="num">${fmt(it.qty)}</td>
+              <td class="num">${fmt(it.received_qty)}</td>
+              <td class="num">${fmt(it.qty - it.received_qty)}</td>
+              <td><input class="rc-qty" type="number" min="0" max="${it.qty - it.received_qty}" value="${it.qty - it.received_qty}"></td>
+            </tr>`).join("")}
+          </tbody>
+        </table></div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-rc-save" onclick="saveReceive('${id}')">입고 확정</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveReceive(id) {
+  const p = poCache.find(x => x.id === id);
+  const date = document.getElementById("rc-date").value;
+  if (!date) return toast("입고일을 선택해 주세요");
+  if (date > today()) return toast("입고일은 오늘보다 뒤일 수 없습니다");
+  const freight = Number(document.getElementById("rc-freight").value) || 0;
+  const rows = [...document.querySelectorAll("#modal-root tr[data-item]")];
+  const recs = [], updates = [];
+  for (const tr of rows) {
+    const qty = Number(tr.querySelector(".rc-qty").value) || 0;
+    const remain = Number(tr.dataset.remain);
+    if (qty <= 0) continue;
+    if (qty > remain) return toast(`'${prodName(tr.dataset.pid)}'는 미입고 ${fmt(remain)}개보다 많이 입력할 수 없습니다`);
+    const cost = Number(tr.dataset.cost);
+    recs.push({ date, supplier: p.supplier, product_id: tr.dataset.pid, qty,
+      unit_cost: cost, amount: qty * cost, warehouse: p.deliver_to, po_id: p.id,
+      memo: p.po_no, created_by: me.name });
+    updates.push({ id: tr.dataset.item, add: qty });
+  }
+  if (!recs.length) return toast("입고 수량을 입력해 주세요");
+  const btn = document.getElementById("btn-rc-save");
+  btn.disabled = true;
+
+  // 운송비를 먼저 (실패 시 매입이 중복되지 않도록)
+  if (freight > 0) {
+    const { error: ef } = await sb.from("purchase_costs").insert({
+      date, kind: "운송비", amount: freight, supplier: p.supplier, created_by: me.name });
+    if (ef) { btn.disabled = false; return toast("운송비 저장에 실패했습니다 (매입은 아직 기록되지 않았습니다)"); }
+  }
+  const { error } = await sb.from("purchases").insert(recs);
+  if (error) { btn.disabled = false; return toast("매입 기록에 실패했습니다"); }
+
+  // 입고 수량 반영
+  for (const u of updates) {
+    const it = (poItemCache[id] || []).find(x => x.id === u.id);
+    await sb.from("purchase_order_items").update({ received_qty: Number(it.received_qty) + u.add }).eq("id", u.id);
+  }
+  // 전량 입고면 완료
+  const after = (poItemCache[id] || []).map(it => {
+    const u = updates.find(x => x.id === it.id);
+    return Number(it.received_qty) + (u ? u.add : 0) >= Number(it.qty);
+  });
+  await sb.from("purchase_orders").update({ status: after.every(Boolean) ? "done" : "partial" }).eq("id", id);
+
+  toast(`입고 ${recs.length}건이 매입으로 기록되었습니다 (${p.deliver_to})`);
+  closeModal();
+  route();
+}
+
 /* ---------- 매입 거래처 ---------- */
 let supplierCache = [];
 
@@ -4376,7 +4832,7 @@ async function saveVatCfg() {
 const BACKUP_TABLES = ["documents", "products", "sales", "purchases", "purchase_costs", "settings",
   "sales_channels", "suppliers", "stock_transfers", "cash_accounts", "cash_txns", "cash_plans",
   "ad_costs", "fixed_costs", "tasks", "ai_reports", "profiles",
-  "team_goals", "team_milestones"];
+  "team_goals", "team_milestones", "purchase_orders", "purchase_order_items"];
 
 async function exportJSON() {
   const btn = document.getElementById("btn-export");
