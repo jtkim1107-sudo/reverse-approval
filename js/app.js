@@ -311,15 +311,15 @@ const routes = {
   products: { title: "제품 마스터", render: viewProducts },
   channels: { title: "판매채널·SCM 계정", render: viewChannels },
   suppliers: { title: "매입 거래처", render: viewSuppliers },
-  sales: { title: "매출 입력·조회", render: viewSales, after: () => addSaleRow() },
-  purchases: { title: "매입 입력·조회", render: viewPurchases, after: () => addBuyRow() },
+  sales: { title: "매출 입력", render: viewSales, after: () => addSaleRow() },
+  purchases: { title: "매입 입력", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
   profit: { title: "공헌이익", render: viewProfit },
   vat: { title: "부가세", render: viewVat },
   report: { title: "월별 리포트", render: viewReport },
   cash: { title: "자금일보", render: viewCash },
   tasks: { title: "업무 지시", render: viewTasks },
-  aireport: { title: "AI 리포트", render: viewAiReport },
+  aireport: { title: "AI 아침 리포트", render: viewAiReport },
   settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
 };
@@ -347,7 +347,25 @@ async function route() {
     el.classList.toggle("active", el.dataset.route === name));
   const content = document.getElementById("content");
   content.innerHTML = `<div class="card" style="color:var(--text-sub)">불러오는 중…</div>`;
-  const html = await r.render(param);
+  let html;
+  try {
+    html = await r.render(param);
+  } catch (e) {
+    // 화면 그리다 오류가 나면 '불러오는 중…'에서 멈춰 버리므로, 무엇이 잘못됐는지 보여준다
+    console.error("화면 오류:", e);
+    if (seq !== routeSeq) return;
+    content.innerHTML = `
+      <div class="card" style="border:2px solid var(--red)">
+        <h2 style="color:var(--red)">화면을 여는 중 문제가 생겼습니다</h2>
+        <p style="font-size:13.5px;color:var(--text-sub);margin:8px 0 14px">
+          데이터를 불러오지 못했거나 일시적인 오류입니다. 아래 버튼으로 다시 시도해 주세요.<br>
+          계속 같은 문제가 생기면 이 내용을 알려 주세요: <code style="font-size:12px">${esc(String(e && e.message || e))}</code></p>
+        <button class="btn" onclick="route()">다시 시도</button>
+        <button class="btn secondary" onclick="location.hash='#/dashboard'">대시보드로</button>
+      </div>`;
+    closeSidebar();
+    return;
+  }
   if (seq !== routeSeq) return; // 다른 페이지로 이동한 경우 무시
   content.innerHTML = html;
   if (r.after) r.after(param);
@@ -1061,7 +1079,7 @@ async function loadErpBase() {
       stock, atCoupang, inHouse: stock - atCoupang,
       coupangUntracked: moved - coupangSold < 0 ? coupangSold - moved : 0, // 이동 누락 의심 수량
       // 최근 매입단가 우선, 없으면 제품 마스터의 등록 원가
-      lastCost: myBuys.length ? Number(myBuys[0].unit_cost) : (Number(p.cost_price) || 0),
+      lastCost: (myBuys.length && Number(myBuys[0].unit_cost)) || Number(p.cost_price) || 0,
     };
   });
   erpSuppliers = [...new Set([...buys.map(b => b.supplier), ...costs.map(c => c.supplier)].filter(Boolean))];
@@ -1630,15 +1648,17 @@ function updateXlsSummary() {
     const st = tr.querySelector(".xr-st");
     if (!on) { st.textContent = "제외"; st.style.color = "var(--text-sub)"; tr.style.opacity = ".45"; return; }
     tr.style.opacity = "1";
+    // 채널/거래처가 비면 수기 입력과 달리 조용히 통과해 수수료가 0으로 계산됨
+    const party = tr.querySelector(".xr-party").value.trim();
     // 단가 0원은 매출·원가를 망가뜨리므로 반드시 확인시킴
-    if (!pid || !date || qty <= 0 || price <= 0) { st.textContent = "⚠️ 확인"; st.style.color = "#d9480f"; warn++; }
+    if (!pid || !date || qty <= 0 || price <= 0 || !party) { st.textContent = "⚠️ 확인"; st.style.color = "#d9480f"; warn++; }
     else { st.textContent = "✅"; st.style.color = ""; valid++; total += amt; }
   });
   const sum = document.getElementById("xls-summary");
   const btn = document.getElementById("btn-xls-go");
   if (!sum || !btn) return;
   sum.innerHTML = warn
-    ? `⚠️ 확인 필요 <b style="color:#d9480f">${warn}건</b> — 품목·날짜·수량을 채우거나 체크를 해제해 주세요`
+    ? `⚠️ 확인 필요 <b style="color:#d9480f">${warn}건</b> — 품목·날짜·수량·단가·${xlsDraft?.mode === "sales" ? "채널" : "거래처"}을(를) 채우거나 체크를 해제해 주세요`
     : `등록 대상 <b>${valid}건</b> · 합계 <b>₩${fmt(total)}</b>`;
   btn.disabled = valid === 0 || warn > 0;
   btn.textContent = valid ? `${valid}건 등록` : "등록";
@@ -1698,10 +1718,13 @@ async function confirmExcelImport() {
   btn.disabled = true;
   const { error } = await sb.from(isSale ? "sales" : "purchases").insert(recs);
   if (error) { btn.disabled = false; return toast("등록에 실패했습니다. 다시 시도해 주세요"); }
-  toast(`엑셀 ${recs.length}건이 등록되었습니다`);
+  const months = [...new Set(recs.map(r => r.date.slice(0, 7)))].sort();
+  toast(months.length > 1
+    ? `엑셀 ${recs.length}건 등록 (${months.join(", ")}) — 달을 바꿔 확인하세요`
+    : `엑셀 ${recs.length}건이 등록되었습니다`);
   closeModal();
   xlsDraft = null;
-  erpMonth = recs[0].date.slice(0, 7);
+  erpMonth = months[months.length - 1];   // 여러 달이면 가장 최근 달로
   route();
 }
 
@@ -1747,7 +1770,9 @@ async function sendFeedback() {
   const text = document.getElementById("fb-text").value.trim();
   if (!text) return toast("내용을 입력해 주세요");
   // 최상위 직급(대표)에게 업무 지시 형태로 전달 → 기존 푸시 알림 그대로 활용
-  const top = USERS.reduce((a, b) => (b.rank > (a?.rank ?? -1) ? b : a), null) || me;
+  // rank가 비어 있으면 자기 자신에게 보내지므로, 그 경우 결재권자를 우선 찾는다
+  const top = USERS.reduce((a, b) => ((Number(b.rank) || 0) > (Number(a?.rank) || 0) ? b : a), null)
+    || USERS.find(u => u.approver && u.id !== me.id) || me;
   const btn = document.getElementById("btn-fb-send");
   btn.disabled = true;
   const { error } = await sb.from("tasks").insert({
@@ -1783,7 +1808,8 @@ function openErpEditModal(table, id) {
                     .map(n => `<option ${n === r.supplier ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`}</div>
           <div class="field full"><label>품목</label><select id="e-prod">${productOptions(r.product_id, isSale ? "" : "buy")}</select></div>
           <div class="field"><label>수량</label><input id="e-qty" type="number" min="1" value="${r.qty}"></div>
-          <div class="field"><label>단가(원)</label><input id="e-price" type="number" min="0" value="${isSale ? r.unit_price : r.unit_cost}"></div>
+          <div class="field"><label>단가(원)${vatTag(isSale ? "sale" : "buy")}</label>
+            <input id="e-price" type="number" min="0" value="${(isSale ? r.unit_price : r.unit_cost) ?? ""}"></div>
           <div class="field full"><label>적요</label><input id="e-memo" value="${esc(r.memo)}" maxlength="100"></div>
         </div>
         <div class="modal-actions">
@@ -1826,7 +1852,8 @@ async function saveErpEdit(table, id) {
 
 // 삭제 대상 설명 (무엇을 지우는지 보여줘야 오클릭을 막을 수 있음)
 function erpRowLabel(table, id) {
-  const row = [...erpRowsCache, ...erpCostsCache].find(x => x.id === id);
+  // 테이블마다 데이터가 있는 캐시가 달라 전부 훑는다
+  const row = [...erpRowsCache, ...erpCostsCache, ...profitAdsCache, ...erpTransfers].find(x => x.id === id);
   if (table === "cash_plans") {
     const p = cashPlans.find(x => x.id === id);
     if (!p) return "";
@@ -1837,7 +1864,8 @@ function erpRowLabel(table, id) {
   const who = row.channel || row.supplier || row.kind || "";
   const amt = row.amount != null ? ` · ₩${fmt(row.amount)}` : "";
   const nm = row.product_id ? ` · ${prodName(row.product_id)}` : "";
-  return `\n\n${row.date} · ${who}${nm}${amt}`;
+  const qty = row.qty != null && !row.amount ? ` · ${fmt(row.qty)}개` : "";
+  return `\n\n${row.date} · ${who}${nm}${qty}${amt}`;
 }
 
 async function deleteErpRow(table, id) {
@@ -1871,9 +1899,11 @@ async function viewInventory() {
   // 재고 관리는 사입 상품만 (위탁은 공급처 재고)
   const stockProducts = erpProducts.filter(p => tradeTypeOf(p) === "사입");
   const consignCount = erpProducts.length - stockProducts.length;
+  // 재고와 같은 기준(오늘까지)으로 세야 '총매입 − 총판매 = 총재고'가 맞음
+  const td = today();
   const inv = stockProducts.map(p => {
-    const bought = buys.filter(b => b.product_id === p.id).reduce((s, b) => s + Number(b.qty), 0);
-    const sold = sales.filter(x => x.product_id === p.id).reduce((s, x) => s + Number(x.qty), 0);
+    const bought = buys.filter(b => b.product_id === p.id && (b.date || "") <= td).reduce((s, b) => s + Number(b.qty), 0);
+    const sold = sales.filter(x => x.product_id === p.id && (x.date || "") <= td).reduce((s, x) => s + Number(x.qty), 0);
     const st = erpStock[p.id] || { stock: 0, inHouse: 0, atCoupang: 0, lastCost: 0 };
     return { p, bought, sold, ...st, value: st.stock * st.lastCost };
   });
@@ -2799,7 +2829,8 @@ async function deleteSupplier(id) {
 /* ---------- 판매채널 · SCM 계정 ---------- */
 async function viewChannels() {
   const { data } = await sb.from("sales_channels").select("*").order("created_at");
-  const list = data || [];
+  channelCache = data || [];   // 삭제 확인창에서 채널명을 보여주려면 캐시가 채워져 있어야 함
+  const list = channelCache;
   return `
     <div class="card">
       <div class="card-head"><h2>판매채널 · SCM 계정 (${list.length}개)</h2>
@@ -2816,11 +2847,13 @@ async function viewChannels() {
             <td class="num">${Number(c.fee_rate) ? Number(c.fee_rate).toFixed(1) + "%" : '<span style="color:#d9480f">미설정</span>'}</td>
             <td class="num">${Number(c.ship_fee) ? "₩" + fmt(c.ship_fee) : '<span style="color:var(--text-sub)">—</span>'}</td>
             <td>${c.url ? `<a href="${esc(normUrl(c.url))}" target="_blank" rel="noopener" style="color:var(--brand)">바로가기 ↗</a>` : "—"}</td>
-            <td>${c.login_id ? `${esc(c.login_id)} <button class="btn-ghost" style="font-size:12px" title="복사" onclick="copyText('${esc(c.login_id)}')">📋</button>` : "—"}</td>
+            <td>${c.login_id ? `${esc(c.login_id)} <button class="btn-ghost" style="font-size:12px" title="복사"
+              data-copy="${esc(c.login_id)}" onclick="copyText(this.dataset.copy)">📋</button>` : "—"}</td>
             <td>${c.login_pw
               ? `<span id="pw-${c.id}" data-pw="${esc(c.login_pw)}">••••••</span>
                  <button class="btn-ghost" style="font-size:12px" title="보기" onclick="togglePw('${c.id}')">👁</button>
-                 <button class="btn-ghost" style="font-size:12px" title="복사" onclick="copyText('${esc(c.login_pw)}')">📋</button>`
+                 <button class="btn-ghost" style="font-size:12px" title="복사"
+                   data-copy="${esc(c.login_pw)}" onclick="copyText(this.dataset.copy)">📋</button>`
               : "—"}</td>
             <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis">${esc(c.memo)}</td>
             <td style="white-space:nowrap">
