@@ -63,6 +63,16 @@ a { text-decoration: none; color: inherit; }
 .login-user-btn b { display: block; font-size: 15px; }
 .login-user-btn small { color: var(--text-sub); }
 .login-note { margin-top: 20px; font-size: 12px; color: var(--text-sub); }
+.login-note.error { color: var(--red); font-weight: 600; }
+.login-form { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.login-form input[type="password"] {
+  border: 1.5px solid var(--line); border-radius: 9px; padding: 11px 14px; font-size: 15px;
+}
+.login-form input[type="password"]:focus { outline: none; border-color: var(--brand); }
+.login-selected {
+  display: flex; align-items: center; gap: 10px; justify-content: center;
+  font-weight: 700; padding: 4px 0;
+}
 
 /* ===== 레이아웃 ===== */
 .app { display: flex; min-height: 100vh; }
