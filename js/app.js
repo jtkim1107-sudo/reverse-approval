@@ -3827,23 +3827,31 @@ function poEmailHtml(id) {
   const td = `font-size:13px;padding:9px 12px;border-bottom:${B}`;
   const pth = `width:74px;color:#6b7487;font-size:11.5px;padding:6px 12px;border-bottom:${B}`;
   const ptd = `font-size:12.5px;padding:6px 12px;border-bottom:${B}`;
+  // 메일에서는 div 대신 표 행으로 — 일부 메일앱이 div 여백을 무시해 줄이 붙어버림
   const party = (title, rows) => `
     <td width="49%" valign="top" style="border:${B};border-radius:8px">
-      <div style="background:#eef3fe;color:#2b5df0;font-weight:800;font-size:12px;padding:8px 12px">${title}</div>
       <table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse">
+        <tr><td colspan="2" style="background:#eef3fe;color:#2b5df0;font-weight:800;font-size:12px;padding:8px 12px">${title}</td></tr>
         ${rows.map(([k, v]) => `<tr><td style="${pth}">${k}</td><td style="${ptd}">${esc(v) || "—"}</td></tr>`).join("")}
       </table></td>`;
   const signBox = (label, name, date) => `
-    <td style="width:118px;border:${B};border-radius:6px;text-align:center">
-      <div style="background:#eef0f4;font-size:11px;font-weight:700;color:#6b7487;padding:5px">${label}</div>
-      <div style="font-size:14px;font-weight:800;padding:14px 4px 4px">${esc(name)}</div>
-      <div style="font-size:11px;color:#6b7487;padding-bottom:10px">${esc(date)}</div></td>`;
+    <td style="width:118px;border:${B};border-radius:6px">
+      <table cellpadding="0" cellspacing="0" border="0" width="100%">
+        <tr><td style="background:#eef0f4;font-size:11px;font-weight:700;color:#6b7487;padding:5px;text-align:center">${label}</td></tr>
+        <tr><td style="font-size:14px;font-weight:800;padding:14px 4px 4px;text-align:center">${esc(name)}</td></tr>
+        <tr><td style="font-size:11px;color:#6b7487;padding-bottom:10px;text-align:center">${esc(date)}</td></tr>
+      </table></td>`;
+  const greet = `${sup.manager ? esc(sup.manager) + " 님, " : ""}안녕하세요. ${esc(companyCfg.name)}입니다.`;
 
   return `<div style="font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif;color:#1c2333">
 <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:660px;background:#ffffff">
+<tr><td style="font-size:13.5px;line-height:1.75;padding-bottom:22px">
+  ${greet}<br>아래와 같이 발주드리오니 확인 후 납품 부탁드립니다.
+</td></tr>
 <tr><td>
-<div style="text-align:center;font-size:28px;font-weight:900;letter-spacing:12px">발 주 서</div>
-<div style="text-align:center;font-size:11px;color:#6b7487;letter-spacing:3px;margin-top:3px">PURCHASE ORDER</div>
+<table cellpadding="0" cellspacing="0" border="0" width="100%">
+  <tr><td style="text-align:center;font-size:28px;font-weight:900;letter-spacing:12px;padding-bottom:3px">발 주 서</td></tr>
+  <tr><td style="text-align:center;font-size:11px;color:#6b7487;letter-spacing:3px">PURCHASE ORDER</td></tr></table>
 
 <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:24px;border-top:2px solid #1c2333;border-collapse:collapse">
   <tr><td style="width:92px;${th}">발주번호</td><td style="${td}"><b>${esc(p.po_no)}</b></td>
@@ -3858,7 +3866,8 @@ ${party("공급자 (받는 분)", [["상호", p.supplier], ["사업자번호", s
 ${party("발주자 (보내는 분)", [["상호", companyCfg.name], ["사업자번호", companyCfg.biz_no], ["대표자", companyCfg.ceo], ["주소", companyCfg.addr], ["연락처", companyCfg.phone]])}
 </tr></table>
 
-<p style="font-size:13.5px;margin:22px 0 10px">아래와 같이 발주하오니 확인 후 납품하여 주시기 바랍니다.</p>
+<table cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
+  <td style="font-size:13.5px;padding:22px 0 10px">아래와 같이 발주하오니 확인 후 납품하여 주시기 바랍니다.</td></tr></table>
 
 <table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;border-top:2px solid #1c2333">
 <thead><tr>
@@ -3885,17 +3894,21 @@ ${party("발주자 (보내는 분)", [["상호", companyCfg.name], ["사업자�
 </tfoot>
 </table>
 
-${p.freight_est ? `<p style="font-size:12.5px;color:#6b7487;margin-top:12px">※ 운송비 ₩${fmt(p.freight_est)}는 <b>${esc(companyCfg.name)}</b>가 운송업체에 직접 지급합니다.</p>` : ""}
-${p.memo ? `<p style="font-size:12.5px;color:#6b7487;margin-top:4px">※ ${esc(p.memo)}</p>` : ""}
+${p.freight_est || p.memo ? `<table cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td style="font-size:12.5px;color:#6b7487;padding-top:12px;line-height:1.7">
+${p.freight_est ? `※ 운송비 ₩${fmt(p.freight_est)}는 <b>${esc(companyCfg.name)}</b>가 운송업체에 직접 지급합니다.` : ""}
+${p.freight_est && p.memo ? "<br>" : ""}${p.memo ? `※ ${esc(p.memo)}` : ""}
+</td></tr></table>` : ""}
 
-<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="right" style="margin-top:26px"><tr>
-${signBox("기안", userName(p.drafter_id), p.date)}<td style="width:10px"></td>${signBox("승인", approver, apprStep ? String(apprStep.date).slice(0, 10) : p.date)}
-</tr></table>
-<div style="clear:both"></div>
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="padding-top:26px"><tr><td align="right">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+    ${signBox("기안", userName(p.drafter_id), p.date)}<td style="width:10px"></td>${signBox("승인", approver, apprStep ? String(apprStep.date).slice(0, 10) : p.date)}
+  </tr></table>
+</td></tr></table>
 
-<div style="text-align:center;font-size:11px;color:#6b7487;margin-top:36px;padding-top:14px;border-top:${B}">
-${esc(companyCfg.name)}${companyCfg.addr ? " · " + esc(companyCfg.addr) : ""}${companyCfg.phone ? " · " + esc(companyCfg.phone) : ""}
-</div>
+<table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:32px"><tr>
+  <td style="text-align:center;font-size:11px;color:#6b7487;padding-top:14px;border-top:${B}">
+    ${esc(companyCfg.name)}${companyCfg.addr ? " · " + esc(companyCfg.addr) : ""}${companyCfg.phone ? " · " + esc(companyCfg.phone) : ""}
+  </td></tr></table>
 </td></tr></table></div>`;
 }
 
