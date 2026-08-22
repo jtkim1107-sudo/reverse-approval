@@ -187,6 +187,24 @@ async function logout() {
   await showLogin();
 }
 
+async function changePassword() {
+  const pw = document.getElementById("pw-new").value;
+  const pw2 = document.getElementById("pw-new2").value;
+  if (pw.length < 6) return toast("비밀번호는 6자 이상이어야 합니다");
+  if (pw !== pw2) return toast("두 비밀번호가 일치하지 않습니다");
+  const btn = document.getElementById("btn-pw");
+  btn.disabled = true;
+  const { error } = await sb.auth.updateUser({ password: pw });
+  if (error) {
+    btn.disabled = false;
+    return toast(error.message.includes("different") ? "기존과 다른 비밀번호를 입력하세요" : "변경에 실패했습니다");
+  }
+  toast("비밀번호가 변경되었습니다");
+  document.getElementById("pw-new").value = "";
+  document.getElementById("pw-new2").value = "";
+  btn.disabled = false;
+}
+
 function renderUserBox() {
   document.getElementById("user-avatar").textContent = me.name[0];
   document.getElementById("user-name").textContent = me.name;
@@ -1819,6 +1837,20 @@ async function viewSettings() {
     perm === "unsupported" ? '<span class="chip waiting">미지원</span>' :
     '<span class="chip waiting">꺼짐</span>';
   return `
+    <div class="card">
+      <h2>비밀번호 변경</h2>
+      <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
+        <b>${esc(me.name)}</b>님의 로그인 비밀번호를 변경합니다. 변경 후 다음 로그인부터 새 비밀번호를 사용하세요.
+      </p>
+      <div class="form-grid">
+        <div class="field"><label>새 비밀번호 (6자 이상) *</label>
+          <input id="pw-new" type="password" autocomplete="new-password" placeholder="새 비밀번호"></div>
+        <div class="field"><label>새 비밀번호 확인 *</label>
+          <input id="pw-new2" type="password" autocomplete="new-password" placeholder="한 번 더 입력"></div>
+      </div>
+      <div class="modal-actions"><button class="btn" id="btn-pw" onclick="changePassword()">비밀번호 변경</button></div>
+    </div>
+
     <div class="card">
       <div class="card-head"><h2>결재 알림</h2>${pushStatus}</div>
       <p style="color:var(--text-sub);font-size:13.5px;margin-bottom:12px">
