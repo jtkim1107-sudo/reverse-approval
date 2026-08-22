@@ -1047,7 +1047,7 @@ async function viewDashboard() {
     sb.from("products").select("*").order("updated_at", { ascending: false }).limit(5),
     sb.from("sales").select("amount,date"),
     sb.from("purchases").select("amount,date"),
-    sb.from("tasks").select("assignee_id,status"),
+    sb.from("tasks").select("assignee_id,status,due_date"),
     sb.from("purchase_costs").select("amount,date"),
   ]);
   const myTasks = (taskRes.data || []).filter(t => t.assignee_id === me.id && t.status === "open").length;
@@ -1694,7 +1694,6 @@ function exportProductsCSV() {
 }
 
 /* ==================== ERP: 매출 / 매입 / 재고 / 리포트 ==================== */
-const CHANNELS = ["스마트스토어", "쿠팡", "자사몰", "오픈마켓", "기타"];
 let erpChannelList = [];  // sales_channels 테이블
 let erpTransfers = [];    // stock_transfers (쿠팡 사외재고 이동)
 let erpMonth = today().slice(0, 7);
@@ -2126,17 +2125,19 @@ async function savePurchases() {
   const costRecs = [];
   if (ship > 0) costRecs.push({ date, kind: "택배비", amount: ship, supplier, created_by: me.name });
   if (freight > 0) costRecs.push({ date, kind: "운송비", amount: freight, supplier, created_by: me.name });
+  let costIds = [];
   if (costRecs.length) {
-    const { error: e2 } = await sb.from("purchase_costs").insert(costRecs);
-    if (e2) { btn.disabled = false; return toast("부대비용 저장에 실패했습니다 (매입은 아직 저장되지 않았습니다)"); }
+    const ins = await sb.from("purchase_costs").insert(costRecs).select("id");
+    if (ins.error) { btn.disabled = false; return toast("부대비용 저장에 실패했습니다 (매입은 아직 저장되지 않았습니다)"); }
+    costIds = (ins.data || []).map(x => x.id);
   }
   if (recs.length) {
     const { error } = await sb.from("purchases").insert(recs);
     if (error) {
       btn.disabled = false;
-      // 부대비용만 남으면 이중 계상이 되므로 되돌린다
-      if (costRecs.length) await sb.from("purchase_costs").delete().eq("date", date).eq("supplier", supplier)
-        .in("kind", costRecs.map(c => c.kind));
+      // 부대비용만 남으면 이중 계상이 되므로, 방금 넣은 행만 정확히 되돌린다
+      // (날짜·거래처로 지우면 같은 날 같은 거래처의 기존 부대비용까지 지워질 수 있음)
+      if (costIds.length) await sb.from("purchase_costs").delete().in("id", costIds);
       return toast("저장에 실패했습니다");
     }
   }
@@ -2317,6 +2318,13 @@ function renderExcelPreview() {
           ${unmatched ? `<br>⚠️ 품목을 못 찾은 줄이 <b>${unmatched}건</b> 있습니다 — 직접 선택하거나 체크를 해제해 주세요.` : ""}
           ${d.noDateCol ? `<br>ℹ️ 날짜 열이 없어 전부 오늘 날짜로 넣었습니다. 필요하면 줄마다 고쳐 주세요.` : ""}
           ${d.dateFailed && !d.noDateCol ? `<br>⚠️ 날짜를 읽지 못한 줄이 <b>${d.dateFailed}건</b> 있어 오늘 날짜로 채웠습니다 — 꼭 확인해 주세요.` : ""}</p>
+        ${isSale ? "" : `<div class="form-grid" style="margin-bottom:8px">
+          <div class="field"><label>입고처 (아래 전체에 적용)</label>
+            <select id="xls-warehouse">
+              <option value="자사창고">자사창고 — 우리 창고로 들어옴</option>
+              <option value="쿠팡">쿠팡 (로켓그로스) — 공급처에서 바로 입고</option>
+            </select></div>
+        </div>`}
         ${d.colNames?.length ? `<details style="font-size:12px;color:var(--text-sub);margin-bottom:10px">
           <summary style="cursor:pointer">엑셀의 어느 열을 무엇으로 읽었는지 보기 (${d.colNames.length}개)</summary>
           <div style="padding:8px 0 0 6px">${d.colNames.map(esc).join(" · ")}</div>
@@ -2392,7 +2400,8 @@ async function confirmExcelImport() {
     recs.push(isSale
       ? { ...base, unit_price: price, channel: party || "기타",
           unit_cost: Number(erpProducts.find(p => p.id === pid)?.cost_price) || null }
-      : { ...base, unit_cost: price, supplier: party });
+      : { ...base, unit_cost: price, supplier: party,
+          warehouse: document.getElementById("xls-warehouse")?.value || "자사창고" });
   });
   if (!recs.length) return;
 
@@ -2442,7 +2451,7 @@ function downloadXlsTemplate(mode) {
     : (vatCfg.purchaseCostIncludesVat ? "부가세포함" : "부가세별도");
   const rows = isSale
     ? [["판매일", "채널", "상품명", "수량", `단가(${vTag})`, "적요(주문번호)"],
-       [today(), "쿠팡", "(상품명 또는 상품코드)", "3", "15000", "ORD-0001"]]
+       [today(), "쿠팡 로켓그로스", "(상품명 또는 상품코드)", "3", "15000", "ORD-0001"]]
     : [["매입일", "거래처", "상품명", "수량", `단가(${vTag})`, "적요(발주번호)"],
        [today(), "(등록한 거래처명)", "(상품명 또는 상품코드)", "10", "8000", "PO-0001"]];
   const csv = "﻿" + rows.map(r => r.join(",")).join("\r\n");
@@ -2514,6 +2523,11 @@ function openErpEditModal(table, id) {
                     .filter(Boolean)
                     .map(n => `<option ${n === r.supplier ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`}</div>
           <div class="field full"><label>품목</label><select id="e-prod">${productOptions(r.product_id, isSale ? "" : "buy")}</select></div>
+          ${isSale ? "" : `<div class="field"><label>입고처</label>
+            <select id="e-wh">
+              <option value="자사창고" ${r.warehouse !== "쿠팡" ? "selected" : ""}>자사창고</option>
+              <option value="쿠팡" ${r.warehouse === "쿠팡" ? "selected" : ""}>쿠팡 (로켓그로스 직송)</option>
+            </select></div>`}
           <div class="field"><label>수량</label><input id="e-qty" type="number" min="1" value="${r.qty}"></div>
           <div class="field"><label>단가(원)${vatTag(isSale ? "sale" : "buy")}</label>
             <input id="e-price" type="number" min="0" value="${(isSale ? r.unit_price : r.unit_cost) ?? ""}"></div>
@@ -2548,7 +2562,11 @@ async function saveErpEdit(table, id) {
     patch.channel = party || "기타";
     // 품목을 바꾸면 원가 스냅샷도 새 품목 기준으로 갱신 (안 하면 이익 계산이 틀어짐)
     patch.unit_cost = Number(erpProducts.find(p => p.id === pid)?.cost_price) || null;
-  } else { patch.unit_cost = price; patch.supplier = party; }
+  } else {
+    patch.unit_cost = price; patch.supplier = party;
+    // 입고처가 틀리면 자사창고/쿠팡 재고가 서로 어긋나므로 수정할 수 있어야 함
+    patch.warehouse = document.getElementById("e-wh")?.value || "자사창고";
+  }
   const { data, error } = await sb.from(table).update(patch).eq("id", id).select("id");
   if (error) return toast("수정에 실패했습니다");
   if (!data?.length) return toast("수정할 내역을 찾지 못했습니다 (다른 사람이 이미 삭제했을 수 있습니다)");
@@ -3711,9 +3729,8 @@ async function viewPODoc(id) {
     <button class="btn" onclick="location.hash='#/po'">발주서 목록으로</button></div>`;
   const items = poItemCache[id] || [];
   const sup = erpSupplierList.find(s => s.name === p.supplier) || {};
-  const supply = items.reduce((s, it) => s + Number(it.amount), 0);        // 공급가액 기준
-  const net = vatCfg.purchaseCostIncludesVat ? Math.round(supply / 1.1) : supply;
-  const vat = vatCfg.enabled ? (vatCfg.purchaseCostIncludesVat ? supply - net : Math.round(net * 0.1)) : 0;
+  // 면세 상품은 부가세가 붙지 않으므로 품목별로 계산해야 정확하다
+  const { net, vat } = poVatOf(items);
   const grand = net + vat;
   const approved = ["approved", "ordered", "partial", "done"].includes(p.status);
   const apprStep = (p.approval_line || []).find(s => s.status === "approved");
@@ -3780,7 +3797,7 @@ async function viewPODoc(id) {
         <tbody>${items.map((it, i) => `
           <tr>
             <td class="num">${i + 1}</td>
-            <td><b>${esc(prodName(it.product_id))}</b>${it.memo ? `<br><small>${esc(it.memo)}</small>` : ""}</td>
+            <td><b>${esc(prodName(it.product_id))}</b>${isTaxable(erpProducts.find(x => x.id === it.product_id)) ? "" : " <small>(면세)</small>"}${it.memo ? `<br><small>${esc(it.memo)}</small>` : ""}</td>
             <td class="num">${fmt(it.qty)}</td>
             <td class="num">${fmt(it.unit_cost)}</td>
             <td class="num">${fmt(it.amount)}</td>
@@ -3819,13 +3836,19 @@ async function viewPODoc(id) {
 
 /* 메일에 붙여넣을 발주서 HTML.
    메일 클라이언트는 <style>을 지우므로 모든 서식을 인라인으로 넣어야 표가 유지된다. */
+// 발주서 합계 — 품목별 과세/면세를 반영한 공급가액·부가세 (면세 품목엔 부가세를 매기지 않는다)
+function poVatOf(items) {
+  const prodOf = pid => erpProducts.find(x => x.id === pid);
+  const net = items.reduce((s, it) => s + buyNet(it.amount, prodOf(it.product_id)), 0);
+  const vat = items.reduce((s, it) => s + buyVat(it.amount, prodOf(it.product_id)), 0);
+  return { net, vat };
+}
+
 function poEmailHtml(id) {
   const p = poCache.find(x => x.id === id);
   const items = poItemCache[id] || [];
   const sup = erpSupplierList.find(s => s.name === p.supplier) || {};
-  const supply = items.reduce((s, it) => s + Number(it.amount), 0);
-  const net = vatCfg.purchaseCostIncludesVat ? Math.round(supply / 1.1) : supply;
-  const vat = vatCfg.enabled ? (vatCfg.purchaseCostIncludesVat ? supply - net : Math.round(net * 0.1)) : 0;
+  const { net, vat } = poVatOf(items);
   const apprStep = (p.approval_line || []).find(s => s.status === "approved");
   const approver = apprStep ? userName(apprStep.userId)
     : (p.approval_line || []).length === 0 ? userName(p.drafter_id) + " (전결)" : "—";
@@ -3887,7 +3910,7 @@ ${party("발주자 (보내는 분)", [["상호", companyCfg.name], ["사업자�
 </tr></thead>
 <tbody>${items.map((it, i) => `<tr>
   <td style="${td};text-align:center">${i + 1}</td>
-  <td style="${td}"><b>${esc(prodName(it.product_id))}</b></td>
+  <td style="${td}"><b>${esc(prodName(it.product_id))}</b>${isTaxable(erpProducts.find(x => x.id === it.product_id)) ? "" : " (면세)"}</td>
   <td style="${td};text-align:right">${fmt(it.qty)}</td>
   <td style="${td};text-align:right">${fmt(it.unit_cost)}</td>
   <td style="${td};text-align:right">${fmt(it.amount)}</td>
@@ -3968,9 +3991,7 @@ function poPlainText(id) {
   const p = poCache.find(x => x.id === id);
   const sup = erpSupplierList.find(s => s.name === p.supplier) || {};
   const items = poItemCache[id] || [];
-  const supply = items.reduce((s, it) => s + Number(it.amount), 0);
-  const net = vatCfg.purchaseCostIncludesVat ? Math.round(supply / 1.1) : supply;
-  const vat = vatCfg.enabled ? (vatCfg.purchaseCostIncludesVat ? supply - net : Math.round(net * 0.1)) : 0;
+  const { net, vat } = poVatOf(items);
   return [
     `${sup.manager ? sup.manager + " 님, " : ""}안녕하세요. ${companyCfg.name}입니다.`,
     `아래와 같이 발주드리오니 확인 후 납품 부탁드립니다.`,
@@ -3981,7 +4002,7 @@ function poPlainText(id) {
     `■ 입고처: ${p.deliver_to === "쿠팡" ? "쿠팡 물류센터 (로켓그로스)" : companyCfg.name + " 자사창고"}`,
     "",
     "■ 품목",
-    ...items.map((it, i) => `${i + 1}. ${prodName(it.product_id)} / ${fmt(it.qty)}개 / 단가 ${fmt(it.unit_cost)}원 / ${fmt(it.amount)}원`),
+    ...items.map((it, i) => `${i + 1}. ${prodName(it.product_id)}${isTaxable(erpProducts.find(x => x.id === it.product_id)) ? "" : " (면세)"} / ${fmt(it.qty)}개 / 단가 ${fmt(it.unit_cost)}원 / ${fmt(it.amount)}원`),
     "",
     `공급가액: ${fmt(net)}원`,
     ...(vatCfg.enabled ? [`부가세: ${fmt(vat)}원`] : []),
