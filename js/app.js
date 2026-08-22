@@ -1738,14 +1738,45 @@ const CASH_CATS_OUT = ["매입대금", "경비", "광고비", "급여", "세금�
 let cashDate = today();
 let cashAccounts = [];
 let cashTxns = [];
+let cashPlans = [];
+
+function addDaysStr(base, n) {
+  const d = new Date(base + "T00:00:00");
+  d.setDate(d.getDate() + n);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+// 예정 입출금을 향후 days일 발생분으로 전개 (매월 반복 포함)
+function planOccurrences(plans, startStr, days) {
+  const endStr = addDaysStr(startStr, days);
+  const occ = [];
+  for (const p of plans) {
+    if (p.repeat === "매월") {
+      const dom = Number(p.date.slice(8, 10));
+      const base = new Date(startStr + "T00:00:00");
+      for (let m = 0; m <= 2; m++) {
+        const y = base.getFullYear(), mo = base.getMonth() + m;
+        const lastDay = new Date(y, mo + 1, 0).getDate();
+        const dd = new Date(y, mo, Math.min(dom, lastDay));
+        const ds = `${dd.getFullYear()}-${pad2(dd.getMonth() + 1)}-${pad2(dd.getDate())}`;
+        if (ds >= startStr && ds <= endStr && ds >= p.date) occ.push({ ...p, occDate: ds });
+      }
+    } else if (p.date >= startStr && p.date <= endStr) {
+      occ.push({ ...p, occDate: p.date });
+    }
+  }
+  return occ.sort((a, b) => a.occDate.localeCompare(b.occDate) || (a.kind === "입금" ? -1 : 1));
+}
 
 async function viewCash() {
-  const [accRes, txnRes] = await Promise.all([
+  const [accRes, txnRes, planRes] = await Promise.all([
     sb.from("cash_accounts").select("*").order("created_at"),
     sb.from("cash_txns").select("*").order("date").order("created_at"),
+    sb.from("cash_plans").select("*").order("date"),
   ]);
   cashAccounts = accRes.data || [];
   cashTxns = txnRes.data || [];
+  cashPlans = planRes.data || [];
 
   if (!cashAccounts.length) {
     return `
@@ -1776,6 +1807,20 @@ async function viewCash() {
   const dayList = cashTxns.filter(t => t.date === cashDate)
     .sort((x, y) => (y.created_at || "").localeCompare(x.created_at || ""));
   const accName = id => { const a = cashAccounts.find(x => x.id === id); return a ? a.name : "?"; };
+
+  // ===== 향후 30일 자금 예측 =====
+  const curBal = cashAccounts.reduce((s, a) =>
+    s + Number(a.initial_balance) + cashTxns.filter(t => t.account_id === a.id)
+      .reduce((ss, t) => ss + (t.kind === "입금" ? 1 : -1) * Number(t.amount), 0), 0);
+  const occ = planOccurrences(cashPlans, today(), 30);
+  let runBal = curBal;
+  const projRows = occ.map(o => {
+    runBal += (o.kind === "입금" ? 1 : -1) * Number(o.amount);
+    return { ...o, bal: runBal };
+  });
+  const planIn = occ.filter(o => o.kind === "입금").reduce((s, o) => s + Number(o.amount), 0);
+  const planOut = occ.filter(o => o.kind === "출금").reduce((s, o) => s + Number(o.amount), 0);
+  const minRow = projRows.reduce((m, r) => (m === null || r.bal < m.bal) ? r : m, null);
 
   return `
     <div class="grid-stats">
@@ -1816,6 +1861,59 @@ async function viewCash() {
           </tr>
         </tbody>
       </table></div>
+    </div>
+
+    <div class="card" ${minRow && minRow.bal < 0 ? 'style="border:2px solid var(--red)"' : ""}>
+      <div class="card-head"><h2>📅 향후 30일 자금 예측</h2>
+        ${minRow && minRow.bal < 0
+          ? `<span class="chip rejected">⚠️ ${esc(minRow.occDate.slice(5))} 자금 부족 예상</span>`
+          : '<span class="chip approved">30일 내 이상 없음</span>'}</div>
+      <div class="grid-stats">
+        <div class="stat"><div class="stat-label">현재 잔액</div>
+          <div class="stat-value blue">₩${fmt(curBal)}</div></div>
+        <div class="stat"><div class="stat-label">30일 내 예정 입금</div>
+          <div class="stat-value green">+₩${fmt(planIn)}</div></div>
+        <div class="stat"><div class="stat-label">30일 내 예정 출금</div>
+          <div class="stat-value red">−₩${fmt(planOut)}</div></div>
+        <div class="stat"><div class="stat-label">30일 후 예상 잔액</div>
+          <div class="stat-value ${curBal + planIn - planOut < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut)}</div></div>
+      </div>
+
+      <h2 style="font-size:14.5px;margin:14px 0 10px">예정 입출금 등록</h2>
+      <div class="form-grid">
+        <div class="field"><label>예정일 *</label><input id="cp-date" type="date" value="${addDaysStr(today(), 7)}"></div>
+        <div class="field"><label>구분 *</label>
+          <select id="cp-kind">
+            <option value="출금">출금 (−) 예: 매입대금·급여·세금</option>
+            <option value="입금">입금 (+) 예: 정산 입금</option>
+          </select></div>
+        <div class="field"><label>내용 *</label><input id="cp-title" placeholder="예) 한빛유통 매입대금" maxlength="60"></div>
+        <div class="field"><label>금액(원) *</label><input id="cp-amount" type="number" min="1" placeholder="0"></div>
+        <div class="field"><label>반복</label>
+          <select id="cp-repeat">
+            <option value="없음">한 번만</option>
+            <option value="매월">매월 반복 (급여·임대료 등)</option>
+          </select></div>
+      </div>
+      <div class="modal-actions"><button class="btn" onclick="saveCashPlan()">계획 추가</button></div>
+
+      <h2 style="font-size:14.5px;margin:16px 0 10px">잔액 흐름 (예정 반영)</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>예정일</th><th>내용</th><th class="num">금액</th><th class="num">예상 잔액</th><th></th></tr></thead>
+        <tbody>${projRows.length ? projRows.map(r => `
+          <tr>
+            <td>${esc(r.occDate)}</td>
+            <td><b>${esc(r.title)}</b>${r.repeat === "매월" ? ' <span class="chip mine">매월</span>' : ""}</td>
+            <td class="num" style="color:${r.kind === "입금" ? "var(--green)" : "var(--red)"}">${r.kind === "입금" ? "+" : "−"}₩${fmt(r.amount)}</td>
+            <td class="num" style="font-weight:800;color:${r.bal < 0 ? "var(--red)" : "var(--text)"}">₩${fmt(r.bal)}</td>
+            <td><button class="btn sm danger" onclick="deleteErpRow('cash_plans','${r.id}')">삭제</button></td>
+          </tr>`).join("") : `<tr><td colspan="5" class="empty">향후 30일 예정된 입출금이 없습니다 — 결제 예정·정산 예정을 등록해 두세요</td></tr>`}
+        </tbody>
+      </table></div>
+      <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
+        ※ 예상 잔액 = 현재 잔액 + 예정 입금 − 예정 출금 (날짜순 누적). 실제 입출금이 일어나면 위의 '입출금 입력'에 기록하고, 여기 계획은 삭제하세요.<br>
+        ※ '매월 반복' 계획은 삭제하면 반복 전체가 삭제됩니다.
+      </p>
     </div>
 
     <div class="card">
@@ -1931,6 +2029,24 @@ async function saveCashTxn() {
   if (error) return toast("저장에 실패했습니다");
   toast("저장되었습니다");
   cashDate = date;
+  route();
+}
+
+async function saveCashPlan() {
+  const title = document.getElementById("cp-title").value.trim();
+  const amount = Number(document.getElementById("cp-amount").value) || 0;
+  const date = document.getElementById("cp-date").value;
+  if (!title) return toast("내용을 입력해 주세요");
+  if (amount <= 0) return toast("금액을 입력해 주세요");
+  if (!date) return toast("예정일을 선택해 주세요");
+  const { error } = await sb.from("cash_plans").insert({
+    date, title, amount,
+    kind: document.getElementById("cp-kind").value,
+    repeat: document.getElementById("cp-repeat").value,
+    created_by: me.name,
+  });
+  if (error) return toast("저장에 실패했습니다");
+  toast("자금 계획이 추가되었습니다");
   route();
 }
 
