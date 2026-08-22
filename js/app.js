@@ -419,12 +419,19 @@ async function loadTeamMonth(month) {
 
   const monthGross = m.rows.reduce((s, r) => s + cmOfSale(r, m.shipCharged).gross, 0);
   const todayGross = byDay[td]?.gross || 0;
+  const todayCm = byDay[td]?.cm || 0;
+
+  // 경험치 = 지금까지 쌓아온 공헌이익 전체 (달이 바뀌어도 유지)
+  const allSales = sales.filter(r => (r.date || "") <= td);
+  const lifetimeCm = sumCM(allSales).cm - expNet(ads.filter(a => String(a.date) <= td)
+    .reduce((s, a) => s + Number(a.amount), 0));
+  const level = levelOf(Math.max(0, lifetimeCm));
   const paceTarget = dailyTarget * elapsed;           // 오늘까지 쌓였어야 할 매출
   const monthTarget = dailyTarget * lastDay;          // 이 달 전체 목표
 
   return { month, isThisMonth, lastDay, elapsed, remainDays, target, dailyTarget,
            goalNote: goalRes.data?.note || "",
-           monthGross, todayGross, paceTarget, monthTarget, hitDays,
+           monthGross, todayGross, todayCm, paceTarget, monthTarget, hitDays, lifetimeCm, level,
            cov: { days, on: covOn, elapsed: days.length, rate: days.length ? covOn / days.length : 0 },
            sales, buys, ads, fixed, ...m };
 }
@@ -486,6 +493,37 @@ function teamHeadline(st, g, hy) {
   return `${st.month} 진행 중입니다. 기록을 채워 주시면 진척이 여기에 쌓입니다.`;
 }
 
+/* ---------- 레벨 ----------
+   경험치 = 지금까지 쌓은 공헌이익(진짜 남은 돈). 달이 바뀌어도 초기화되지 않고 계속 쌓인다. */
+const LEVELS = [
+  { need: 0,          mascot: "🌱", title: "씨앗 상인" },
+  { need: 500000,     mascot: "🌿", title: "새싹 상인" },
+  { need: 1500000,    mascot: "🪴", title: "자라는 가게" },
+  { need: 3000000,    mascot: "🌳", title: "든든한 가게" },
+  { need: 6000000,    mascot: "🌲", title: "동네 강자" },
+  { need: 10000000,   mascot: "🍎", title: "열매 맺는 가게" },
+  { need: 20000000,   mascot: "🏞️", title: "지역 강자" },
+  { need: 40000000,   mascot: "⭐", title: "커머스 고수" },
+  { need: 80000000,   mascot: "👑", title: "커머스 마스터" },
+  { need: 150000000,  mascot: "🚀", title: "전설의 셀러" },
+];
+
+function levelOf(xp) {
+  let i = 0;
+  for (let k = 0; k < LEVELS.length; k++) if (xp >= LEVELS[k].need) i = k;
+  const cur = LEVELS[i], nxt = LEVELS[i + 1] || null;
+  const base = cur.need;
+  const span = nxt ? nxt.need - base : 1;
+  const gained = Math.max(0, xp - base);
+  return {
+    lv: i + 1, mascot: cur.mascot, title: cur.title,
+    xp, gained, span, isMax: !nxt,
+    toNext: nxt ? Math.max(0, nxt.need - xp) : 0,
+    pct: nxt ? Math.max(0, Math.min(100, (gained / span) * 100)) : 100,
+    nextTitle: nxt ? nxt.title : "", nextMascot: nxt ? nxt.mascot : "",
+  };
+}
+
 /* 일간 매출 목표 → 월 누적 → 공헌이익으로 이어지는 흐름을 한 블록에 보여준다 */
 function salesChainHtml(st) {
   if (!st.dailyTarget) return "";
@@ -495,13 +533,6 @@ function salesChainHtml(st) {
   const ahead = st.monthGross - st.paceTarget;          // 목표 페이스 대비 앞섬/뒤처짐
   const convRate = st.monthGross ? (st.cmNet / st.monthGross) * 100 : 0;
   return `
-    <div style="margin-bottom:16px">
-      <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
-        <span><b>오늘</b> 매출 ${vatTagCash()}</span>
-        <b>₩${fmt(st.todayGross)} / ₩${fmt(st.dailyTarget)}</b></div>
-      <div class="bar bar-lg"><div class="bar-fill ${todayPct >= 100 ? "green" : ""}" style="width:${todayPct}%"></div></div>
-    </div>
-
     <div style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
         <span><b>이번 달 누적</b> 매출 <span style="color:var(--text-sub)">(${st.elapsed}일째)</span></span>
@@ -582,8 +613,10 @@ function teamBadgeStates(st, g, hy) {
    ① DB unique(kind,period)  ② ignoreDuplicates로 '새로 딴 것'만 회수  ③ seen_by로 사람별 1회 */
 async function claimMilestones(st, g, hy) {
   const on = teamBadgeStates(st, g, hy).filter(b => b.on);
-  if (!on.length) return [];
   const rows = on.map(b => ({ kind: b.kind, period: st.month, value: st.cmNet }));
+  // 레벨업은 평생 1회 — period를 'all'로 두면 unique(kind,period)가 중복을 막는다
+  if (st.level.lv > 1) rows.push({ kind: `level_${st.level.lv}`, period: "all", value: st.level.xp });
+  if (!rows.length) return [];
   const { data, error } = await sb.from("team_milestones")
     .upsert(rows, { onConflict: "kind,period", ignoreDuplicates: true })
     .select("*");
@@ -606,7 +639,7 @@ const MILESTONE_TEXT = {
 
 async function fetchCelebrations(month) {
   // 최근 7일 이내에 달성했고, 내가 아직 확인하지 않은 것 (밤에 상대가 달성해도 다음 날 내가 본다)
-  const { data } = await sb.from("team_milestones").select("*").eq("period", month);
+  const { data } = await sb.from("team_milestones").select("*").in("period", [month, "all"]);
   const week = Date.now() - 7 * 86400000;
   return (data || []).filter(m =>
     !(m.seen_by || []).includes(me.id) && new Date(m.achieved_at).getTime() > week);
@@ -614,6 +647,25 @@ async function fetchCelebrations(month) {
 
 function celebrationHtml(list) {
   return list.map(m => {
+    // 레벨업 축하는 전용 카드로 크게
+    if (String(m.kind).startsWith("level_")) {
+      const lv = Number(String(m.kind).slice(6));
+      const info = LEVELS[lv - 1] || LEVELS[0];
+      const prev = LEVELS[lv - 2] || LEVELS[0];
+      return `
+        <div class="gcard done" style="text-align:center">
+          <div style="font-size:13px;font-weight:800;opacity:.9;letter-spacing:1px">LEVEL UP!</div>
+          <div style="font-size:52px;margin:10px 0;line-height:1">
+            <span style="opacity:.5">${prev.mascot}</span>
+            <span style="font-size:26px;opacity:.7"> → </span>
+            <span class="gmascot" style="display:inline-block;font-size:56px">${info.mascot}</span>
+          </div>
+          <div style="font-size:24px;font-weight:900">LV.${lv} ${esc(info.title)}</div>
+          <p style="font-size:14px;opacity:.95;margin:10px 0 16px;line-height:1.7">
+            쌓아온 공헌이익이 <b>₩${fmt(m.value)}</b>을 넘었습니다.<br>두 분이 함께 만든 결과입니다. 🎊</p>
+          <button class="btn" style="background:#fff;color:var(--green)" onclick="dismissCelebration('${m.id}')">좋아요!</button>
+        </div>`;
+    }
     const t = MILESTONE_TEXT[m.kind];
     if (!t) return "";
     return `
@@ -636,17 +688,101 @@ async function dismissCelebration(id) {
   route();
 }
 
+/* 레벨 히어로 카드 — 경험치가 차오르고 레벨이 오르는 게임 화면 */
+function levelHeroHtml(st, g, compact) {
+  const L = st.level;
+  const dayPct = st.dailyTarget ? Math.min(100, Math.round((st.todayGross / st.dailyTarget) * 100)) : 0;
+  return `
+    <div class="gcard ${L.isMax || g.hitTarget ? "done" : ""}">
+      <div class="gcard-head">
+        <span class="gmascot">${L.mascot}</span>
+        <div style="flex:1;min-width:0">
+          <div class="glevel">LV.${L.lv} · 주식회사 리버스</div>
+          <div class="gtitle">${esc(L.title)}</div>
+        </div>
+        <div class="team-avatars">${USERS.map(u =>
+          `<span class="avatar" title="${esc(u.name)}">${esc(u.name[0])}</span>`).join("")}</div>
+        ${compact ? `<button class="btn sm" style="background:rgba(255,255,255,.22);color:#fff"
+          onclick="location.hash='#/team'">자세히</button>` : ""}
+      </div>
+
+      <div class="gbar-row">
+        <div class="gbar-label">
+          <span>경험치 (쌓은 공헌이익)</span>
+          <span>${L.isMax ? "MAX" : `다음 레벨까지 ₩${fmt(L.toNext)}`}</span>
+        </div>
+        <div class="gbar">
+          <div class="gbar-fill ${L.isMax ? "full" : ""}" style="width:${L.pct}%"></div>
+          <span class="gbar-pct">₩${fmt(L.xp)}</span>
+        </div>
+        <div class="gsub">
+          ${L.isMax
+            ? `최고 레벨에 도달했습니다. 🎊`
+            : `${L.nextMascot} <b>LV.${L.lv + 1} ${esc(L.nextTitle)}</b>까지 <b>${Math.round(L.pct)}%</b> 왔습니다.`}
+          ${st.todayCm > 0 ? ` · 오늘 <b>+₩${fmt(st.todayCm)}</b> 획득` : ""}
+        </div>
+      </div>
+
+      ${st.dailyTarget ? `
+      <div class="gbar-row">
+        <div class="gbar-label">
+          <span>오늘의 매출 목표</span>
+          <span>₩${fmt(st.todayGross)} / ₩${fmt(st.dailyTarget)}</span>
+        </div>
+        <div class="gbar">
+          <div class="gbar-fill ${dayPct >= 100 ? "full" : ""}" style="width:${dayPct}%"></div>
+          <span class="gbar-runner" style="left:${Math.max(4, Math.min(96, dayPct))}%">${dayPct >= 100 ? "🎉" : "🏃"}</span>
+        </div>
+        <div class="gsub">${dayPct >= 100
+          ? `오늘 목표 달성! 🔥 이번 달 <b>${st.hitDays}일째</b> 채웠습니다.`
+          : `목표까지 <b>₩${fmt(st.dailyTarget - st.todayGross)}</b> 남았습니다.`}</div>
+      </div>` : ""}
+    </div>`;
+}
+
+// 오늘 할 일을 퀘스트 카드로 (전부 실제 업무와 연결된 것만)
+function questsHtml(st, g, hy) {
+  const q = [];
+  if (st.dailyTarget) q.push({ done: st.todayGross >= st.dailyTarget, ico: "💰",
+    title: `오늘 매출 ₩${fmt(st.dailyTarget)} 채우기`,
+    desc: st.todayGross >= st.dailyTarget ? `달성! ₩${fmt(st.todayGross)}` : `지금 ₩${fmt(st.todayGross)} · ₩${fmt(st.dailyTarget - st.todayGross)} 남음`,
+    href: "#/sales" });
+  q.push({ done: hy.count === 0, ico: "🔍",
+    title: "숫자 정확하게 만들기",
+    desc: hy.count === 0 ? "확인할 점이 없습니다" : `${hy.count}가지 남음 — ${hy.top.text}`,
+    href: hy.count ? hy.top.href : "#/team" });
+  q.push({ done: !st.overdueTasks, ico: "✅",
+    title: "기한 지난 업무 없애기",
+    desc: st.overdueTasks ? `${st.overdueTasks}건 밀려 있습니다` : "밀린 업무가 없습니다",
+    href: "#/tasks" });
+  if (st.fixTotal) q.push({ done: g.hitBep, ico: "🎉",
+    title: "이번 달 손익분기 넘기기",
+    desc: g.hitBep ? "넘겼습니다! 이제 버는 만큼 이익입니다" : `₩${fmt(Math.max(0, st.fixTotal - st.cmNet))} 남음`,
+    href: "#/profit" });
+  const doneCnt = q.filter(x => x.done).length;
+  return `
+    <div class="card">
+      <div class="card-head"><h2>📋 오늘의 퀘스트</h2>
+        <span class="chip ${doneCnt === q.length ? "approved" : "progress"}">${doneCnt} / ${q.length} 완료</span></div>
+      <div class="quests">${q.map(x => `
+        <div class="quest ${x.done ? "done" : ""}" onclick="location.hash='${x.href}'">
+          <span class="quest-ico">${x.ico}</span>
+          <div class="quest-body">
+            <div class="quest-title">${esc(x.title)}</div>
+            <div class="quest-desc">${esc(x.desc)}</div>
+          </div>
+          <span class="quest-check">✓</span>
+        </div>`).join("")}</div>
+    </div>`;
+}
+
 function teamCardHtml(st, g, hy, compact) {
   const badges = teamBadgeStates(st, g, hy);
   return `
+    ${levelHeroHtml(st, g, compact)}
     <div class="card team-card ${g.hitTarget || (g.hitBep && !st.target) ? "done" : ""}">
       <div class="card-head">
         <h2>🎯 ${st.month} 우리 팀</h2>
-        <div style="display:flex;align-items:center;gap:10px">
-          <div class="team-avatars">${USERS.map(u =>
-            `<span class="avatar" title="${esc(u.name)}">${esc(u.name[0])}</span>`).join("")}</div>
-          ${compact ? `<button class="btn sm secondary" onclick="location.hash='#/team'">자세히</button>` : ""}
-        </div>
       </div>
       ${vatCfgWarning()}
       <p style="font-size:15px;line-height:1.75;margin-bottom:16px">${teamHeadline(st, g, hy)}</p>
@@ -678,8 +814,9 @@ function teamCardHtml(st, g, hy, compact) {
           <div class="stat-value">${st.remainDays}일</div></div>
       </div>
 
-      <div class="mstones">${badges.map(b =>
-        `<span class="mstone ${b.on ? "on" : ""}" title="${esc(b.tip)}"><span class="m-ico">${b.ico}</span>${b.label}</span>`).join("")}</div>
+      <div class="coins" style="margin-top:16px">${badges.map(b =>
+        `<div class="coin ${b.on ? "on" : ""}" title="${esc(b.tip)}">
+          <div class="coin-disc">${b.ico}</div><div class="coin-label">${b.label}</div></div>`).join("")}</div>
 
       ${!st.fixTotal && !st.target ? `<p style="font-size:12.5px;color:var(--text-sub);margin-top:12px">
         ℹ️ 월 고정비를 등록하면 손익분기선이 생기고, 목표를 정하면 두 번째 눈금이 생깁니다.
@@ -716,6 +853,7 @@ async function viewTeam() {
   return `
     ${celebrationHtml(cel)}
     ${teamCardHtml(st, g, hy, false)}
+    ${questsHtml(st, g, hy)}
 
     ${!st.dailyTarget ? `
     <div class="card" style="border-left:4px solid var(--amber)">
@@ -784,10 +922,30 @@ async function viewTeam() {
 
     <div class="card">
       <h2>🏅 이번 달 배지</h2>
-      <div class="mstones">${badges.map(b =>
-        `<span class="mstone ${b.on ? "on" : ""}" title="${esc(b.tip)}"><span class="m-ico">${b.ico}</span>${b.label}</span>`).join("")}</div>
-      <p style="font-size:12.5px;color:var(--text-sub);margin-top:12px">
+      <div class="coins" style="margin-top:12px">${badges.map(b =>
+        `<div class="coin ${b.on ? "on" : ""}" title="${esc(b.tip)}">
+          <div class="coin-disc">${b.ico}</div><div class="coin-label">${b.label}</div></div>`).join("")}</div>
+      <p style="font-size:12.5px;color:var(--text-sub);margin-top:14px">
         회색은 아직 못 딴 배지입니다. 달이 바뀌면 모두 초기화되고 다시 도전합니다.</p>
+    </div>
+
+    <div class="card">
+      <h2>🎮 레벨</h2>
+      <p style="font-size:13.5px;color:var(--text-sub);margin-bottom:14px">
+        레벨은 <b>지금까지 쌓아온 공헌이익</b>으로 오릅니다. 달이 바뀌어도 초기화되지 않고 계속 쌓입니다.<br>
+        현재 <b>LV.${st.level.lv} ${esc(st.level.title)}</b> · 누적 <b>₩${fmt(st.level.xp)}</b></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th style="width:60px">레벨</th><th>칭호</th><th class="num">필요 누적 공헌이익</th></tr></thead>
+        <tbody>${LEVELS.map((l, i) => {
+          const lv = i + 1, cur = lv === st.level.lv, got = st.level.xp >= l.need;
+          return `<tr ${cur ? 'style="background:var(--brand-light)"' : ""}>
+            <td><b>${l.mascot} LV.${lv}</b></td>
+            <td>${esc(l.title)}${cur ? ' <span class="chip mine">지금</span>' : ""}</td>
+            <td class="num" style="${got ? "color:var(--green);font-weight:700" : "color:var(--text-sub)"}">
+              ${l.need ? "₩" + fmt(l.need) : "시작"}${got && !cur ? " ✔" : ""}</td>
+          </tr>`; }).join("")}
+        </tbody>
+      </table></div>
     </div>
 
     <div class="card">
@@ -879,8 +1037,14 @@ async function viewDashboard() {
     const hy = collectHygiene(st);
     await claimMilestones(st, g, hy);                 // 새로 달성한 게 있으면 기록
     const cel = await fetchCelebrations(nowMonth);    // 내가 아직 못 본 축하
-    if (cel.length) setTimeout(() => toast(`${MILESTONE_TEXT[cel[0].kind]?.ico || "🎉"} ${MILESTONE_TEXT[cel[0].kind]?.head || "축하합니다"}`), 400);
-    teamHtml = celebrationHtml(cel) + teamCardHtml(st, g, hy, true);
+    if (cel.length) {
+      const c0 = cel[0];
+      const msg = String(c0.kind).startsWith("level_")
+        ? `🎊 LEVEL UP! LV.${String(c0.kind).slice(6)} 달성`
+        : `${MILESTONE_TEXT[c0.kind]?.ico || "🎉"} ${MILESTONE_TEXT[c0.kind]?.head || "축하합니다"}`;
+      setTimeout(() => toast(msg), 400);
+    }
+    teamHtml = celebrationHtml(cel) + teamCardHtml(st, g, hy, true) + questsHtml(st, g, hy);
   } catch (e) { console.error("팀 카드:", e); }
   const monthSales = (saleRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
     .reduce((s, r) => s + Number(r.amount), 0);
@@ -2529,7 +2693,12 @@ async function saveTransfer() {
 
 function channelSetting(name) {
   const c = erpChannelList.find(x => x.name === name);
-  return { fee: Number(c?.fee_rate) || 0, ship: Number(c?.ship_fee) || 0 };
+  return {
+    fee: Number(c?.fee_rate) || 0,        // 판매수수료 %
+    ship: Number(c?.ship_fee) || 0,       // 주문 1건당 배송비 (직접 배송)
+    unit: Number(c?.unit_fee) || 0,       // 개당 물류비 (로켓그로스 등 풀필먼트 입출고비)
+    type: c?.ship_type || "직접배송",
+  };
 }
 
 // 매출 1줄의 공헌이익 계산 (광고비 제외 — 광고비는 기간 단위로 배분)
@@ -2562,14 +2731,16 @@ function cmOfSale(r, shipCharged) {
   // 채널 수수료는 '고객이 실제로 결제한 금액'(부가세 포함)에 붙는다
   const feeGross = Math.round((revenue + outVat) * st.fee / 100);
   const shipGross = (!shipCharged || shipCharged.has(r)) ? st.ship : 0;
-  const fee = expNet(feeGross), ship = expNet(shipGross);
+  // 로켓그로스처럼 개당 물류비가 붙는 채널은 수량만큼 곱한다
+  const logiGross = st.unit * qty;
+  const fee = expNet(feeGross), ship = expNet(shipGross), logi = expNet(logiGross);
   return {
     // 고객이 실제로 낸 돈 = 공급가액 + 부가세 (판매가를 부가세 별도로 적는 경우도 맞음)
-    gross: revenue + outVat, revenue, outVat, qty, cost, fee, ship,
-    // 수수료·배송비에 붙은 부가세 — 부가세 신고 시 공제받는 매입세액
-    feeShipVat: expVat(feeGross) + expVat(shipGross),
-    inVat: buyVat(unitCost * qty, p) + expVat(feeGross) + expVat(shipGross),
-    cm: revenue - cost - fee - ship,
+    gross: revenue + outVat, revenue, outVat, qty, cost, fee, ship, logi,
+    // 수수료·배송비·물류비에 붙은 부가세 — 부가세 신고 시 공제받는 매입세액
+    feeShipVat: expVat(feeGross) + expVat(shipGross) + expVat(logiGross),
+    inVat: buyVat(unitCost * qty, p) + expVat(feeGross) + expVat(shipGross) + expVat(logiGross),
+    cm: revenue - cost - fee - ship - logi,
     noCost: !unitCost,
     noChannel: !!r.channel && !erpChannelList.some(c => c.name === r.channel),
   };
@@ -2581,11 +2752,11 @@ function sumCM(rows) {
     const c = cmOfSale(r, shipCharged);
     s.gross += c.gross; s.revenue += c.revenue; s.outVat += c.outVat; s.inVat += c.inVat;
     s.qty += c.qty; s.cost += c.cost;
-    s.fee += c.fee; s.ship += c.ship; s.cm += c.cm;
+    s.fee += c.fee; s.ship += c.ship; s.logi += c.logi; s.cm += c.cm;
     if (c.noCost) { s.noCostRows++; s.noCostRevenue += c.revenue; }
     if (c.noChannel) s.unknownChannels.add(r.channel);
     return s;
-  }, { gross: 0, revenue: 0, outVat: 0, inVat: 0, qty: 0, cost: 0, fee: 0, ship: 0, cm: 0,
+  }, { gross: 0, revenue: 0, outVat: 0, inVat: 0, qty: 0, cost: 0, fee: 0, ship: 0, logi: 0, cm: 0,
        noCostRows: 0, noCostRevenue: 0, unknownChannels: new Set() });
 }
 
@@ -2673,14 +2844,14 @@ async function viewProfit() {
   const byCh = {};
   rows.forEach(r => {
     const k = r.channel || "기타";
-    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, cm: 0, ad: 0 };
+    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, logi: 0, cm: 0, ad: 0 };
     const c = cmOfSale(r, shipCharged);
     byCh[k].revenue += c.revenue; byCh[k].cost += c.cost;
-    byCh[k].fee += c.fee; byCh[k].ship += c.ship; byCh[k].cm += c.cm;
+    byCh[k].fee += c.fee; byCh[k].ship += c.ship; byCh[k].logi += c.logi; byCh[k].cm += c.cm;
   });
   monthAds.forEach(a => {
     const k = a.channel || "기타";
-    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, cm: 0, ad: 0 };
+    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, logi: 0, cm: 0, ad: 0 };
     // 상단 합계와 같은 기준(부가세 제외)으로 차감해야 두 숫자가 어긋나지 않음
     const net = expNet(a.amount);
     byCh[k].ad += net;
@@ -2749,7 +2920,9 @@ async function viewProfit() {
         <thead><tr><th>항목</th><th class="num">금액</th><th class="num">매출 대비</th></tr></thead>
         <tbody>
           <tr><td>매출액</td><td class="num"><b>₩${fmt(t.revenue)}</b></td><td class="num">100%</td></tr>
-          ${[["상품원가", t.cost], ["판매수수료", t.fee], ["출고배송비", t.ship], ["광고비", adTotal]].map(([label, v]) => `
+          ${[["상품원가", t.cost], ["판매수수료", t.fee], ["출고배송비", t.ship],
+             ["물류비 (로켓그로스 등)", t.logi], ["광고비", adTotal]]
+            .filter(([label, v]) => v > 0 || !label.startsWith("물류비")).map(([label, v]) => `
             <tr><td style="padding-left:18px;color:var(--text-sub)">− ${label}</td>
               <td class="num">₩${fmt(v)}</td>
               <td class="num">${t.revenue ? (v / t.revenue * 100).toFixed(1) : 0}%</td></tr>`).join("")}
@@ -2804,7 +2977,7 @@ async function viewProfit() {
     <div class="card">
       <h2>채널별 공헌이익</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>채널</th><th class="num">매출</th><th class="num">원가</th><th class="num">수수료</th><th class="num">배송비</th><th class="num">광고비</th><th class="num">공헌이익</th><th class="num">이익률</th></tr></thead>
+        <thead><tr><th>채널</th><th class="num">매출</th><th class="num">원가</th><th class="num">수수료</th><th class="num">배송비</th><th class="num">물류비</th><th class="num">광고비</th><th class="num">공헌이익</th><th class="num">이익률</th></tr></thead>
         <tbody>${Object.keys(byCh).length ? Object.entries(byCh)
           .sort((a, b) => b[1].cm - a[1].cm).map(([k, v]) => `
           <tr>
@@ -2813,10 +2986,11 @@ async function viewProfit() {
             <td class="num">₩${fmt(v.cost)}</td>
             <td class="num">₩${fmt(v.fee)}</td>
             <td class="num">₩${fmt(v.ship)}</td>
+            <td class="num">${v.logi ? "₩" + fmt(v.logi) : '<span style="color:var(--text-sub)">—</span>'}</td>
             <td class="num">₩${fmt(v.ad)}</td>
             <td class="num"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
             <td class="num">${v.revenue ? (v.cm / v.revenue * 100).toFixed(1) + "%" : "—"}</td>
-          </tr>`).join("") : `<tr><td colspan="8" class="empty">데이터가 없습니다</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="9" class="empty">데이터가 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>
@@ -3290,6 +3464,14 @@ function openSupplierModal(id) {
   document.getElementById("sp-name").focus();
 }
 
+// 배송 방식에 따라 관련 없는 입력칸을 흐리게 (헷갈림 방지)
+function toggleShipType() {
+  const full = document.getElementById("ch-type")?.value === "풀필먼트";
+  const s = document.getElementById("fld-ship"), u = document.getElementById("fld-unit");
+  if (s) s.style.opacity = full ? ".45" : "1";
+  if (u) u.style.opacity = full ? "1" : ".45";
+}
+
 async function saveSupplier(id) {
   const name = document.getElementById("sp-name").value.trim();
   if (!name) return toast("거래처명을 입력해 주세요");
@@ -3355,12 +3537,16 @@ async function viewChannels() {
         ⚠️ 비밀번호는 로그인한 직원이 볼 수 있으니, 이 앱의 로그인 비밀번호를 잘 관리하세요.
       </p>
       <div class="table-wrap"><table>
-        <thead><tr><th>채널명</th><th class="num">수수료</th><th class="num">배송비</th><th>사이트</th><th>아이디</th><th>비밀번호</th><th>메모</th><th></th></tr></thead>
+        <thead><tr><th>채널명</th><th>배송</th><th class="num">수수료</th><th class="num">배송비/물류비</th><th>사이트</th><th>아이디</th><th>비밀번호</th><th>메모</th><th></th></tr></thead>
         <tbody>${list.length ? list.map(c => `
           <tr>
             <td><b>${esc(c.name)}</b></td>
+            <td>${c.ship_type === "풀필먼트"
+              ? '<span class="chip mine">풀필먼트</span>' : '<span style="color:var(--text-sub)">직접배송</span>'}</td>
             <td class="num">${Number(c.fee_rate) ? Number(c.fee_rate).toFixed(1) + "%" : '<span style="color:#d9480f">미설정</span>'}</td>
-            <td class="num">${Number(c.ship_fee) ? "₩" + fmt(c.ship_fee) : '<span style="color:var(--text-sub)">—</span>'}</td>
+            <td class="num">${c.ship_type === "풀필먼트"
+              ? (Number(c.unit_fee) ? "개당 ₩" + fmt(c.unit_fee) : '<span style="color:#d9480f">미설정</span>')
+              : (Number(c.ship_fee) ? "건당 ₩" + fmt(c.ship_fee) : '<span style="color:var(--text-sub)">—</span>')}</td>
             <td>${c.url ? `<a href="${esc(normUrl(c.url))}" target="_blank" rel="noopener" style="color:var(--brand)">바로가기 ↗</a>` : "—"}</td>
             <td>${c.login_id ? `${esc(c.login_id)} <button class="btn-ghost" style="font-size:12px" title="복사"
               data-copy="${esc(c.login_id)}" onclick="copyText(this.dataset.copy)">📋</button>` : "—"}</td>
@@ -3374,7 +3560,7 @@ async function viewChannels() {
             <td style="white-space:nowrap">
               <button class="btn sm secondary" onclick="openChannelModal('${c.id}')">수정</button>
               <button class="btn sm danger" onclick="deleteChannel('${c.id}')">삭제</button></td>
-          </tr>`).join("") : `<tr><td colspan="8" class="empty">등록된 채널이 없습니다</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="9" class="empty">등록된 채널이 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>`;
@@ -3434,10 +3620,20 @@ async function openChannelModal(id) {
           <div class="field"><label>비밀번호</label><input id="ch-pw" value="${esc(c?.login_pw || "")}" maxlength="60" autocomplete="off"></div>
           <div class="field"><label>판매수수료 (%)</label>
             <input id="ch-fee" type="number" min="0" max="100" step="0.1" value="${c?.fee_rate ?? ""}" placeholder="예) 10.8"></div>
-          <div class="field"><label>출고배송비 (건당, 원)${vatTag("exp")}</label>
+          <div class="field full"><label>배송 방식</label>
+            <select id="ch-type" onchange="toggleShipType()">
+              <option value="직접배송" ${(c?.ship_type || "직접배송") === "직접배송" ? "selected" : ""}>직접 배송 — 우리가 택배로 보냄</option>
+              <option value="풀필먼트" ${c?.ship_type === "풀필먼트" ? "selected" : ""}>풀필먼트 — 몰이 보관·배송 (쿠팡 로켓그로스 등)</option>
+            </select></div>
+          <div class="field" id="fld-ship"><label>출고배송비 (주문 1건당, 원)${vatTag("exp")}</label>
             <input id="ch-ship" type="number" min="0" value="${c?.ship_fee ?? ""}" placeholder="예) 3300"></div>
-          <div class="field full" style="font-size:12px;color:var(--text-sub)">
-            ※ 수수료율·배송비를 넣으면 공헌이익 화면에서 채널별 실제 이익이 자동 계산됩니다.</div>
+          <div class="field" id="fld-unit"><label>물류비 (상품 1개당, 원)${vatTag("exp")}</label>
+            <input id="ch-unit" type="number" min="0" value="${c?.unit_fee ?? ""}" placeholder="예) 1800"></div>
+          <div class="field full" style="font-size:12px;color:var(--text-sub);line-height:1.7">
+            ※ <b>직접 배송</b>: 주문 1건마다 택배비가 나갑니다 → 위의 <b>출고배송비</b>만 넣으세요.<br>
+            ※ <b>풀필먼트(로켓그로스 등)</b>: 택배비 대신 <b>개당 물류비(입출고비)</b>가 붙습니다 → <b>물류비</b>에 넣으세요.
+            보관료처럼 월 단위로 나가는 비용은 공헌이익 화면의 <b>고정비</b>에 넣으시면 됩니다.<br>
+            ※ 넣어두면 공헌이익 화면에서 채널별 실제 이익이 자동 계산됩니다.</div>
           <div class="field full"><label>메모</label><textarea id="ch-memo" maxlength="200">${esc(c?.memo || "")}</textarea></div>
         </div>
         <div class="modal-actions">
@@ -3446,6 +3642,7 @@ async function openChannelModal(id) {
         </div>
       </div>
     </div>`;
+  toggleShipType();
 }
 
 async function saveChannel(id) {
@@ -3464,7 +3661,9 @@ async function saveChannel(id) {
     login_id: document.getElementById("ch-id").value.trim(),
     login_pw: document.getElementById("ch-pw").value,
     fee_rate: fee,
+    ship_type: document.getElementById("ch-type").value,
     ship_fee: Number(document.getElementById("ch-ship").value) || 0,
+    unit_fee: Number(document.getElementById("ch-unit").value) || 0,
     memo: document.getElementById("ch-memo").value.trim(),
   };
   const res = id
