@@ -285,6 +285,7 @@ const routes = {
   docs: { title: "전체 문서함", render: viewAllDocs },
   products: { title: "제품 마스터", render: viewProducts },
   channels: { title: "판매채널·SCM 계정", render: viewChannels },
+  suppliers: { title: "매입 거래처", render: viewSuppliers },
   sales: { title: "매출 입력·조회", render: viewSales, after: () => addSaleRow() },
   purchases: { title: "매입 입력·조회", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
@@ -967,22 +968,42 @@ let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
 let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
 let erpCostsCache = []; // 부대비용(택배·운송) 캐시
-let erpSuppliers = [];
+let erpSuppliers = [];      // 과거 매입에 쓰인 거래처명
+let erpSupplierList = [];   // suppliers 테이블 (등록된 거래처)
 let erpChannels = [];
 
 const prodName = id => (erpProducts.find(p => p.id === id) || {}).name || "?";
+
+// 등록된 거래처 + 과거 매입에 쓰인 이름을 합쳐 선택지로. 하나도 없으면 등록을 안내
+function supplierOptionsHtml(sel) {
+  const active = erpSupplierList.filter(s => s.active !== false).map(s => s.name);
+  const names = [...new Set([...active, ...erpSuppliers])].filter(Boolean);
+  if (!names.length) {
+    return `<div style="border:1.5px dashed var(--line);border-radius:9px;padding:10px;font-size:13px;color:var(--text-sub)">
+      등록된 거래처가 없습니다 —
+      <a onclick="location.hash='#/suppliers'" style="color:var(--brand);cursor:pointer;font-weight:600">거래처를 먼저 등록해 주세요 →</a>
+      <input type="hidden" id="b-supplier" value="">
+    </div>`;
+  }
+  return `<select id="b-supplier">
+    <option value="">거래처를 선택하세요</option>
+    ${names.map(n => `<option value="${esc(n)}" ${n === sel ? "selected" : ""}>${esc(n)}</option>`).join("")}
+  </select>`;
+}
 const monthOf = r => (r.date || "").slice(0, 7);
 
 /* 제품·재고·거래처·채널 공통 로드 */
 async function loadErpBase() {
-  const [prodRes, buyRes, saleRes, costRes, chRes, trRes] = await Promise.all([
+  const [prodRes, buyRes, saleRes, costRes, chRes, trRes, spRes] = await Promise.all([
     sb.from("products").select("*").order("name"),
     sb.from("purchases").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("sales").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("purchase_costs").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("sales_channels").select("*").order("created_at"),
     sb.from("stock_transfers").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
+    sb.from("suppliers").select("*").order("name"),
   ]);
+  erpSupplierList = spRes.data || [];
   erpProducts = prodRes.data || [];
   const buys = buyRes.data || [];
   const sales = saleRes.data || [];
@@ -1210,9 +1231,9 @@ async function viewPurchases() {
         </div></div>
       <div class="form-grid" style="margin-bottom:10px">
         <div class="field"><label>매입일 *</label><input id="b-date" type="date" value="${today()}"></div>
-        <div class="field"><label>거래처</label>
-          <input id="b-supplier" list="supplier-list" placeholder="거래처 입력 또는 선택" maxlength="40">
-          <datalist id="supplier-list">${erpSuppliers.map(s => `<option value="${esc(s)}">`).join("")}</datalist></div>
+        <div class="field"><label>거래처 *
+          <a onclick="location.hash='#/suppliers'" style="color:var(--brand);font-size:12px;cursor:pointer;font-weight:400">＋거래처 관리</a></label>
+          ${supplierOptionsHtml()}</div>
         <div class="field"><label>택배비(원) — 상품값과 별도</label><input id="b-ship" type="number" min="0" placeholder="0"></div>
         <div class="field"><label>운송비(원) — 상품값과 별도</label><input id="b-freight" type="number" min="0" placeholder="0"></div>
       </div>
@@ -1315,6 +1336,7 @@ async function savePurchases() {
   const date = document.getElementById("b-date").value;
   const supplier = document.getElementById("b-supplier").value.trim();
   if (!date) return toast("매입일을 선택해 주세요");
+  if (!supplier) return toast("거래처를 선택해 주세요 (매입 거래처 화면에서 등록할 수 있습니다)");
   const ship = Number(document.getElementById("b-ship").value) || 0;
   const freight = Number(document.getElementById("b-freight").value) || 0;
   const recs = [];
@@ -1510,7 +1532,8 @@ function xlsRowHtml(r, i, isSale) {
       <td><input type="number" class="xr-qty" min="1" value="${r.qty}" style="width:70px" oninput="updateXlsSummary()"></td>
       <td><input type="number" class="xr-price" min="0" value="${r.price}" style="width:100px" oninput="updateXlsSummary()"></td>
       <td class="num xr-amt" style="font-weight:700"></td>
-      <td><input class="xr-party" value="${esc(r.party)}" placeholder="${isSale ? "채널" : "거래처"}" style="width:90px" list="${isSale ? "" : "supplier-list"}"></td>
+      <td><input class="xr-party" value="${esc(r.party)}" placeholder="${isSale ? "채널" : "거래처"}" style="width:90px"
+        list="${isSale ? "xls-channel-list" : "xls-supplier-list"}"></td>
       <td><input class="xr-memo" value="${esc(r.memo)}" maxlength="100" style="width:110px"></td>
     </tr>`;
 }
@@ -1538,6 +1561,10 @@ function renderExcelPreview() {
             <th class="num">수량</th><th class="num">단가</th><th class="num">금액</th>
             <th>${isSale ? "채널" : "거래처"}</th><th>적요</th></tr></thead>
           <tbody id="xls-rows">${d.rows.map((r, i) => xlsRowHtml(r, i, isSale)).join("")}</tbody>
+          <datalist id="xls-channel-list">${erpChannels.map(c => `<option value="${esc(c)}">`).join("")}</datalist>
+          <datalist id="xls-supplier-list">${
+            [...new Set([...erpSupplierList.filter(s => s.active !== false).map(s => s.name), ...erpSuppliers])]
+              .filter(Boolean).map(n => `<option value="${esc(n)}">`).join("")}</datalist>
         </table></div>
         <div class="total-line" id="xls-summary"></div>
         <div class="modal-actions">
@@ -1706,7 +1733,10 @@ function openErpEditModal(table, id) {
           <div class="field"><label>${isSale ? "채널" : "거래처"}</label>
             ${isSale
               ? `<select id="e-party">${[...new Set([...erpChannels, r.channel, "기타"])].filter(Boolean).map(c => `<option ${c === r.channel ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`
-              : `<input id="e-party" list="supplier-list" value="${esc(r.supplier)}">`}</div>
+              : `<select id="e-party">${
+                  [...new Set([...erpSupplierList.filter(s => s.active !== false).map(s => s.name), ...erpSuppliers, r.supplier])]
+                    .filter(Boolean)
+                    .map(n => `<option ${n === r.supplier ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`}</div>
           <div class="field full"><label>품목</label><select id="e-prod">${productOptions(r.product_id, isSale ? "" : "buy")}</select></div>
           <div class="field"><label>수량</label><input id="e-qty" type="number" min="1" value="${r.qty}"></div>
           <div class="field"><label>단가(원)</label><input id="e-price" type="number" min="0" value="${isSale ? r.unit_price : r.unit_cost}"></div>
@@ -2546,6 +2576,146 @@ async function viewReport() {
     </div>`;
 }
 
+/* ---------- 매입 거래처 ---------- */
+let supplierCache = [];
+
+async function viewSuppliers() {
+  const { data, error } = await sb.from("suppliers").select("*").order("name");
+  supplierCache = error ? [] : (data || []);
+  const list = supplierCache;
+  return `
+    <div class="card">
+      <div class="card-head"><h2>매입 거래처 (${list.length}곳)</h2>
+        <button class="btn sm" onclick="openSupplierModal()">＋ 거래처 등록</button></div>
+      <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
+        물건을 사오는 곳(제조사·도매처·수입사)을 등록합니다. 여기 등록한 거래처가
+        <b>매입 입력 화면의 선택 목록</b>에 나옵니다. 결제조건을 적어두면 자금 계획을 세울 때 도움이 됩니다.</p>
+      ${!list.length ? `<div style="background:var(--brand-light);border-radius:9px;padding:14px;font-size:13.5px">
+        아직 등록된 거래처가 없습니다. <b>[＋ 거래처 등록]</b>을 눌러 자주 매입하는 곳부터 넣어 보세요.<br>
+        상호만 넣어도 되고, 사업자등록번호·결제조건은 나중에 채워도 됩니다.
+      </div>` : `
+      <div class="table-wrap"><table>
+        <thead><tr><th>거래처명</th><th>사업자번호</th><th>대표자</th><th>연락처</th>
+          <th>담당자</th><th>결제조건</th><th>메모</th><th></th></tr></thead>
+        <tbody>${list.map(s => `
+          <tr ${s.active === false ? 'style="opacity:.5"' : ""}>
+            <td><b>${esc(s.name)}</b>${s.active === false ? ' <span class="chip waiting">거래중단</span>' : ""}
+              ${s.tax_type === "면세" ? ' <span class="chip waiting">면세</span>' : ""}</td>
+            <td>${esc(s.biz_no) || "—"}</td>
+            <td>${esc(s.ceo) || "—"}</td>
+            <td>${s.phone ? `<a href="tel:${esc(s.phone)}" style="color:var(--brand)">${esc(s.phone)}</a>` : "—"}</td>
+            <td>${esc(s.manager) || "—"}</td>
+            <td>${esc(s.pay_terms) || "—"}</td>
+            <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(s.memo)}</td>
+            <td style="white-space:nowrap">
+              <button class="btn sm secondary" onclick="openSupplierModal('${s.id}')">수정</button>
+              <button class="btn sm danger" onclick="deleteSupplier('${s.id}')">삭제</button></td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>`}
+    </div>`;
+}
+
+function openSupplierModal(id) {
+  const s = id ? supplierCache.find(x => x.id === id) : null;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:620px">
+        <h3>${s ? "거래처 수정" : "거래처 등록"}</h3>
+        <div class="form-grid">
+          <div class="field full"><label>거래처명 *</label>
+            <input id="sp-name" value="${esc(s?.name || "")}" placeholder="예) 한빛유통" maxlength="40"></div>
+          <div class="field"><label>사업자등록번호</label>
+            <input id="sp-biz" value="${esc(s?.biz_no || "")}" placeholder="000-00-00000" maxlength="20"></div>
+          <div class="field"><label>대표자</label>
+            <input id="sp-ceo" value="${esc(s?.ceo || "")}" maxlength="20"></div>
+          <div class="field"><label>연락처</label>
+            <input id="sp-phone" value="${esc(s?.phone || "")}" placeholder="02-000-0000" maxlength="20"></div>
+          <div class="field"><label>이메일</label>
+            <input id="sp-email" value="${esc(s?.email || "")}" maxlength="60"></div>
+          <div class="field"><label>담당자</label>
+            <input id="sp-manager" value="${esc(s?.manager || "")}" placeholder="예) 김과장" maxlength="20"></div>
+          <div class="field"><label>결제조건</label>
+            <input id="sp-terms" list="payterms-list" value="${esc(s?.pay_terms || "")}" placeholder="예) 월말 결제" maxlength="30">
+            <datalist id="payterms-list">
+              <option value="선입금"><option value="월말 결제"><option value="익월 10일 결제">
+              <option value="익월 말일 결제"><option value="현금 결제"><option value="30일 후 결제">
+            </datalist></div>
+          <div class="field"><label>부가세</label>
+            <select id="sp-tax">
+              <option value="과세" ${(s?.tax_type || "과세") === "과세" ? "selected" : ""}>과세 (세금계산서)</option>
+              <option value="면세" ${s?.tax_type === "면세" ? "selected" : ""}>면세 (계산서)</option>
+            </select></div>
+          <div class="field"><label>거래 상태</label>
+            <select id="sp-active">
+              <option value="1" ${s?.active !== false ? "selected" : ""}>거래 중</option>
+              <option value="0" ${s?.active === false ? "selected" : ""}>거래 중단 (목록에서 숨김)</option>
+            </select></div>
+          <div class="field full"><label>주소</label>
+            <input id="sp-addr" value="${esc(s?.address || "")}" maxlength="100"></div>
+          <div class="field full"><label>메모</label>
+            <textarea id="sp-memo" maxlength="200" placeholder="예) 최소 주문 50만원, 배송 3일 소요">${esc(s?.memo || "")}</textarea></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-sp-save" onclick="saveSupplier('${id || ""}')">저장</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("sp-name").focus();
+}
+
+async function saveSupplier(id) {
+  const name = document.getElementById("sp-name").value.trim();
+  if (!name) return toast("거래처명을 입력해 주세요");
+  const btn = document.getElementById("btn-sp-save");
+  if (btn) btn.disabled = true;
+  const data = {
+    name,
+    biz_no: document.getElementById("sp-biz").value.trim(),
+    ceo: document.getElementById("sp-ceo").value.trim(),
+    phone: document.getElementById("sp-phone").value.trim(),
+    email: document.getElementById("sp-email").value.trim(),
+    manager: document.getElementById("sp-manager").value.trim(),
+    pay_terms: document.getElementById("sp-terms").value.trim(),
+    tax_type: document.getElementById("sp-tax").value,
+    active: document.getElementById("sp-active").value === "1",
+    address: document.getElementById("sp-addr").value.trim(),
+    memo: document.getElementById("sp-memo").value.trim(),
+    updated_by: me.name,
+  };
+  const res = id
+    ? await sb.from("suppliers").update(data).eq("id", id).select("id")
+    : await sb.from("suppliers").insert(data).select("id");
+  if (res.error) {
+    if (btn) btn.disabled = false;
+    return toast(res.error.code === "23505" ? "이미 등록된 거래처명입니다" : "저장에 실패했습니다");
+  }
+  if (!res.data?.length) { if (btn) btn.disabled = false; return toast("처리할 거래처를 찾지 못했습니다"); }
+  toast(id ? "수정되었습니다" : "거래처가 등록되었습니다");
+  closeModal();
+  route();
+}
+
+async function deleteSupplier(id) {
+  const s = supplierCache.find(x => x.id === id);
+  if (!s) return;
+  // 거래처명은 매입 기록에 문자열로 남으므로, 기록이 있으면 '거래 중단'을 권함
+  const { count } = await sb.from("purchases").select("id", { count: "exact", head: true }).eq("supplier", s.name);
+  if (count) {
+    return alert(
+      `'${s.name}'은(는) 삭제하지 않는 편이 좋습니다.\n\n`
+      + `이 거래처로 기록된 매입이 ${count}건 있습니다.\n`
+      + `삭제해도 매입 기록은 남지만, 거래처 정보(사업자번호·결제조건)를 잃게 됩니다.\n\n`
+      + `더 이상 거래하지 않는다면 [수정] → 거래 상태를 '거래 중단'으로 바꿔 주세요.`);
+  }
+  if (!confirm(`'${s.name}' 거래처를 삭제할까요?`)) return;
+  const { data, error } = await sb.from("suppliers").delete().eq("id", id).select("id");
+  if (error || !data?.length) return toast("삭제에 실패했습니다");
+  toast("삭제되었습니다");
+  route();
+}
+
 /* ---------- 판매채널 · SCM 계정 ---------- */
 async function viewChannels() {
   const { data } = await sb.from("sales_channels").select("*").order("created_at");
@@ -3368,7 +3538,7 @@ async function saveVatCfg() {
 }
 
 const BACKUP_TABLES = ["documents", "products", "sales", "purchases", "purchase_costs", "settings",
-  "sales_channels", "stock_transfers", "cash_accounts", "cash_txns", "cash_plans",
+  "sales_channels", "suppliers", "stock_transfers", "cash_accounts", "cash_txns", "cash_plans",
   "ad_costs", "fixed_costs", "tasks", "ai_reports", "profiles"];
 
 async function exportJSON() {
