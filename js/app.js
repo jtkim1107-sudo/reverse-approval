@@ -85,6 +85,14 @@ const vatTagCash = () => vatCfg.enabled
   ? `<span title="통장에 실제로 오간 금액 그대로 입력하세요" style="background:#ebfbee;color:#2b8a3e;border-radius:5px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:4px">부가세 포함</span>`
   : "";
 
+/* 발주서에 찍히는 우리 회사 정보 */
+let companyCfg = { name: "주식회사 리버스", biz_no: "", ceo: "", addr: "", phone: "", email: "" };
+async function loadCompanyCfg() {
+  const { data } = await sb.from("settings").select("value").eq("key", "company").maybeSingle();
+  if (data?.value) companyCfg = { ...companyCfg, ...data.value };
+  return companyCfg;
+}
+
 let vatCfgLoaded = false;
 async function loadVatCfg() {
   const { data, error } = await sb.from("settings").select("value").eq("key", "vat").maybeSingle();
@@ -184,7 +192,7 @@ async function enterApp(userId) {
   me = USERS.find(u => u.id === userId);
   if (!me) { await sb.auth.signOut(); return false; }
 
-  await loadVatCfg(); // 이익 계산 기준이므로 화면을 그리기 전에 불러와야 함
+  await Promise.all([loadVatCfg(), loadCompanyCfg()]); // 이익 계산 기준이므로 화면을 그리기 전에
   document.getElementById("login-screen").classList.add("hidden");
   document.getElementById("app").classList.remove("hidden");
   document.getElementById("login-pw").value = "";
@@ -323,6 +331,7 @@ const routes = {
   suppliers: { title: "매입 거래처", render: viewSuppliers },
   sales: { title: "매출 입력", render: viewSales, after: () => addSaleRow() },
   po: { title: "발주서", render: viewPurchaseOrders },
+  podoc: { title: "발주서", render: viewPODoc },
   purchases: { title: "매입 입력", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
   profit: { title: "공헌이익", render: viewProfit },
@@ -3489,7 +3498,9 @@ async function viewPurchaseOrders() {
             <td class="num">${p.freight_est ? "₩" + fmt(p.freight_est) : "—"}</td>
             <td>${poChip(p.status)}</td>
             <td>${esc(userName(p.drafter_id))}</td>
-            <td><button class="btn sm secondary" onclick="event.stopPropagation();openPODetail('${p.id}')">열기</button></td>
+            <td style="white-space:nowrap">
+              <button class="btn sm secondary" onclick="event.stopPropagation();openPODetail('${p.id}')">열기</button>
+              <button class="btn sm secondary" onclick="event.stopPropagation();location.hash='#/podoc/${p.id}'">📄</button></td>
           </tr>`).join("") : `<tr><td colspan="9" class="empty">작성된 발주서가 없습니다</td></tr>`}
         </tbody>
       </table></div>
@@ -3505,6 +3516,7 @@ function openPOModal() {
         <h3>📦 발주서 작성</h3>
         <div class="form-grid">
           <div class="field"><label>발주일 *</label><input id="po-date" type="date" value="${today()}"></div>
+          <div class="field"><label>납품희망일</label><input id="po-due" type="date" value="${addDaysStr(today(), 7)}"></div>
           <div class="field"><label>거래처 *
             <a onclick="closeModal();location.hash='#/suppliers'" style="color:var(--brand);font-size:12px;cursor:pointer;font-weight:400">＋거래처 관리</a></label>
             ${supplierOptionsHtml().replace(/id="b-supplier"/, 'id="po-supplier"')}</div>
@@ -3593,6 +3605,7 @@ async function savePO(isJeongyeol) {
   const { data: po, error } = await sb.from("purchase_orders").insert({
     po_no: noData || `리버스-발주-${today().slice(0, 4)}-${Date.now().toString().slice(-3)}`,
     date, supplier,
+    due_date: document.getElementById("po-due").value || null,
     deliver_to: document.getElementById("po-deliver").value,
     freight_est: Number(document.getElementById("po-freight").value) || 0,
     total: items.reduce((s, i) => s + i.amount, 0),
@@ -3665,7 +3678,9 @@ function openPODetail(id) {
 
         <div class="modal-actions" style="flex-wrap:wrap;gap:8px">
           <button class="btn secondary" onclick="closeModal()">닫기</button>
-          <button class="btn secondary" onclick="copyPOText('${p.id}')">📋 발주 내용 복사</button>
+          <button class="btn secondary" onclick="closeModal();location.hash='#/podoc/${p.id}'">📄 발주서 보기</button>
+          ${canOrder || ["ordered","partial","done"].includes(p.status)
+            ? `<button class="btn" onclick="closeModal();location.hash='#/podoc/${p.id}'">📧 메일 보내기</button>` : ""}
           ${canDecide ? `
             <button class="btn danger" onclick="decidePO('${p.id}','rejected')">반려</button>
             <button class="btn green" onclick="decidePO('${p.id}','approved')">승인</button>` : ""}
@@ -3676,6 +3691,164 @@ function openPODetail(id) {
         </div>
       </div>
     </div>`;
+}
+
+/* ---------- 발주서 문서 (인쇄·PDF·메일용 정식 양식) ---------- */
+async function viewPODoc(id) {
+  // 문서 화면은 항상 최신 상태로 — 캐시를 쓰면 결재 결과가 반영되지 않는다
+  await loadErpBase();
+  await loadPOs();
+  const p = poCache.find(x => x.id === id);
+  if (!p) return `<div class="card"><p>발주서를 찾을 수 없습니다.</p>
+    <button class="btn" onclick="location.hash='#/po'">발주서 목록으로</button></div>`;
+  const items = poItemCache[id] || [];
+  const sup = erpSupplierList.find(s => s.name === p.supplier) || {};
+  const supply = items.reduce((s, it) => s + Number(it.amount), 0);        // 공급가액 기준
+  const net = vatCfg.purchaseCostIncludesVat ? Math.round(supply / 1.1) : supply;
+  const vat = vatCfg.enabled ? (vatCfg.purchaseCostIncludesVat ? supply - net : Math.round(net * 0.1)) : 0;
+  const grand = net + vat;
+  const approved = ["approved", "ordered", "partial", "done"].includes(p.status);
+  const apprStep = (p.approval_line || []).find(s => s.status === "approved");
+  const canSend = approved;
+
+  return `
+    <div class="no-print" style="margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <button class="btn secondary" onclick="location.hash='#/po'">← 목록</button>
+      ${canSend ? `
+        <button class="btn" onclick="mailPO('${p.id}')">📧 거래처에 메일 보내기</button>
+        <button class="btn secondary" onclick="window.print()">🖨 인쇄 · PDF 저장</button>
+        <button class="btn secondary" onclick="copyPOText('${p.id}')">📋 내용 복사</button>
+      ` : `<span class="chip progress">결재가 끝나야 보낼 수 있습니다</span>`}
+      ${!sup.email && canSend ? `<span style="font-size:12.5px;color:#d9480f">
+        ⚠️ ${esc(p.supplier)}의 이메일이 등록되지 않았습니다 —
+        <a onclick="location.hash='#/suppliers'" style="color:var(--brand);cursor:pointer;font-weight:600">등록하기 →</a></span>` : ""}
+      ${!companyCfg.biz_no ? `<span style="font-size:12.5px;color:#d9480f">
+        ⚠️ 우리 회사 사업자정보가 비어 있습니다 —
+        <a onclick="location.hash='#/settings'" style="color:var(--brand);cursor:pointer;font-weight:600">설정에서 입력 →</a></span>` : ""}
+    </div>
+
+    <div class="card po-doc" id="po-doc">
+      <div class="po-title">발 주 서</div>
+      <div class="po-sub">PURCHASE ORDER</div>
+
+      <table class="po-meta">
+        <tr><th>발주번호</th><td><b>${esc(p.po_no)}</b></td>
+            <th>발주일</th><td>${esc(p.date)}</td></tr>
+        <tr><th>납품희망일</th><td>${p.due_date ? esc(p.due_date) : "협의"}</td>
+            <th>입고처</th><td>${p.deliver_to === "쿠팡" ? "쿠팡 물류센터 (로켓그로스)" : "자사창고"}</td></tr>
+      </table>
+
+      <div class="po-parties">
+        <div class="po-party">
+          <div class="po-party-h">공급자 (받는 분)</div>
+          <table><tbody>
+            <tr><th>상호</th><td><b>${esc(p.supplier)}</b></td></tr>
+            <tr><th>사업자번호</th><td>${esc(sup.biz_no) || "—"}</td></tr>
+            <tr><th>대표자</th><td>${esc(sup.ceo) || "—"}</td></tr>
+            <tr><th>담당자</th><td>${esc(sup.manager) || "—"}</td></tr>
+            <tr><th>연락처</th><td>${esc(sup.phone) || "—"}</td></tr>
+            <tr><th>이메일</th><td>${esc(sup.email) || "—"}</td></tr>
+          </tbody></table>
+        </div>
+        <div class="po-party">
+          <div class="po-party-h">발주자 (보내는 분)</div>
+          <table><tbody>
+            <tr><th>상호</th><td><b>${esc(companyCfg.name)}</b></td></tr>
+            <tr><th>사업자번호</th><td>${esc(companyCfg.biz_no) || "—"}</td></tr>
+            <tr><th>대표자</th><td>${esc(companyCfg.ceo) || "—"}</td></tr>
+            <tr><th>주소</th><td>${esc(companyCfg.addr) || "—"}</td></tr>
+            <tr><th>연락처</th><td>${esc(companyCfg.phone) || "—"}</td></tr>
+            <tr><th>이메일</th><td>${esc(companyCfg.email) || "—"}</td></tr>
+          </tbody></table>
+        </div>
+      </div>
+
+      <p class="po-greet">아래와 같이 발주하오니 확인 후 납품하여 주시기 바랍니다.</p>
+
+      <table class="po-items">
+        <thead><tr><th style="width:36px">No</th><th>품목</th><th style="width:80px" class="num">수량</th>
+          <th style="width:110px" class="num">단가</th><th style="width:130px" class="num">공급가액</th></tr></thead>
+        <tbody>${items.map((it, i) => `
+          <tr>
+            <td class="num">${i + 1}</td>
+            <td><b>${esc(prodName(it.product_id))}</b>${it.memo ? `<br><small>${esc(it.memo)}</small>` : ""}</td>
+            <td class="num">${fmt(it.qty)}</td>
+            <td class="num">${fmt(it.unit_cost)}</td>
+            <td class="num">${fmt(it.amount)}</td>
+          </tr>`).join("")}
+        </tbody>
+        <tfoot>
+          <tr><td colspan="4">공급가액</td><td class="num">${fmt(net)}</td></tr>
+          ${vatCfg.enabled ? `<tr><td colspan="4">부가세 (10%)</td><td class="num">${fmt(vat)}</td></tr>` : ""}
+          <tr class="po-grand"><td colspan="4"><b>합계 금액</b></td><td class="num"><b>₩${fmt(grand)}</b></td></tr>
+        </tfoot>
+      </table>
+
+      ${p.freight_est ? `<p class="po-note">※ 운송비 ₩${fmt(p.freight_est)}는 <b>${esc(companyCfg.name)}</b>가 운송업체에 직접 지급합니다.</p>` : ""}
+      ${p.memo ? `<p class="po-note">※ ${esc(p.memo)}</p>` : ""}
+
+      <div class="po-sign">
+        <div class="po-sign-box">
+          <div class="po-sign-h">기안</div>
+          <div class="po-sign-name">${esc(userName(p.drafter_id))}</div>
+          <div class="po-sign-date">${esc(p.date)}</div>
+        </div>
+        <div class="po-sign-box">
+          <div class="po-sign-h">승인</div>
+          <div class="po-sign-name">${apprStep ? esc(userName(apprStep.userId))
+            : (p.approval_line || []).length === 0 && approved ? esc(userName(p.drafter_id)) + " (전결)" : "—"}</div>
+          <div class="po-sign-date">${apprStep ? esc(String(apprStep.date).slice(0, 10)) : approved ? esc(p.date) : ""}</div>
+        </div>
+      </div>
+
+      <div class="po-foot">
+        ${esc(companyCfg.name)}${companyCfg.addr ? " · " + esc(companyCfg.addr) : ""}
+        ${companyCfg.phone ? " · " + esc(companyCfg.phone) : ""}
+      </div>
+    </div>`;
+}
+
+// 거래처 메일 앱을 열어 발주 내용을 채워 준다 (별도 메일 서비스 없이 동작)
+function mailPO(id) {
+  const p = poCache.find(x => x.id === id);
+  const sup = erpSupplierList.find(s => s.name === p.supplier) || {};
+  if (!sup.email && !confirm(
+    `${p.supplier}의 이메일이 등록되어 있지 않습니다.\n\n메일 앱을 열어 직접 주소를 입력하시겠습니까?\n`
+    + `(매입 거래처에 이메일을 등록해두면 다음부터 자동으로 채워집니다)`)) return;
+  const items = poItemCache[id] || [];
+  const supply = items.reduce((s, it) => s + Number(it.amount), 0);
+  const net = vatCfg.purchaseCostIncludesVat ? Math.round(supply / 1.1) : supply;
+  const vat = vatCfg.enabled ? (vatCfg.purchaseCostIncludesVat ? supply - net : Math.round(net * 0.1)) : 0;
+  const body = [
+    `${sup.manager ? sup.manager + " 님, " : ""}안녕하세요. ${companyCfg.name}입니다.`,
+    `아래와 같이 발주드리오니 확인 후 납품 부탁드립니다.`,
+    "",
+    `■ 발주번호: ${p.po_no}`,
+    `■ 발주일: ${p.date}`,
+    `■ 납품희망일: ${p.due_date || "협의"}`,
+    `■ 입고처: ${p.deliver_to === "쿠팡" ? "쿠팡 물류센터 (로켓그로스)" : companyCfg.name + " 자사창고"}`,
+    "",
+    "■ 품목",
+    ...items.map((it, i) => `${i + 1}. ${prodName(it.product_id)} / ${fmt(it.qty)}개 / 단가 ${fmt(it.unit_cost)}원 / ${fmt(it.amount)}원`),
+    "",
+    `공급가액: ${fmt(net)}원`,
+    ...(vatCfg.enabled ? [`부가세: ${fmt(vat)}원`] : []),
+    `합계: ${fmt(net + vat)}원`,
+    ...(p.freight_est ? ["", `※ 운송비 ${fmt(p.freight_est)}원은 당사가 운송업체에 직접 지급합니다.`] : []),
+    ...(p.memo ? [`※ ${p.memo}`] : []),
+    "",
+    "확인 부탁드립니다. 감사합니다.",
+    "",
+    `${companyCfg.name}`,
+    ...(companyCfg.ceo ? [`대표 ${companyCfg.ceo}`] : []),
+    ...(companyCfg.phone ? [companyCfg.phone] : []),
+    ...(companyCfg.addr ? [companyCfg.addr] : []),
+  ].join("\n");
+  const url = `mailto:${encodeURIComponent(sup.email || "")}`
+    + `?subject=${encodeURIComponent(`[발주서] ${p.po_no} · ${companyCfg.name}`)}`
+    + `&body=${encodeURIComponent(body)}`;
+  location.href = url;
+  toast("메일 앱을 열었습니다 — 내용 확인 후 보내세요");
 }
 
 // 거래처에 그대로 붙여넣어 보낼 수 있는 텍스트
@@ -4744,6 +4917,21 @@ async function viewSettings() {
     </div>
 
     <div class="card">
+      <h2>🏢 회사 정보</h2>
+      <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
+        <b>발주서에 찍히는 정보</b>입니다. 거래처에 보내는 문서이니 정확히 입력해 주세요.</p>
+      <div class="form-grid">
+        <div class="field"><label>상호 *</label><input id="co-name" value="${esc(companyCfg.name)}" maxlength="40"></div>
+        <div class="field"><label>사업자등록번호</label><input id="co-biz" value="${esc(companyCfg.biz_no)}" placeholder="000-00-00000" maxlength="20"></div>
+        <div class="field"><label>대표자</label><input id="co-ceo" value="${esc(companyCfg.ceo)}" maxlength="20"></div>
+        <div class="field"><label>연락처</label><input id="co-phone" value="${esc(companyCfg.phone)}" placeholder="02-000-0000" maxlength="20"></div>
+        <div class="field full"><label>주소</label><input id="co-addr" value="${esc(companyCfg.addr)}" maxlength="100"></div>
+        <div class="field full"><label>이메일</label><input id="co-email" value="${esc(companyCfg.email)}" maxlength="60"></div>
+      </div>
+      <div class="modal-actions"><button class="btn" id="btn-co-save" onclick="saveCompanyCfg()">저장</button></div>
+    </div>
+
+    <div class="card">
       <h2>🧾 부가세 기준</h2>
       <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
         입력하는 금액에 부가세가 <b>들어 있는지</b>를 정해 둡니다. 이 설정에 따라 이익 계산이 달라지므로,
@@ -4809,6 +4997,26 @@ async function viewSettings() {
         가끔 받아서 PC에 보관해 두세요.</p>
       <button class="btn" id="btn-export" onclick="exportJSON()">📤 전체 데이터 내보내기 (JSON)</button>
     </div>`;
+}
+
+async function saveCompanyCfg() {
+  const name = document.getElementById("co-name").value.trim();
+  if (!name) return toast("상호를 입력해 주세요");
+  const btn = document.getElementById("btn-co-save");
+  if (btn) btn.disabled = true;
+  const value = { name,
+    biz_no: document.getElementById("co-biz").value.trim(),
+    ceo: document.getElementById("co-ceo").value.trim(),
+    phone: document.getElementById("co-phone").value.trim(),
+    addr: document.getElementById("co-addr").value.trim(),
+    email: document.getElementById("co-email").value.trim() };
+  const { data, error } = await sb.from("settings")
+    .upsert({ key: "company", value, updated_at: new Date().toISOString(), updated_by: me.name },
+            { onConflict: "key" }).select("key");
+  if (error || !data?.length) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
+  companyCfg = { ...companyCfg, ...value };
+  toast("회사 정보가 저장되었습니다");
+  route();
 }
 
 async function saveVatCfg() {
