@@ -541,6 +541,8 @@ function salesChainHtml(st) {
         <div class="bar bar-lg"><div class="bar-fill ${monthPct >= 100 ? "green" : ahead >= 0 ? "" : "amber"}" style="width:${monthPct}%"></div></div>
         ${st.paceTarget && st.monthTarget ? `<div class="bar-mark" style="left:${Math.min(100, (st.paceTarget / st.monthTarget) * 100)}%">
           <span>오늘까지 목표 ₩${fmt(st.paceTarget)}</span></div>` : ""}
+        ${st.paceTarget && st.monthTarget ? `<div class="bar-legend">
+          <span><i>│</i> 오늘까지 목표 ₩${fmt(st.paceTarget)}</span></div>` : ""}
       </div>
       <p style="font-size:13px;color:var(--text-sub);margin-top:2px">
         ${(() => {
@@ -795,6 +797,10 @@ function teamCardHtml(st, g, hy, compact) {
         <div class="bar bar-lg"><div class="bar-fill ${g.fillTone}" style="width:${g.fillPct}%"></div></div>
         ${g.bepPct != null ? `<div class="bar-mark" style="left:${g.bepPct}%"><span>손익분기 ₩${fmt(st.fixTotal)}</span></div>` : ""}
         ${g.targetPct != null ? `<div class="bar-mark" style="left:${g.targetPct}%"><span>우리 목표 ₩${fmt(st.target)}</span></div>` : ""}
+        <div class="bar-legend">
+          ${g.bepPct != null ? `<span><i>│</i> 손익분기 ₩${fmt(st.fixTotal)}</span>` : ""}
+          ${g.targetPct != null ? `<span><i>│</i> 우리 목표 ₩${fmt(st.target)}</span>` : ""}
+        </div>
       </div>` : ""}
 
       <div class="grid-stats" style="margin-bottom:0">

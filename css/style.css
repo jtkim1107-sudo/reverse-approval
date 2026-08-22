@@ -168,7 +168,7 @@ a { text-decoration: none; color: inherit; }
 }
 .stat:hover { transform: translateY(-2px); }
 .stat .stat-label { font-size: 13px; color: var(--text-sub); }
-.stat .stat-value { font-size: 26px; font-weight: 800; margin-top: 2px; }
+.stat .stat-value { font-size: 25px; font-weight: 800; margin-top: 2px; letter-spacing: -.5px; }
 .stat .stat-value.blue { color: var(--brand); }
 .stat .stat-value.green { color: var(--green); }
 .stat .stat-value.red { color: var(--red); }
@@ -216,6 +216,15 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .bar-mark span {
   position: absolute; top: 32px; left: 50%; transform: translateX(-50%);
   font-size: 11px; color: var(--text-sub); white-space: nowrap; font-weight: 700;
+}
+/* 좁은 화면에서는 눈금 라벨이 서로 겹치므로, 막대 아래 한 줄 범례로 대체 */
+.bar-legend { display: none; gap: 4px 14px; flex-wrap: wrap; font-size: 11.5px;
+  color: var(--text-sub); font-weight: 700; margin-top: 4px; }
+.bar-legend i { font-style: normal; opacity: .55; }
+@media (max-width: 720px) {
+  .bar-mark span { display: none; }
+  .bar-wrap { padding-bottom: 4px; }
+  .bar-legend { display: flex; }
 }
 
 /* ===== 우리 팀 카드 ===== */
