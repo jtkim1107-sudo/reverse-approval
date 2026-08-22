@@ -23,6 +23,26 @@ let loginTarget = null;
 
 /* ---------- 유틸 ---------- */
 const fmt = n => (Number(n) || 0).toLocaleString("ko-KR");
+// 금액 입력칸은 쉼표가 섞여 들어오므로, 읽을 때는 반드시 이걸로 (Number("1,000")은 NaN)
+const numOf = v => Number(String(v ?? "").replace(/,/g, "")) || 0;
+// 입력칸 초기값용: 값이 있으면 쉼표를 붙이고, 없으면 빈칸
+const cfv = v => (v == null || v === "" ? "" : fmt(v));
+// class="comma" 입력칸: 숫자를 치는 즉시 1,000,000 식으로 쉼표를 붙인다 (커서 위치 유지)
+document.addEventListener("input", e => {
+  const el = e.target;
+  if (!(el instanceof HTMLInputElement) || !el.classList.contains("comma")) return;
+  const before = el.value;
+  const caret = el.selectionStart ?? before.length;
+  const digitsLeft = before.slice(0, caret).replace(/\D/g, "").length; // 커서 왼쪽의 숫자 개수
+  const neg = before.trim().startsWith("-");
+  const digits = before.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+  const formatted = digits ? (neg ? "-" : "") + Number(digits).toLocaleString("ko-KR") : (neg ? "-" : "");
+  if (formatted === before) return;
+  el.value = formatted;
+  let pos = 0, seen = 0;
+  while (pos < formatted.length && seen < digitsLeft) { if (/\d/.test(formatted[pos])) seen++; pos++; }
+  try { el.setSelectionRange(pos, pos); } catch (_) { /* 일부 브라우저 미지원 무시 */ }
+});
 const pad2 = n => String(n).padStart(2, "0");
 // 항상 한국(KST) 기준. 기기 시간대에 의존하면 해외에서 접속했을 때 하루 어긋난 채로 저장됨
 const KST = { timeZone: "Asia/Seoul" };
@@ -1000,13 +1020,13 @@ function openTeamGoalModal(month, cmTarget, fixTotal, dailyTarget) {
         <h3>🎯 ${month} 우리 목표</h3>
         <div class="form-grid">
           <div class="field full"><label>하루 매출 목표(원) *${vatTagCash()}</label>
-            <input id="tg-daily" type="number" min="0" step="100000" value="${dailyTarget || 1000000}"
-              oninput="document.getElementById('tg-monthly').textContent='₩'+fmt((Number(this.value)||0)*${lastDay})">
+            <input id="tg-daily" type="text" inputmode="numeric" class="comma" value="${fmt(dailyTarget || 1000000)}"
+              oninput="document.getElementById('tg-monthly').textContent='₩'+fmt(numOf(this.value)*${lastDay})">
             <p style="font-size:12px;color:var(--text-sub);margin-top:4px">
               고객이 실제로 결제한 금액 기준입니다. 이 달(${lastDay}일)이면 모두 <b id="tg-monthly">₩${fmt((dailyTarget || 1000000) * lastDay)}</b>가 됩니다.</p></div>
           <div class="field full"><label>월 공헌이익 목표(원)
             <span style="background:#fff4e6;color:#d9480f;border-radius:5px;padding:1px 6px;font-size:11px;font-weight:700;margin-left:4px">부가세 제외</span></label>
-            <input id="tg-amt" type="number" min="0" step="100000" value="${cmTarget || ""}" placeholder="아직 정하지 않아도 됩니다">
+            <input id="tg-amt" type="text" inputmode="numeric" class="comma" value="${cmTarget ? fmt(cmTarget) : ""}" placeholder="아직 정하지 않아도 됩니다">
             <p style="font-size:12px;color:var(--text-sub);margin-top:4px">
               매출에서 원가·수수료·배송비·광고비를 뺀 뒤 남는 돈입니다.
               ${fixTotal ? `월 고정비 ₩${fmt(fixTotal)}를 넘긴 다음의 목표로 잡으시면 됩니다 (제안 ₩${fmt(Math.round(fixTotal * 1.5 / 100000) * 100000)}).`
@@ -1024,8 +1044,8 @@ function openTeamGoalModal(month, cmTarget, fixTotal, dailyTarget) {
 }
 
 async function saveTeamGoal(month) {
-  const daily = Number(document.getElementById("tg-daily").value) || 0;
-  const amt = Number(document.getElementById("tg-amt").value) || 0;
+  const daily = numOf(document.getElementById("tg-daily").value) || 0;
+  const amt = numOf(document.getElementById("tg-amt").value) || 0;
   if (daily <= 0) return toast("하루 매출 목표를 입력해 주세요");
   const btn = document.getElementById("btn-tg-save");
   if (btn) btn.disabled = true;
@@ -1246,12 +1266,12 @@ function addItemRow() {
   tr.innerHTML = `
     <td><select class="i-acct">${ACCOUNTS.map(a => `<option>${a}</option>`).join("")}</select></td>
     <td><input class="i-desc" placeholder="지출 내용" maxlength="100"></td>
-    <td><input class="i-amt amount" type="number" min="0" step="1" placeholder="0" oninput="calcTotal()"></td>
+    <td><input class="i-amt amount comma" type="text" inputmode="numeric" placeholder="0" oninput="calcTotal()"></td>
     <td><button class="btn-row-del" title="삭제" onclick="this.closest('tr').remove();calcTotal()">✕</button></td>`;
   tbody.appendChild(tr);
 }
 function calcTotal() {
-  const total = [...document.querySelectorAll(".i-amt")].reduce((s, el) => s + (Number(el.value) || 0), 0);
+  const total = [...document.querySelectorAll(".i-amt")].reduce((s, el) => s + numOf(el.value), 0);
   document.getElementById("f-total").textContent = "₩" + fmt(total);
   return total;
 }
@@ -1265,7 +1285,7 @@ async function submitDoc() {
   const items = [...document.querySelectorAll("#item-rows tr")].map(tr => ({
     account: tr.querySelector(".i-acct").value,
     desc: tr.querySelector(".i-desc").value.trim(),
-    amount: Number(tr.querySelector(".i-amt").value) || 0,
+    amount: numOf(tr.querySelector(".i-amt").value) || 0,
   })).filter(it => it.desc || it.amount > 0);
   if (!items.length) return toast("지출 항목을 1개 이상 입력해 주세요");
   if (items.some(it => !it.desc)) return toast("항목 내용을 입력해 주세요");
@@ -1577,11 +1597,11 @@ function openProductModal(id) {
           <div class="field"><label>규격</label><input id="p-spec" value="${esc(p?.spec || "")}" placeholder="예) 30g x 10입" maxlength="40"></div>
           <div class="field"><label>단위</label><input id="p-unit" value="${esc(p?.unit || "")}" placeholder="BOX / EA / 병" maxlength="10"></div>
           <div class="field"><label>원가(원) — 매입 단가${vatTag("buy")}</label>
-            <input id="p-cost" type="number" min="0" value="${p?.cost_price ?? ""}" oninput="calcMarginHint()"></div>
+            <input id="p-cost" type="text" inputmode="numeric" class="comma" value="${cfv(p?.cost_price)}" oninput="calcMarginHint()"></div>
           <div class="field"><label>판매가(원) — 실제 판매${vatTag("sale")}</label>
-            <input id="p-price" type="number" min="0" value="${p?.price ?? ""}" oninput="calcMarginHint()"></div>
+            <input id="p-price" type="text" inputmode="numeric" class="comma" value="${cfv(p?.price)}" oninput="calcMarginHint()"></div>
           <div class="field"><label>MSRP(원) — 권장소비자가${vatTag("sale")}</label>
-            <input id="p-msrp" type="number" min="0" value="${p?.msrp ?? ""}"></div>
+            <input id="p-msrp" type="text" inputmode="numeric" class="comma" value="${cfv(p?.msrp)}"></div>
           <div class="field"><label>박스입수(개)</label>
             <input id="p-box" type="number" min="0" value="${p?.box_qty ?? ""}" placeholder="예) 40"></div>
           <div class="field full" id="margin-hint" style="font-size:13px;color:var(--text-sub)"></div>
@@ -1599,8 +1619,8 @@ function openProductModal(id) {
 function calcMarginHint() {
   const el = document.getElementById("margin-hint");
   if (!el) return;
-  const cost = Number(document.getElementById("p-cost")?.value) || 0;
-  const price = Number(document.getElementById("p-price")?.value) || 0;
+  const cost = numOf(document.getElementById("p-cost")?.value) || 0;
+  const price = numOf(document.getElementById("p-price")?.value) || 0;
   if (!cost || !price) { el.textContent = "원가와 판매가를 넣으면 마진이 자동 계산됩니다."; return; }
   const taxable = (document.getElementById("p-tax")?.value || "과세") === "과세";
   // 부가세를 뺀 금액끼리 비교해야 실제 마진
@@ -1626,10 +1646,10 @@ async function saveProduct(id) {
     category: document.getElementById("p-cat").value.trim(),
     spec: document.getElementById("p-spec").value.trim(),
     unit: document.getElementById("p-unit").value.trim(),
-    price: Number(document.getElementById("p-price").value) || 0,
-    cost_price: Number(document.getElementById("p-cost").value) || null,
-    msrp: Number(document.getElementById("p-msrp").value) || null,
-    box_qty: Number(document.getElementById("p-box").value) || null,
+    price: numOf(document.getElementById("p-price").value) || 0,
+    cost_price: numOf(document.getElementById("p-cost").value) || null,
+    msrp: numOf(document.getElementById("p-msrp").value) || null,
+    box_qty: numOf(document.getElementById("p-box").value) || null,
     memo: document.getElementById("p-memo").value.trim(),
     updated_at: today(),
     updated_by: me.name,
@@ -1894,7 +1914,7 @@ function addSaleRow() {
   tr.innerHTML = `
     <td><select class="sr-prod" onchange="onSaleRowProduct(this)">${productOptions()}</select></td>
     <td><input class="sr-qty" type="number" min="1" value="1" oninput="calcSalesTotal()"></td>
-    <td><input class="sr-price" type="number" min="0" placeholder="0" oninput="calcSalesTotal()"></td>
+    <td><input class="sr-price comma" type="text" inputmode="numeric" placeholder="0" oninput="calcSalesTotal()"></td>
     <td class="num sr-amt" style="font-weight:700">₩0</td>
     <td><input class="sr-memo" placeholder="주문번호 등" maxlength="100"></td>
     <td><button class="btn-row-del" title="삭제" onclick="this.closest('tr').remove();calcSalesTotal()">✕</button></td>`;
@@ -1902,13 +1922,13 @@ function addSaleRow() {
 }
 function onSaleRowProduct(sel) {
   const p = erpProducts.find(x => x.id === sel.value);
-  if (p) sel.closest("tr").querySelector(".sr-price").value = p.price || "";
+  if (p) sel.closest("tr").querySelector(".sr-price").value = p.price ? fmt(p.price) : "";
   calcSalesTotal();
 }
 function calcSalesTotal() {
   let total = 0;
   document.querySelectorAll("#sale-rows tr").forEach(tr => {
-    const amt = (Number(tr.querySelector(".sr-qty").value) || 0) * (Number(tr.querySelector(".sr-price").value) || 0);
+    const amt = (numOf(tr.querySelector(".sr-qty").value) || 0) * (numOf(tr.querySelector(".sr-price").value) || 0);
     tr.querySelector(".sr-amt").textContent = "₩" + fmt(amt);
     total += amt;
   });
@@ -1927,8 +1947,8 @@ async function saveSales() {
   const priceWarns = [];
   for (const tr of document.querySelectorAll("#sale-rows tr")) {
     const pid = tr.querySelector(".sr-prod").value;
-    const qty = Number(tr.querySelector(".sr-qty").value) || 0;
-    const price = Number(tr.querySelector(".sr-price").value) || 0;
+    const qty = numOf(tr.querySelector(".sr-qty").value) || 0;
+    const price = numOf(tr.querySelector(".sr-price").value) || 0;
     if (!pid && !price) continue; // 빈 줄은 건너뜀
     if (!pid) return toast("품목을 선택해 주세요");
     if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
@@ -1992,8 +2012,8 @@ async function viewPurchases() {
             <option value="자사창고">자사창고 — 우리 창고로 들어옴</option>
             <option value="쿠팡">쿠팡 (로켓그로스) — 공급처에서 바로 입고</option>
           </select></div>
-        <div class="field"><label>택배비(원) — 상품값과 별도${vatTag("exp")}</label><input id="b-ship" type="number" min="0" placeholder="0"></div>
-        <div class="field"><label>운송비(원) — 상품값과 별도${vatTag("exp")}</label><input id="b-freight" type="number" min="0" placeholder="0"></div>
+        <div class="field"><label>택배비(원) — 상품값과 별도${vatTag("exp")}</label><input id="b-ship" type="text" inputmode="numeric" class="comma" placeholder="0"></div>
+        <div class="field"><label>운송비(원) — 상품값과 별도${vatTag("exp")}</label><input id="b-freight" type="text" inputmode="numeric" class="comma" placeholder="0"></div>
       </div>
       <div class="table-wrap"><table class="items-table">
         <thead><tr><th style="min-width:190px">품목 (등록 원가)</th><th style="width:85px" class="num">수량</th>
@@ -2073,7 +2093,7 @@ function addBuyRow() {
   tr.innerHTML = `
     <td><select class="br-prod" onchange="onBuyRowProduct(this)">${productOptions("", "buy")}</select></td>
     <td><input class="br-qty" type="number" min="1" value="1" oninput="calcBuysTotal()"></td>
-    <td><input class="br-cost" type="number" min="0" placeholder="0" oninput="calcBuysTotal()"></td>
+    <td><input class="br-cost comma" type="text" inputmode="numeric" placeholder="0" oninput="calcBuysTotal()"></td>
     <td class="num br-amt" style="font-weight:700">₩0</td>
     <td><input class="br-memo" placeholder="발주번호 등" maxlength="100"></td>
     <td><button class="btn-row-del" title="삭제" onclick="this.closest('tr').remove();calcBuysTotal()">✕</button></td>`;
@@ -2082,13 +2102,13 @@ function addBuyRow() {
 function onBuyRowProduct(sel) {
   // 해당 품목의 최근 매입단가 자동 입력
   const st = erpStock[sel.value];
-  if (st?.lastCost) sel.closest("tr").querySelector(".br-cost").value = st.lastCost;
+  if (st?.lastCost) sel.closest("tr").querySelector(".br-cost").value = fmt(st.lastCost);
   calcBuysTotal();
 }
 function calcBuysTotal() {
   let total = 0;
   document.querySelectorAll("#buy-rows tr").forEach(tr => {
-    const amt = (Number(tr.querySelector(".br-qty").value) || 0) * (Number(tr.querySelector(".br-cost").value) || 0);
+    const amt = (numOf(tr.querySelector(".br-qty").value) || 0) * (numOf(tr.querySelector(".br-cost").value) || 0);
     tr.querySelector(".br-amt").textContent = "₩" + fmt(amt);
     total += amt;
   });
@@ -2101,13 +2121,13 @@ async function savePurchases() {
   const supplier = document.getElementById("b-supplier").value.trim();
   if (!date) return toast("매입일을 선택해 주세요");
   if (!supplier) return toast("거래처를 선택해 주세요 (매입 거래처 화면에서 등록할 수 있습니다)");
-  const ship = Number(document.getElementById("b-ship").value) || 0;
-  const freight = Number(document.getElementById("b-freight").value) || 0;
+  const ship = numOf(document.getElementById("b-ship").value) || 0;
+  const freight = numOf(document.getElementById("b-freight").value) || 0;
   const recs = [];
   for (const tr of document.querySelectorAll("#buy-rows tr")) {
     const pid = tr.querySelector(".br-prod").value;
-    const qty = Number(tr.querySelector(".br-qty").value) || 0;
-    const cost = Number(tr.querySelector(".br-cost").value) || 0;
+    const qty = numOf(tr.querySelector(".br-qty").value) || 0;
+    const cost = numOf(tr.querySelector(".br-cost").value) || 0;
     if (!pid && !cost) continue;
     if (!pid) return toast("품목을 선택해 주세요");
     if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
@@ -2297,7 +2317,7 @@ function xlsRowHtml(r, i, isSale) {
           원본: ${esc(r.prodText) || "(품목 없음)"}</div>
       </td>
       <td><input type="number" class="xr-qty" min="1" value="${r.qty}" style="width:70px" oninput="updateXlsSummary()"></td>
-      <td><input type="number" class="xr-price" min="0" value="${r.price}" style="width:100px" oninput="updateXlsSummary()"></td>
+      <td><input type="text" inputmode="numeric" class="xr-price comma" value="${fmt(r.price)}" style="width:100px" oninput="updateXlsSummary()"></td>
       <td class="num xr-amt" style="font-weight:700"></td>
       <td><input class="xr-party" value="${esc(r.party)}" placeholder="${isSale ? "채널" : "거래처"}" style="width:90px"
         list="${isSale ? "xls-channel-list" : "xls-supplier-list"}"></td>
@@ -2356,8 +2376,8 @@ function updateXlsSummary() {
     const on = tr.querySelector(".xr-chk").checked;
     const pid = tr.querySelector(".xr-prod").value;
     const date = tr.querySelector(".xr-date").value;
-    const qty = Number(tr.querySelector(".xr-qty").value) || 0;
-    const price = Number(tr.querySelector(".xr-price").value) || 0;
+    const qty = numOf(tr.querySelector(".xr-qty").value) || 0;
+    const price = numOf(tr.querySelector(".xr-price").value) || 0;
     const amt = qty * price;
     tr.querySelector(".xr-amt").textContent = "₩" + fmt(amt);
     const st = tr.querySelector(".xr-st");
@@ -2387,8 +2407,8 @@ async function confirmExcelImport() {
     const idx = Number(tr.dataset.idx);
     const src = xlsDraft.rows[idx];
     const pid = tr.querySelector(".xr-prod").value;
-    const qty = Number(tr.querySelector(".xr-qty").value) || 0;
-    const price = Number(tr.querySelector(".xr-price").value) || 0;
+    const qty = numOf(tr.querySelector(".xr-qty").value) || 0;
+    const price = numOf(tr.querySelector(".xr-price").value) || 0;
     const party = tr.querySelector(".xr-party").value.trim();
     // 파일에 적힌 금액을 그대로 쓴다 (단가를 역산해 다시 곱하면 원 단위가 어긋나고 할인가가 사라짐)
     const keepSrc = src && src.srcAmount > 0 && qty === src.qty && price === src.price;
@@ -2530,7 +2550,7 @@ function openErpEditModal(table, id) {
             </select></div>`}
           <div class="field"><label>수량</label><input id="e-qty" type="number" min="1" value="${r.qty}"></div>
           <div class="field"><label>단가(원)${vatTag(isSale ? "sale" : "buy")}</label>
-            <input id="e-price" type="number" min="0" value="${(isSale ? r.unit_price : r.unit_cost) ?? ""}"></div>
+            <input id="e-price" type="text" inputmode="numeric" class="comma" value="${cfv(isSale ? r.unit_price : r.unit_cost)}"></div>
           <div class="field full"><label>적요</label><input id="e-memo" value="${esc(r.memo)}" maxlength="100"></div>
         </div>
         <div class="modal-actions">
@@ -2544,8 +2564,8 @@ function openErpEditModal(table, id) {
 async function saveErpEdit(table, id) {
   const isSale = table === "sales";
   const pid = document.getElementById("e-prod").value;
-  const qty = Number(document.getElementById("e-qty").value) || 0;
-  const price = Number(document.getElementById("e-price").value) || 0;
+  const qty = numOf(document.getElementById("e-qty").value) || 0;
+  const price = numOf(document.getElementById("e-price").value) || 0;
   if (!pid) return toast("품목을 선택해 주세요");
   if (qty <= 0) return toast("수량은 1 이상이어야 합니다");
   const eDate = document.getElementById("e-date").value;
@@ -2731,7 +2751,7 @@ function openTransferModal() {
 
 async function saveTransfer() {
   const pid = document.getElementById("tr-prod").value;
-  const qty = Number(document.getElementById("tr-qty").value) || 0;
+  const qty = numOf(document.getElementById("tr-qty").value) || 0;
   const date = document.getElementById("tr-date").value;
   if (!pid) return toast("품목을 선택해 주세요");
   if (qty <= 0) return toast("수량을 입력해 주세요");
@@ -3262,7 +3282,7 @@ function openAdModal() {
           <div class="field"><label>일자 *</label><input id="ad-date" type="date" value="${today()}"></div>
           <div class="field"><label>채널</label>
             <select id="ad-ch"><option value="">전체 (공통)</option>${chOpts}</select></div>
-          <div class="field full"><label>금액(원) *${vatTag("exp")}</label><input id="ad-amt" type="number" min="0" placeholder="0">
+          <div class="field full"><label>금액(원) *${vatTag("exp")}</label><input id="ad-amt" type="text" inputmode="numeric" class="comma" placeholder="0">
             <p style="font-size:12px;color:var(--text-sub);margin-top:4px">
               ${vatCfg.expenseIncludesVat ? "광고비 청구서에 적힌 금액 그대로 입력하세요 (부가세 포함)." : "부가세를 뺀 금액으로 입력하세요."}</p></div>
           <div class="field full"><label>메모</label><input id="ad-memo" maxlength="100" placeholder="예) 쿠팡 광고 8월 1주차"></div>
@@ -3277,7 +3297,7 @@ function openAdModal() {
 
 async function saveAd() {
   const date = document.getElementById("ad-date").value;
-  const amount = Number(document.getElementById("ad-amt").value) || 0;
+  const amount = numOf(document.getElementById("ad-amt").value) || 0;
   if (!date) return toast("일자를 선택해 주세요");
   if (amount <= 0) return toast("금액을 입력해 주세요");
   const btn = document.getElementById("btn-ad-save");
@@ -3316,7 +3336,7 @@ function openFixedModal() {
         </table></div>
         <div class="form-grid" style="margin-top:14px">
           <div class="field"><label>항목명</label><input id="fx-title" maxlength="40" placeholder="예) 사무실 임대료"></div>
-          <div class="field"><label>월 금액(원)</label><input id="fx-amt" type="number" min="0" placeholder="0"></div>
+          <div class="field"><label>월 금액(원)</label><input id="fx-amt" type="text" inputmode="numeric" class="comma" placeholder="0"></div>
         </div>
         <div class="modal-actions">
           <button class="btn secondary" onclick="closeModal()">닫기</button>
@@ -3328,7 +3348,7 @@ function openFixedModal() {
 
 async function saveFixed() {
   const title = document.getElementById("fx-title").value.trim();
-  const amount = Number(document.getElementById("fx-amt").value) || 0;
+  const amount = numOf(document.getElementById("fx-amt").value) || 0;
   if (!title) return toast("항목명을 입력해 주세요");
   if (amount <= 0) return toast("금액을 입력해 주세요");
   const btn = document.getElementById("btn-fx-save");
@@ -3552,7 +3572,7 @@ function openPOModal() {
               <option value="자사창고">자사창고 — 우리 창고로 받음</option>
             </select></div>
           <div class="field"><label>예상 운송비(원) ${vatTag("exp")}</label>
-            <input id="po-freight" type="number" min="0" placeholder="0">
+            <input id="po-freight" type="text" inputmode="numeric" class="comma" placeholder="0">
             <p style="font-size:12px;color:var(--text-sub);margin-top:4px">우리가 운송업체에 직접 내는 금액입니다.</p></div>
           ${isJeongyeol ? "" : `
           <div class="field full"><label>결재자 *</label>
@@ -3585,20 +3605,20 @@ function addPORow() {
   tr.innerHTML = `
     <td><select class="po-prod" onchange="onPORowProduct(this)">${productOptions("", "buy")}</select></td>
     <td><input class="po-qty" type="number" min="1" value="1" oninput="calcPOTotal()"></td>
-    <td><input class="po-cost" type="number" min="0" placeholder="0" oninput="calcPOTotal()"></td>
+    <td><input class="po-cost comma" type="text" inputmode="numeric" placeholder="0" oninput="calcPOTotal()"></td>
     <td class="num po-amt" style="font-weight:700">₩0</td>
     <td><button class="btn-row-del" title="삭제" onclick="this.closest('tr').remove();calcPOTotal()">✕</button></td>`;
   tb.appendChild(tr);
 }
 function onPORowProduct(sel) {
   const st = erpStock[sel.value];
-  if (st?.lastCost) sel.closest("tr").querySelector(".po-cost").value = st.lastCost;
+  if (st?.lastCost) sel.closest("tr").querySelector(".po-cost").value = fmt(st.lastCost);
   calcPOTotal();
 }
 function calcPOTotal() {
   let total = 0;
   document.querySelectorAll("#po-rows tr").forEach(tr => {
-    const amt = (Number(tr.querySelector(".po-qty").value) || 0) * (Number(tr.querySelector(".po-cost").value) || 0);
+    const amt = (numOf(tr.querySelector(".po-qty").value) || 0) * (numOf(tr.querySelector(".po-cost").value) || 0);
     tr.querySelector(".po-amt").textContent = "₩" + fmt(amt);
     total += amt;
   });
@@ -3614,8 +3634,8 @@ async function savePO(isJeongyeol) {
   const items = [];
   for (const tr of document.querySelectorAll("#po-rows tr")) {
     const pid = tr.querySelector(".po-prod").value;
-    const qty = Number(tr.querySelector(".po-qty").value) || 0;
-    const cost = Number(tr.querySelector(".po-cost").value) || 0;
+    const qty = numOf(tr.querySelector(".po-qty").value) || 0;
+    const cost = numOf(tr.querySelector(".po-cost").value) || 0;
     if (!pid && !cost) continue;
     if (!pid) return toast("품목을 선택해 주세요");
     if (qty <= 0 || !Number.isInteger(qty)) return toast("수량은 1 이상 정수로 입력해 주세요");
@@ -3633,7 +3653,7 @@ async function savePO(isJeongyeol) {
     date, supplier,
     due_date: document.getElementById("po-due").value || null,
     deliver_to: document.getElementById("po-deliver").value,
-    freight_est: Number(document.getElementById("po-freight").value) || 0,
+    freight_est: numOf(document.getElementById("po-freight").value) || 0,
     total: items.reduce((s, i) => s + i.amount, 0),
     memo: document.getElementById("po-memo").value.trim(),
     status: isJeongyeol ? "ordered" : "progress",
@@ -4118,7 +4138,7 @@ function openReceiveModal(id) {
         <div class="form-grid">
           <div class="field"><label>입고일 *</label><input id="rc-date" type="date" value="${today()}"></div>
           <div class="field"><label>실제 운송비(원) ${vatTag("exp")}</label>
-            <input id="rc-freight" type="number" min="0" value="${p.freight_est || ""}"></div>
+            <input id="rc-freight" type="text" inputmode="numeric" class="comma" value="${cfv(p.freight_est || "")}"></div>
         </div>
         <div class="table-wrap" style="margin-top:8px"><table>
           <thead><tr><th>품목</th><th class="num">발주</th><th class="num">기입고</th><th class="num">미입고</th><th style="width:110px" class="num">이번 입고</th></tr></thead>
@@ -4145,11 +4165,11 @@ async function saveReceive(id) {
   const date = document.getElementById("rc-date").value;
   if (!date) return toast("입고일을 선택해 주세요");
   if (date > today()) return toast("입고일은 오늘보다 뒤일 수 없습니다");
-  const freight = Number(document.getElementById("rc-freight").value) || 0;
+  const freight = numOf(document.getElementById("rc-freight").value) || 0;
   const rows = [...document.querySelectorAll("#modal-root tr[data-item]")];
   const recs = [], updates = [];
   for (const tr of rows) {
-    const qty = Number(tr.querySelector(".rc-qty").value) || 0;
+    const qty = numOf(tr.querySelector(".rc-qty").value) || 0;
     const remain = Number(tr.dataset.remain);
     if (qty <= 0) continue;
     if (qty > remain) return toast(`'${prodName(tr.dataset.pid)}'는 미입고 ${fmt(remain)}개보다 많이 입력할 수 없습니다`);
@@ -4440,9 +4460,9 @@ async function openChannelModal(id) {
               <option value="풀필먼트" ${c?.ship_type === "풀필먼트" ? "selected" : ""}>풀필먼트 — 몰이 보관·배송 (쿠팡 로켓그로스 등)</option>
             </select></div>
           <div class="field" id="fld-ship"><label>출고배송비 (주문 1건당, 원)${vatTag("exp")}</label>
-            <input id="ch-ship" type="number" min="0" value="${c?.ship_fee ?? ""}" placeholder="예) 3300"></div>
+            <input id="ch-ship" type="text" inputmode="numeric" class="comma" value="${cfv(c?.ship_fee)}" placeholder="예) 3,300"></div>
           <div class="field" id="fld-unit"><label>물류비 (상품 1개당, 원)${vatTag("exp")}</label>
-            <input id="ch-unit" type="number" min="0" value="${c?.unit_fee ?? ""}" placeholder="예) 1800"></div>
+            <input id="ch-unit" type="text" inputmode="numeric" class="comma" value="${cfv(c?.unit_fee)}" placeholder="예) 1,800"></div>
           <div class="field full" style="font-size:12px;color:var(--text-sub);line-height:1.7">
             ※ <b>직접 배송</b>: 주문 1건마다 택배비가 나갑니다 → 위의 <b>출고배송비</b>만 넣으세요.<br>
             ※ <b>풀필먼트(로켓그로스 등)</b>: 택배비 대신 <b>개당 물류비(입출고비)</b>가 붙습니다 → <b>물류비</b>에 넣으세요.
@@ -4462,7 +4482,7 @@ async function openChannelModal(id) {
 async function saveChannel(id) {
   const name = document.getElementById("ch-name").value.trim();
   if (!name) return toast("채널명을 입력해 주세요");
-  const fee = Number(document.getElementById("ch-fee").value) || 0;
+  const fee = numOf(document.getElementById("ch-fee").value) || 0;
   if (fee < 0 || fee > 100) return toast("수수료율은 0~100 사이로 입력해 주세요");
   // 10.8%를 0.108로 넣는 실수가 잦아 수수료가 100배 작게 계산됨
   if (fee > 0 && fee < 1 && !confirm(
@@ -4477,8 +4497,8 @@ async function saveChannel(id) {
     fee_rate: fee,
     ship_type: document.getElementById("ch-type").value,
     // 배송 방식과 무관한 쪽 값은 0으로 저장 — 방식을 바꿨을 때 예전 값이 남아 이중 계산되는 것을 막는다
-    ship_fee: document.getElementById("ch-type").value === "풀필먼트" ? 0 : (Number(document.getElementById("ch-ship").value) || 0),
-    unit_fee: document.getElementById("ch-type").value === "풀필먼트" ? (Number(document.getElementById("ch-unit").value) || 0) : 0,
+    ship_fee: document.getElementById("ch-type").value === "풀필먼트" ? 0 : (numOf(document.getElementById("ch-ship").value) || 0),
+    unit_fee: document.getElementById("ch-type").value === "풀필먼트" ? (numOf(document.getElementById("ch-unit").value) || 0) : 0,
     memo: document.getElementById("ch-memo").value.trim(),
   };
   const res = id
@@ -4848,7 +4868,7 @@ async function viewCash() {
           </select></div>
         <div class="field"><label>분류</label>
           <select id="c-cat">${CASH_CATS_IN.map(c => `<option>${c}</option>`).join("")}</select></div>
-        <div class="field"><label>금액(원) *${vatTagCash()}</label><input id="c-amount" type="number" min="1" placeholder="0"></div>
+        <div class="field"><label>금액(원) *${vatTagCash()}</label><input id="c-amount" type="text" inputmode="numeric" class="comma" placeholder="0"></div>
         <div class="field"><label>적요</label><input id="c-memo" placeholder="예) 쿠팡 정산, OO상사 대금" maxlength="100"></div>
       </div>
       <p style="font-size:12px;color:var(--text-sub);margin:-4px 0 8px">
@@ -4893,7 +4913,7 @@ function openCashAccountModal(id) {
         <div class="form-grid">
           <div class="field"><label>계좌명 *</label><input id="a-name" value="${esc(a?.name || "")}" placeholder="예) 기업은행 주거래" maxlength="30"></div>
           <div class="field"><label>은행/비고</label><input id="a-bank" value="${esc(a?.bank || "")}" placeholder="예) 기업은행 123-456" maxlength="40"></div>
-          <div class="field full"><label>기초잔액(원) *</label><input id="a-balance" type="number" value="${a ? Number(a.initial_balance) : ""}" placeholder="자금일보 시작 시점의 잔액">
+          <div class="field full"><label>기초잔액(원) *</label><input id="a-balance" type="text" inputmode="numeric" class="comma" value="${a ? fmt(a.initial_balance) : ""}" placeholder="자금일보 시작 시점의 잔액">
             <p style="color:var(--text-sub);font-size:12px;margin-top:4px">자금일보 시작 시점의 통장 잔액입니다. 수정하면 모든 날짜의 잔액이 다시 계산됩니다.</p></div>
         </div>
         <div class="modal-actions" style="justify-content:space-between">
@@ -4916,7 +4936,7 @@ async function saveCashAccount(id) {
   const data = {
     name,
     bank: document.getElementById("a-bank").value.trim(),
-    initial_balance: Number(balRaw) || 0,
+    initial_balance: numOf(balRaw),
   };
   const btn = document.getElementById("btn-save-acc");
   if (btn) btn.disabled = true; // 계좌가 두 번 등록되면 기초잔액이 이중 계상됨
@@ -4941,7 +4961,7 @@ async function deleteCashAccount(id) {
 }
 
 async function saveCashTxn() {
-  const amount = Number(document.getElementById("c-amount").value) || 0;
+  const amount = numOf(document.getElementById("c-amount").value) || 0;
   if (amount <= 0) return toast("금액을 입력해 주세요");
   const date = document.getElementById("c-date").value;
   if (!date) return toast("일자를 선택해 주세요");
@@ -4996,7 +5016,7 @@ function openPlanModal(kind, preset) {
           <div class="field"><label>${isIn ? "입금" : "출금"} 예정일 *</label>
             <input id="cp-date" type="date" value="${esc(preset?.date || addDaysStr(today(), 7))}"></div>
           <div class="field"><label>금액(원) *</label>
-            <input id="cp-amount" type="number" min="1" value="${preset?.amount ?? ""}" placeholder="0"></div>
+            <input id="cp-amount" type="text" inputmode="numeric" class="comma" value="${cfv(preset?.amount)}" placeholder="0"></div>
           <div class="field full"><label>내용 *</label>
             <input id="cp-title" value="${esc(preset?.title || "")}" maxlength="60"
               placeholder="${isIn ? "예) 자본금 추가 입금" : "예) 한빛유통 매입대금"}"></div>
@@ -5017,7 +5037,7 @@ function openPlanModal(kind, preset) {
 
 async function saveCashPlan(kind, fromTxnId) {
   const title = document.getElementById("cp-title").value.trim();
-  const amount = Number(document.getElementById("cp-amount").value) || 0;
+  const amount = numOf(document.getElementById("cp-amount").value) || 0;
   const date = document.getElementById("cp-date").value;
   if (!title) return toast("내용을 입력해 주세요");
   if (amount <= 0) return toast("금액을 입력해 주세요");
