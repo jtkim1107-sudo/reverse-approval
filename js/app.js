@@ -932,7 +932,11 @@ async function viewSales() {
   return `
     <div class="card">
       <div class="card-head"><h2>매출 입력</h2>
-        <button class="btn sm secondary" onclick="addSaleRow()">＋ 품목 추가</button></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn sm secondary" onclick="downloadXlsTemplate('sales')" title="엑셀 업로드용 표준 양식 내려받기">양식↓</button>
+          <button class="btn sm secondary" onclick="openExcelImport('sales')">📎 엑셀 업로드</button>
+          <button class="btn sm secondary" onclick="addSaleRow()">＋ 품목 추가</button>
+        </div></div>
       <div class="form-grid" style="margin-bottom:10px">
         <div class="field"><label>판매일 *</label><input id="s-date" type="date" value="${today()}"></div>
         <div class="field"><label>판매 채널
@@ -1052,7 +1056,11 @@ async function viewPurchases() {
   return `
     <div class="card">
       <div class="card-head"><h2>매입 입력 (사입)</h2>
-        <button class="btn sm secondary" onclick="addBuyRow()">＋ 품목 추가</button></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn sm secondary" onclick="downloadXlsTemplate('purchases')" title="엑셀 업로드용 표준 양식 내려받기">양식↓</button>
+          <button class="btn sm secondary" onclick="openExcelImport('purchases')">📎 엑셀 업로드</button>
+          <button class="btn sm secondary" onclick="addBuyRow()">＋ 품목 추가</button>
+        </div></div>
       <div class="form-grid" style="margin-bottom:10px">
         <div class="field"><label>매입일 *</label><input id="b-date" type="date" value="${today()}"></div>
         <div class="field"><label>거래처</label>
@@ -1191,6 +1199,287 @@ async function savePurchases() {
   toast(`저장되었습니다 (상품 ${recs.length}건${costRecs.length ? ", 부대비용 " + costRecs.length + "건" : ""})`);
   erpMonth = date.slice(0, 7);
   route();
+}
+
+/* ---------- 엑셀 업로드 → 초안 확인 → 승인 등록 ---------- */
+let xlsDraft = null;
+
+// 열 제목 인식 키워드 — code를 product보다 먼저 검사해야 "상품코드"가 상품명으로 오인되지 않음
+const XLS_KEYS = [
+  ["code", ["상품코드", "품목코드", "제품코드", "코드", "sku", "code"]],
+  ["date", ["판매일", "매입일", "거래일", "주문일", "날짜", "일자", "date"]],
+  ["product", ["상품명", "제품명", "품목명", "품명", "상품", "제품", "품목", "product"]],
+  ["qty", ["수량", "판매수량", "매입수량", "개수", "qty", "ea"]],
+  ["price", ["단가", "판매단가", "매입단가", "판매가", "가격", "price"]],
+  ["amount", ["금액", "합계", "총액", "공급가액", "판매금액", "매입금액", "amount"]],
+  ["channel", ["판매채널", "판매처", "채널", "쇼핑몰", "몰"]],
+  ["supplier", ["거래처", "공급처", "매입처", "공급자"]],
+  ["memo", ["적요", "메모", "비고", "주문번호", "발주번호", "note"]],
+];
+const xlsNorm = s => String(s ?? "").toLowerCase().replace(/[\s()\[\]·,\-_]/g, "");
+const xlsNum = v => Number(String(v ?? "").replace(/[^\d.\-]/g, "")) || 0;
+
+function xlsDateOf(v) {
+  if (v instanceof Date && !isNaN(v)) return `${v.getFullYear()}-${pad2(v.getMonth() + 1)}-${pad2(v.getDate())}`;
+  if (typeof v === "number" && v > 20000 && v < 60000) {
+    // 엑셀 날짜 일련번호 (1900-01-01 기준)
+    return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 10);
+  }
+  const s = String(v ?? "").trim();
+  let m = s.match(/(\d{4})[.\-\/년\s]+(\d{1,2})[.\-\/월\s]+(\d{1,2})/);
+  if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
+  m = s.match(/^(\d{1,2})[.\-\/월\s]+(\d{1,2})일?$/);
+  if (m) return `${today().slice(0, 4)}-${pad2(m[1])}-${pad2(m[2])}`;
+  return "";
+}
+
+function xlsMatchProduct(nameRaw, codeRaw, isSale) {
+  const list = isSale ? erpProducts : erpProducts.filter(p => tradeTypeOf(p) === "사입");
+  const code = xlsNorm(codeRaw), name = xlsNorm(nameRaw);
+  let p = null;
+  if (code) p = list.find(x => xlsNorm(x.code) === code);
+  if (!p && name) p = list.find(x => xlsNorm(x.name) === name) || list.find(x => xlsNorm(x.code) === name);
+  if (!p && name && name.length >= 3) p = list.find(x => xlsNorm(x.name).includes(name) || name.includes(xlsNorm(x.name)));
+  return p || null;
+}
+
+function openExcelImport(mode) {
+  if (typeof XLSX === "undefined") return toast("엑셀 모듈을 아직 불러오지 못했습니다. 잠시 후 다시 시도해 주세요");
+  let inp = document.getElementById("xls-file");
+  if (!inp) {
+    inp = document.createElement("input");
+    inp.type = "file"; inp.id = "xls-file"; inp.accept = ".xlsx,.xls,.csv"; inp.style.display = "none";
+    document.body.appendChild(inp);
+  }
+  inp.value = "";
+  inp.onchange = () => { if (inp.files[0]) parseExcelFile(inp.files[0], mode); };
+  inp.click();
+}
+
+function parseExcelFile(file, mode) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    let wsRows;
+    try {
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array", cellDates: true });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      wsRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+    } catch (err) { return toast("파일을 읽지 못했습니다. 엑셀(.xlsx) 파일인지 확인해 주세요"); }
+    buildExcelDraft(wsRows, mode);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function buildExcelDraft(wsRows, mode) {
+  const isSale = mode === "sales";
+  // 첫 20줄에서 열 제목 줄을 자동 탐색
+  let headIdx = -1, colMap = null, bestScore = 0;
+  for (let i = 0; i < Math.min(wsRows.length, 20); i++) {
+    const map = {};
+    (wsRows[i] || []).forEach((cell, ci) => {
+      const t = xlsNorm(cell);
+      if (!t || Object.values(map).includes(ci)) return;
+      for (const [key, kws] of XLS_KEYS) {
+        if (map[key] !== undefined) continue;
+        if (kws.some(k => t === xlsNorm(k) || t.includes(xlsNorm(k)))) { map[key] = ci; return; }
+      }
+    });
+    const score = Object.keys(map).length;
+    if (score > bestScore) { bestScore = score; headIdx = i; colMap = map; }
+  }
+  if (bestScore < 2 || (colMap.product === undefined && colMap.code === undefined)) {
+    return toast("열 제목(상품명·수량 등)을 찾지 못했습니다. '양식↓' 버튼의 표준 양식을 참고해 주세요");
+  }
+  const rows = [];
+  for (let i = headIdx + 1; i < wsRows.length; i++) {
+    const r = wsRows[i] || [];
+    const get = k => (colMap[k] !== undefined ? r[colMap[k]] : "");
+    const prodText = String(get("product") ?? "").trim() || String(get("code") ?? "").trim();
+    const qtyRaw = xlsNum(get("qty"));
+    const amount = xlsNum(get("amount"));
+    if (!prodText && !qtyRaw && !amount) continue;       // 빈 줄
+    if (/합계|총계|소계/.test(prodText)) continue;        // 합계 줄 제외
+    const p = xlsMatchProduct(get("product"), get("code"), isSale);
+    const qty = qtyRaw || 1;
+    let price = xlsNum(get("price"));
+    if (!price && amount) price = Math.round(amount / qty);
+    rows.push({
+      date: xlsDateOf(get("date")) || today(),
+      pid: p ? p.id : "",
+      prodText,
+      qty, price,
+      party: String(get(isSale ? "channel" : "supplier") ?? "").trim(),
+      memo: String(get("memo") ?? "").trim().slice(0, 100),
+    });
+  }
+  if (!rows.length) return toast("읽을 수 있는 데이터 줄이 없습니다");
+  if (rows.length > 300) return toast("한 번에 300줄까지만 올릴 수 있습니다. 파일을 나눠 주세요");
+  xlsDraft = { mode, rows, noDateCol: colMap.date === undefined };
+  renderExcelPreview();
+}
+
+function xlsRowHtml(r, i, isSale) {
+  return `
+    <tr data-idx="${i}">
+      <td><input type="checkbox" class="xr-chk" checked onchange="updateXlsSummary()"></td>
+      <td class="xr-st" style="white-space:nowrap"></td>
+      <td><input type="date" class="xr-date" value="${esc(r.date)}" style="width:130px" onchange="updateXlsSummary()"></td>
+      <td>
+        <select class="xr-prod" onchange="updateXlsSummary()">${productOptions(r.pid, isSale ? "" : "buy")}</select>
+        ${r.pid ? "" : `<div style="font-size:11px;color:#d9480f;margin-top:2px">원본: ${esc(r.prodText) || "(품목 없음)"}</div>`}
+      </td>
+      <td><input type="number" class="xr-qty" min="1" value="${r.qty}" style="width:70px" oninput="updateXlsSummary()"></td>
+      <td><input type="number" class="xr-price" min="0" value="${r.price}" style="width:100px" oninput="updateXlsSummary()"></td>
+      <td class="num xr-amt" style="font-weight:700"></td>
+      <td><input class="xr-party" value="${esc(r.party)}" placeholder="${isSale ? "채널" : "거래처"}" style="width:90px" list="${isSale ? "" : "supplier-list"}"></td>
+      <td><input class="xr-memo" value="${esc(r.memo)}" maxlength="100" style="width:110px"></td>
+    </tr>`;
+}
+
+function renderExcelPreview() {
+  const d = xlsDraft;
+  const isSale = d.mode === "sales";
+  const unmatched = d.rows.filter(r => !r.pid).length;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:980px;width:96vw">
+        <h3>📎 엑셀 초안 확인 — ${isSale ? "매출" : "매입"} ${d.rows.length}줄</h3>
+        <p style="font-size:13px;color:var(--text-sub);margin:4px 0 10px">
+          엑셀에서 읽어온 초안입니다. 내용을 확인·수정한 뒤 <b>등록</b>을 누르면 저장됩니다.
+          ${unmatched ? `<br>⚠️ 품목을 못 찾은 줄이 <b>${unmatched}건</b> 있습니다 — 직접 선택하거나 체크를 해제해 주세요.` : ""}
+          ${d.noDateCol ? `<br>ℹ️ 날짜 열이 없어 전부 오늘 날짜로 넣었습니다. 필요하면 줄마다 고쳐 주세요.` : ""}</p>
+        <div class="table-wrap" style="max-height:52vh;overflow:auto"><table>
+          <thead><tr><th></th><th>상태</th><th>날짜</th><th style="min-width:200px">품목</th>
+            <th class="num">수량</th><th class="num">단가</th><th class="num">금액</th>
+            <th>${isSale ? "채널" : "거래처"}</th><th>적요</th></tr></thead>
+          <tbody id="xls-rows">${d.rows.map((r, i) => xlsRowHtml(r, i, isSale)).join("")}</tbody>
+        </table></div>
+        <div class="total-line" id="xls-summary"></div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-xls-go" onclick="confirmExcelImport()">등록</button>
+        </div>
+      </div>
+    </div>`;
+  updateXlsSummary();
+}
+
+function updateXlsSummary() {
+  let valid = 0, warn = 0, total = 0;
+  document.querySelectorAll("#xls-rows tr").forEach(tr => {
+    const on = tr.querySelector(".xr-chk").checked;
+    const pid = tr.querySelector(".xr-prod").value;
+    const date = tr.querySelector(".xr-date").value;
+    const qty = Number(tr.querySelector(".xr-qty").value) || 0;
+    const price = Number(tr.querySelector(".xr-price").value) || 0;
+    const amt = qty * price;
+    tr.querySelector(".xr-amt").textContent = "₩" + fmt(amt);
+    const st = tr.querySelector(".xr-st");
+    if (!on) { st.textContent = "제외"; st.style.color = "var(--text-sub)"; tr.style.opacity = ".45"; return; }
+    tr.style.opacity = "1";
+    if (!pid || !date || qty <= 0) { st.textContent = "⚠️ 확인"; st.style.color = "#d9480f"; warn++; }
+    else { st.textContent = "✅"; st.style.color = ""; valid++; total += amt; }
+  });
+  const sum = document.getElementById("xls-summary");
+  const btn = document.getElementById("btn-xls-go");
+  if (!sum || !btn) return;
+  sum.innerHTML = warn
+    ? `⚠️ 확인 필요 <b style="color:#d9480f">${warn}건</b> — 품목·날짜·수량을 채우거나 체크를 해제해 주세요`
+    : `등록 대상 <b>${valid}건</b> · 합계 <b>₩${fmt(total)}</b>`;
+  btn.disabled = valid === 0 || warn > 0;
+  btn.textContent = valid ? `${valid}건 등록` : "등록";
+}
+
+async function confirmExcelImport() {
+  const isSale = xlsDraft.mode === "sales";
+  const recs = [];
+  document.querySelectorAll("#xls-rows tr").forEach(tr => {
+    if (!tr.querySelector(".xr-chk").checked) return;
+    const pid = tr.querySelector(".xr-prod").value;
+    const qty = Number(tr.querySelector(".xr-qty").value) || 0;
+    const price = Number(tr.querySelector(".xr-price").value) || 0;
+    const party = tr.querySelector(".xr-party").value.trim();
+    const base = {
+      date: tr.querySelector(".xr-date").value, product_id: pid, qty,
+      amount: qty * price, memo: tr.querySelector(".xr-memo").value.trim(), created_by: me.name,
+    };
+    recs.push(isSale
+      ? { ...base, unit_price: price, channel: party || "기타" }
+      : { ...base, unit_cost: price, supplier: party });
+  });
+  if (!recs.length) return;
+  if (isSale) {
+    // 사입 상품 재고 초과 경고 (품목별 합산)
+    const byPid = {};
+    recs.forEach(r => { byPid[r.product_id] = (byPid[r.product_id] || 0) + r.qty; });
+    const warns = Object.entries(byPid)
+      .filter(([pid, q]) => tradeTypeOfId(pid) === "사입" && q > (erpStock[pid]?.stock ?? 0))
+      .map(([pid, q]) => `'${prodName(pid)}' 재고(${fmt(erpStock[pid]?.stock ?? 0)}) < 판매수량(${fmt(q)})`);
+    if (warns.length && !confirm(warns.join("\n") + "\n\n재고보다 많이 팔린 것으로 기록됩니다. 그래도 등록할까요?")) return;
+  }
+  const btn = document.getElementById("btn-xls-go");
+  btn.disabled = true;
+  const { error } = await sb.from(isSale ? "sales" : "purchases").insert(recs);
+  if (error) { btn.disabled = false; return toast("등록에 실패했습니다. 다시 시도해 주세요"); }
+  toast(`엑셀 ${recs.length}건이 등록되었습니다`);
+  closeModal();
+  xlsDraft = null;
+  erpMonth = recs[0].date.slice(0, 7);
+  route();
+}
+
+function downloadXlsTemplate(mode) {
+  const isSale = mode === "sales";
+  const rows = isSale
+    ? [["판매일", "채널", "상품명", "수량", "단가", "적요"],
+       [today(), "쿠팡", "(상품명 또는 상품코드)", "3", "15000", "주문번호 등"]]
+    : [["매입일", "거래처", "상품명", "수량", "단가", "적요"],
+       [today(), "아가드", "(상품명 또는 상품코드)", "10", "8000", "발주번호 등"]];
+  const csv = "﻿" + rows.map(r => r.join(",")).join("\r\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = isSale ? "매출_업로드양식.csv" : "매입_업로드양식.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* ---------- 개선 요청 (불편사항 → 대표에게 알림) ---------- */
+function openFeedback() {
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>💬 개선 요청 · 불편사항</h3>
+        <p style="font-size:13px;color:var(--text-sub);margin:4px 0 10px">
+          시스템을 쓰다가 불편한 점, 있었으면 하는 기능을 편하게 적어 주세요.<br>
+          대표님께 바로 알림이 가고, 개발 담당이 반영합니다.</p>
+        <textarea id="fb-text" rows="5" maxlength="500" placeholder="예) 매출 입력할 때 어제 날짜가 기본이면 좋겠어요"
+          style="width:100%;border:1.5px solid var(--line);border-radius:9px;padding:10px;font:inherit;resize:vertical"></textarea>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-fb-send" onclick="sendFeedback()">보내기</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("fb-text").focus();
+}
+
+async function sendFeedback() {
+  const text = document.getElementById("fb-text").value.trim();
+  if (!text) return toast("내용을 입력해 주세요");
+  // 최상위 직급(대표)에게 업무 지시 형태로 전달 → 기존 푸시 알림 그대로 활용
+  const top = USERS.reduce((a, b) => (b.rank > (a?.rank ?? -1) ? b : a), null) || me;
+  const btn = document.getElementById("btn-fb-send");
+  btn.disabled = true;
+  const { error } = await sb.from("tasks").insert({
+    title: "[개선요청] " + text.slice(0, 40) + (text.length > 40 ? "…" : ""),
+    detail: text + `\n\n— ${me.name}이(가) 앱 사용 중 보낸 개선 요청입니다.`,
+    assignee_id: top.id,
+    creator_id: me.id,
+    due_date: null,
+  });
+  if (error) { btn.disabled = false; return toast("전송에 실패했습니다"); }
+  toast("개선 요청을 보냈습니다 (알림 발송)");
+  closeModal();
 }
 
 /* ---------- 내역 수정 / 삭제 / CSV ---------- */
