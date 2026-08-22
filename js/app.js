@@ -228,6 +228,7 @@ const routes = {
   purchases: { title: "매입 입력·조회", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
   report: { title: "월별 리포트", render: viewReport },
+  cash: { title: "자금일보", render: viewCash },
   settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
 };
@@ -1289,6 +1290,196 @@ async function viewReport() {
         </tbody>
       </table></div>
     </div>`;
+}
+
+/* ---------- 자금일보 ---------- */
+const CASH_CATS_IN = ["판매대금", "정산금", "대표 입금", "기타 입금"];
+const CASH_CATS_OUT = ["매입대금", "경비", "광고비", "급여", "세금·공과", "기타 출금"];
+let cashDate = today();
+let cashAccounts = [];
+let cashTxns = [];
+
+async function viewCash() {
+  const [accRes, txnRes] = await Promise.all([
+    sb.from("cash_accounts").select("*").order("created_at"),
+    sb.from("cash_txns").select("*").order("date").order("created_at"),
+  ]);
+  cashAccounts = accRes.data || [];
+  cashTxns = txnRes.data || [];
+
+  if (!cashAccounts.length) {
+    return `
+      <div class="card">
+        <h2>자금일보 시작하기</h2>
+        <p style="color:var(--text-sub);font-size:13.5px;margin-bottom:14px">
+          먼저 관리할 계좌를 등록하세요. <b>기초잔액</b>은 자금일보를 시작하는 시점의 계좌 잔액입니다.<br>
+          이후 매일 입금·출금만 입력하면 잔액이 자동 계산됩니다.
+        </p>
+        <button class="btn" onclick="openCashAccountModal()">＋ 계좌 등록</button>
+      </div>`;
+  }
+
+  // 계좌별: 전일잔액 = 기초잔액 + (선택일 이전 입금-출금), 당일 입출금, 당일잔액
+  const rows = cashAccounts.map(a => {
+    const mine = cashTxns.filter(t => t.account_id === a.id);
+    const before = mine.filter(t => t.date < cashDate)
+      .reduce((s, t) => s + (t.kind === "입금" ? 1 : -1) * Number(t.amount), 0);
+    const dayIn = mine.filter(t => t.date === cashDate && t.kind === "입금")
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const dayOut = mine.filter(t => t.date === cashDate && t.kind === "출금")
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const prev = Number(a.initial_balance) + before;
+    return { a, prev, dayIn, dayOut, bal: prev + dayIn - dayOut };
+  });
+  const tot = rows.reduce((s, r) => ({ prev: s.prev + r.prev, dayIn: s.dayIn + r.dayIn, dayOut: s.dayOut + r.dayOut, bal: s.bal + r.bal }),
+    { prev: 0, dayIn: 0, dayOut: 0, bal: 0 });
+  const dayList = cashTxns.filter(t => t.date === cashDate)
+    .sort((x, y) => (y.created_at || "").localeCompare(x.created_at || ""));
+  const accName = id => { const a = cashAccounts.find(x => x.id === id); return a ? a.name : "?"; };
+
+  return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">${cashDate} 총 잔액</div>
+        <div class="stat-value blue">₩${fmt(tot.bal)}</div></div>
+      <div class="stat"><div class="stat-label">당일 입금</div>
+        <div class="stat-value green">₩${fmt(tot.dayIn)}</div></div>
+      <div class="stat"><div class="stat-label">당일 출금</div>
+        <div class="stat-value red">₩${fmt(tot.dayOut)}</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>계좌별 자금 현황</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="date" value="${cashDate}" style="border:1.5px solid var(--line);border-radius:9px;padding:8px 12px"
+            onchange="cashDate=this.value;route()">
+          <button class="btn sm secondary" onclick="openCashAccountModal()">＋ 계좌</button>
+        </div></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>계좌</th><th class="num">전일잔액</th><th class="num">당일입금</th><th class="num">당일출금</th><th class="num">당일잔액</th></tr></thead>
+        <tbody>
+          ${rows.map(r => `
+          <tr>
+            <td><b>${esc(r.a.name)}</b>${r.a.bank ? `<br><small style="color:var(--text-sub)">${esc(r.a.bank)}</small>` : ""}</td>
+            <td class="num">₩${fmt(r.prev)}</td>
+            <td class="num" style="color:var(--green)">${r.dayIn ? "+₩" + fmt(r.dayIn) : "—"}</td>
+            <td class="num" style="color:var(--red)">${r.dayOut ? "−₩" + fmt(r.dayOut) : "—"}</td>
+            <td class="num" style="font-weight:800">₩${fmt(r.bal)}</td>
+          </tr>`).join("")}
+          <tr style="background:var(--brand-light)">
+            <td><b>합계</b></td>
+            <td class="num"><b>₩${fmt(tot.prev)}</b></td>
+            <td class="num" style="color:var(--green)"><b>+₩${fmt(tot.dayIn)}</b></td>
+            <td class="num" style="color:var(--red)"><b>−₩${fmt(tot.dayOut)}</b></td>
+            <td class="num" style="font-weight:800"><b>₩${fmt(tot.bal)}</b></td>
+          </tr>
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h2>입출금 입력</h2>
+      <div class="form-grid">
+        <div class="field"><label>일자</label><input id="c-date" type="date" value="${cashDate}"></div>
+        <div class="field"><label>계좌 *</label>
+          <select id="c-account">${cashAccounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join("")}</select></div>
+        <div class="field"><label>구분 *</label>
+          <select id="c-kind" onchange="refreshCashCats()">
+            <option value="입금">입금 (+)</option>
+            <option value="출금">출금 (−)</option>
+          </select></div>
+        <div class="field"><label>분류</label>
+          <select id="c-cat">${CASH_CATS_IN.map(c => `<option>${c}</option>`).join("")}</select></div>
+        <div class="field"><label>금액(원) *</label><input id="c-amount" type="number" min="1" placeholder="0"></div>
+        <div class="field"><label>적요</label><input id="c-memo" placeholder="예) 쿠팡 정산, OO상사 대금" maxlength="100"></div>
+      </div>
+      <div class="modal-actions"><button class="btn" onclick="saveCashTxn()">저장</button></div>
+    </div>
+
+    <div class="card">
+      <h2>${cashDate} 입출금 내역 (${dayList.length}건)</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>계좌</th><th>구분</th><th>분류</th><th class="num">금액</th><th>적요</th><th>입력자</th><th></th></tr></thead>
+        <tbody>${dayList.length ? dayList.map(t => `
+          <tr>
+            <td>${esc(accName(t.account_id))}</td>
+            <td>${t.kind === "입금" ? '<span class="chip approved">입금</span>' : '<span class="chip rejected">출금</span>'}</td>
+            <td>${esc(t.category)}</td>
+            <td class="num" style="font-weight:700;color:${t.kind === "입금" ? "var(--green)" : "var(--red)"}">
+              ${t.kind === "입금" ? "+" : "−"}₩${fmt(t.amount)}</td>
+            <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${esc(t.memo)}</td>
+            <td>${esc(t.created_by)}</td>
+            <td><button class="btn sm danger" onclick="deleteCashTxn('${t.id}')">삭제</button></td>
+          </tr>`).join("") : `<tr><td colspan="7" class="empty">해당 일자 입출금이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+function refreshCashCats() {
+  const kind = document.getElementById("c-kind").value;
+  const cats = kind === "입금" ? CASH_CATS_IN : CASH_CATS_OUT;
+  document.getElementById("c-cat").innerHTML = cats.map(c => `<option>${c}</option>`).join("");
+}
+
+function openCashAccountModal() {
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>계좌 등록</h3>
+        <div class="form-grid">
+          <div class="field"><label>계좌명 *</label><input id="a-name" placeholder="예) 기업은행 주거래" maxlength="30"></div>
+          <div class="field"><label>은행/비고</label><input id="a-bank" placeholder="예) 기업은행 123-456" maxlength="40"></div>
+          <div class="field full"><label>기초잔액(원) *</label><input id="a-balance" type="number" placeholder="자금일보 시작 시점의 잔액">
+            <p style="color:var(--text-sub);font-size:12px;margin-top:4px">오늘 기준 통장 잔액을 입력하면 그 금액부터 시작합니다.</p></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" onclick="saveCashAccount()">등록</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveCashAccount() {
+  const name = document.getElementById("a-name").value.trim();
+  if (!name) return toast("계좌명을 입력해 주세요");
+  const { error } = await sb.from("cash_accounts").insert({
+    name,
+    bank: document.getElementById("a-bank").value.trim(),
+    initial_balance: Number(document.getElementById("a-balance").value) || 0,
+  });
+  if (error) return toast("등록에 실패했습니다");
+  toast("계좌가 등록되었습니다");
+  closeModal();
+  route();
+}
+
+async function saveCashTxn() {
+  const amount = Number(document.getElementById("c-amount").value) || 0;
+  if (amount <= 0) return toast("금액을 입력해 주세요");
+  const date = document.getElementById("c-date").value;
+  const { error } = await sb.from("cash_txns").insert({
+    date,
+    account_id: document.getElementById("c-account").value,
+    kind: document.getElementById("c-kind").value,
+    category: document.getElementById("c-cat").value,
+    amount,
+    memo: document.getElementById("c-memo").value.trim(),
+    created_by: me.name,
+  });
+  if (error) return toast("저장에 실패했습니다");
+  toast("저장되었습니다");
+  cashDate = date;
+  route();
+}
+
+async function deleteCashTxn(id) {
+  if (!confirm("이 내역을 삭제할까요?")) return;
+  const { error } = await sb.from("cash_txns").delete().eq("id", id);
+  if (error) return toast("삭제에 실패했습니다");
+  toast("삭제되었습니다");
+  route();
 }
 
 /* ---------- 화면: 설정 ---------- */
