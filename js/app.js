@@ -11,6 +11,8 @@ const SUPA_URL = "https://lqdgoqlkfckifqyjhnon.supabase.co";
 const SUPA_KEY = "sb_publishable_MV6Ph9WOrv0nzVIvseXlLw_O5WhfQPv"; // publishable key (공개 가능)
 const sb = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 
+const VAPID_PUBLIC_KEY = "BDGjrHCi-tBEuRwLkJ5HGtuB32VcQNwF69x1T0XJZy4QyUsO7D9RlWEfbVaXL-qQXI9S9JgRGJikX4DkdBFqbf4";
+
 const ACCOUNTS = ["복리후생비", "여비교통비", "접대비", "소모품비", "지급수수료", "광고선전비", "통신비", "차량유지비", "교육훈련비", "기타"];
 const PAY_METHODS = ["법인카드", "개인카드(환급)", "계좌이체", "현금"];
 
@@ -120,7 +122,52 @@ async function enterApp(userId) {
   renderUserBox();
   if (!location.hash || location.hash === "#/") location.hash = "#/dashboard";
   await route();
+  // 이미 알림 권한이 있으면 이 기기 구독을 현재 사용자로 갱신
+  if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+    ensurePushSubscribed(false);
+  }
   return true;
+}
+
+/* ---------- 푸시 알림 ---------- */
+function urlB64ToUint8Array(s) {
+  const pad = "=".repeat((4 - s.length % 4) % 4);
+  const raw = atob((s + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function ensurePushSubscribed(interactive) {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") {
+    if (interactive) toast("이 브라우저는 알림을 지원하지 않습니다. (아이폰은 홈 화면에 추가 후 앱에서 켜주세요)");
+    return false;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let perm = Notification.permission;
+    if (perm === "default" && interactive) perm = await Notification.requestPermission();
+    if (perm !== "granted") {
+      if (interactive) toast("알림 권한이 허용되지 않았습니다");
+      return false;
+    }
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlB64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const json = sub.toJSON();
+    const { error } = await sb.from("push_subscriptions").upsert(
+      { user_id: me.id, endpoint: sub.endpoint, p256dh: json.keys.p256dh, auth: json.keys.auth },
+      { onConflict: "endpoint" });
+    if (error) throw error;
+    if (interactive) toast("이 기기에서 알림이 켜졌습니다");
+    return true;
+  } catch (err) {
+    console.error(err);
+    if (interactive) toast("알림 설정에 실패했습니다");
+    return false;
+  }
 }
 
 async function logout() {
@@ -167,7 +214,10 @@ const routes = {
   drafts: { title: "내 기안함", render: viewDrafts },
   docs: { title: "전체 문서함", render: viewAllDocs },
   products: { title: "제품 마스터", render: viewProducts },
-  settings: { title: "설정", render: viewSettings },
+  sales: { title: "매출 입력·조회", render: viewSales },
+  purchases: { title: "매입 입력·조회", render: viewPurchases },
+  inventory: { title: "재고 현황", render: viewInventory },
+  settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
 };
 
@@ -194,11 +244,18 @@ async function route() {
 
 /* ---------- 화면: 대시보드 ---------- */
 async function viewDashboard() {
-  const [docs, prodRes] = await Promise.all([
+  const [docs, prodRes, saleRes, buyRes] = await Promise.all([
     fetchDocs(),
     sb.from("products").select("*").order("updated_at", { ascending: false }).limit(5),
+    sb.from("sales").select("amount,date"),
+    sb.from("purchases").select("amount,date"),
   ]);
   const products = prodRes.data || [];
+  const nowMonth = today().slice(0, 7);
+  const monthSales = (saleRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
+    .reduce((s, r) => s + Number(r.amount), 0);
+  const monthBuys = (buyRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
+    .reduce((s, r) => s + Number(r.amount), 0);
   const inbox = inboxOf(docs).length;
   const mine = docs.filter(d => d.drafter_id === me.id);
   const progress = mine.filter(d => d.status === "progress").length;
@@ -225,6 +282,14 @@ async function viewDashboard() {
       <div class="stat" onclick="location.hash='#/docs'">
         <div class="stat-label">이번 달 승인 지출액</div>
         <div class="stat-value blue">₩${fmt(monthTotal)}</div>
+      </div>
+      <div class="stat" onclick="location.hash='#/sales'">
+        <div class="stat-label">이번 달 매출</div>
+        <div class="stat-value blue">₩${fmt(monthSales)}</div>
+      </div>
+      <div class="stat" onclick="location.hash='#/purchases'">
+        <div class="stat-label">이번 달 매입</div>
+        <div class="stat-value amber">₩${fmt(monthBuys)}</div>
       </div>
     </div>
 
@@ -270,7 +335,17 @@ function docTable(list) {
 
 /* ---------- 화면: 지출결의서 작성 ---------- */
 async function viewNewDoc() {
-  const approvers = USERS.filter(u => u.id !== me.id && u.approver);
+  // 조직도상 나보다 윗사람만 결재 가능
+  const approvers = USERS.filter(u => u.id !== me.id && u.approver && (u.rank || 0) > (me.rank || 0))
+    .sort((a, b) => (a.rank || 0) - (b.rank || 0));
+  if (!approvers.length) {
+    // 최상위 결재권자(대표)가 직접 기안하는 경우 → 전결(자동 승인)
+    return viewNewDocForm([], true);
+  }
+  return viewNewDocForm(approvers, false);
+}
+
+function viewNewDocForm(approvers, isTopRank) {
   return `
     <div class="card">
       <h2>지출결의서 작성</h2>
@@ -310,12 +385,16 @@ async function viewNewDoc() {
 
     <div class="card">
       <h2>결재선</h2>
-      <p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">순서대로 결재가 진행됩니다. (기안자 → 1차 → 최종)</p>
+      ${isTopRank ? `
+      <p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">
+        조직도상 상위 결재자가 없으므로 <b>상신 즉시 전결(자동 승인)</b> 처리됩니다.
+      </p>` : `
+      <p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">조직도상 윗사람에게 순서대로 결재가 진행됩니다.</p>
       <div class="form-grid">
         <div class="field">
           <label>1차 결재자 *</label>
           <select id="f-appr1">
-            ${approvers.map(u => `<option value="${u.id}" ${u.role === "팀장" ? "selected" : ""}>${esc(u.name)} (${esc(u.role)})</option>`).join("")}
+            ${approvers.map((u, i) => `<option value="${u.id}" ${i === 0 ? "selected" : ""}>${esc(u.name)} (${esc(u.role)})</option>`).join("")}
           </select>
         </div>
         <div class="field">
@@ -325,10 +404,10 @@ async function viewNewDoc() {
             ${approvers.map(u => `<option value="${u.id}" ${u.role === "대표이사" ? "selected" : ""}>${esc(u.name)} (${esc(u.role)})</option>`).join("")}
           </select>
         </div>
-      </div>
+      </div>`}
       <div class="modal-actions">
         <button class="btn secondary" onclick="location.hash='#/dashboard'">취소</button>
-        <button class="btn" id="btn-submit-doc" onclick="submitDoc()">상신 (결재 요청)</button>
+        <button class="btn" id="btn-submit-doc" onclick="submitDoc()">${isTopRank ? "상신 (전결 처리)" : "상신 (결재 요청)"}</button>
       </div>
     </div>`;
 }
@@ -365,11 +444,17 @@ async function submitDoc() {
   if (items.some(it => !it.desc)) return toast("항목 내용을 입력해 주세요");
   if (items.some(it => it.amount <= 0)) return toast("금액은 0보다 커야 합니다");
 
-  const appr1 = document.getElementById("f-appr1").value;
-  const appr2 = document.getElementById("f-appr2").value;
-  const line = [appr1, appr2].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i)
-    .map(uid => ({ userId: uid, status: "waiting", comment: "", date: "" }));
-  if (!line.length) return toast("결재자를 선택해 주세요");
+  // 결재선: 조직도상 윗사람. 최상위 직급이 기안하면 전결(자동 승인)
+  const hasApprovalUI = !!document.getElementById("f-appr1");
+  let line = [];
+  if (hasApprovalUI) {
+    const appr1 = document.getElementById("f-appr1").value;
+    const appr2 = document.getElementById("f-appr2").value;
+    line = [appr1, appr2].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i)
+      .map(uid => ({ userId: uid, status: "waiting", comment: "", date: "" }));
+    if (!line.length) return toast("결재자를 선택해 주세요");
+  }
+  const isJeongyeol = !hasApprovalUI;
 
   const btn = document.getElementById("btn-submit-doc");
   btn.disabled = true;
@@ -386,10 +471,10 @@ async function submitDoc() {
       total: items.reduce((s, it) => s + it.amount, 0),
       approval_line: line,
       current_step: 0,
-      status: "progress",
+      status: isJeongyeol ? "approved" : "progress",
     }).select().single();
     if (e2) throw e2;
-    toast("상신되었습니다");
+    toast(isJeongyeol ? "전결 처리되었습니다" : "상신되었습니다");
     location.hash = "#/doc/" + data.id;
   } catch (err) {
     console.error(err);
@@ -687,9 +772,271 @@ function exportProductsCSV() {
   downloadFile(csv, `리버스_제품마스터_${today()}.csv`, "text/csv");
 }
 
+/* ==================== ERP: 매출 / 매입 / 재고 ==================== */
+const CHANNELS = ["스마트스토어", "쿠팡", "자사몰", "오픈마켓", "기타"];
+let erpMonth = today().slice(0, 7);
+let erpProducts = [];
+
+const prodName = id => (erpProducts.find(p => p.id === id) || {}).name || "?";
+const monthOf = r => (r.date || "").slice(0, 7);
+
+function erpSummaryCards(rows, label) {
+  const total = rows.reduce((s, r) => s + Number(r.amount), 0);
+  return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">${erpMonth} ${label} 합계</div>
+        <div class="stat-value blue">₩${fmt(total)}</div></div>
+      <div class="stat"><div class="stat-label">${erpMonth} ${label} 건수</div>
+        <div class="stat-value">${rows.length}건</div></div>
+    </div>`;
+}
+
+function monthPicker() {
+  return `<input type="month" value="${erpMonth}" style="border:1.5px solid var(--line);border-radius:9px;padding:8px 12px"
+    onchange="erpMonth=this.value;route()">`;
+}
+
+/* ---------- 매출 ---------- */
+async function viewSales() {
+  const [prodRes, res] = await Promise.all([
+    sb.from("products").select("*").order("name"),
+    sb.from("sales").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }).limit(500),
+  ]);
+  erpProducts = prodRes.data || [];
+  const rows = (res.data || []).filter(r => monthOf(r) === erpMonth);
+  const byChannel = {};
+  rows.forEach(r => { byChannel[r.channel || "기타"] = (byChannel[r.channel || "기타"] || 0) + Number(r.amount); });
+
+  return `
+    <div class="card">
+      <h2>매출 입력</h2>
+      <div class="form-grid">
+        <div class="field"><label>판매일 *</label><input id="s-date" type="date" value="${today()}"></div>
+        <div class="field"><label>판매 채널</label>
+          <select id="s-channel">${CHANNELS.map(c => `<option>${c}</option>`).join("")}</select></div>
+        <div class="field"><label>제품 *</label>
+          <select id="s-product" onchange="onSaleProductChange()">
+            <option value="">제품 선택</option>
+            ${erpProducts.map(p => `<option value="${p.id}" data-price="${p.price}">${esc(p.name)} (${esc(p.code)})</option>`).join("")}
+          </select></div>
+        <div class="field"><label>수량 *</label><input id="s-qty" type="number" min="1" value="1" oninput="calcSaleAmount()"></div>
+        <div class="field"><label>판매 단가(원) *</label><input id="s-price" type="number" min="0" oninput="calcSaleAmount()"></div>
+        <div class="field"><label>합계</label><input id="s-amount" readonly style="background:var(--gray-bg);font-weight:700"></div>
+        <div class="field full"><label>메모</label><input id="s-memo" placeholder="주문번호, 특이사항 등" maxlength="100"></div>
+      </div>
+      <div class="modal-actions"><button class="btn" onclick="saveSale()">매출 저장</button></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>매출 내역</h2>${monthPicker()}</div>
+      ${erpSummaryCards(rows, "매출")}
+      ${Object.keys(byChannel).length ? `<p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">채널별: ${
+        Object.entries(byChannel).map(([c, v]) => `${c} ₩${fmt(v)}`).join(" · ")}</p>` : ""}
+      <div class="table-wrap"><table>
+        <thead><tr><th>판매일</th><th>제품</th><th>채널</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>메모</th><th>입력자</th><th></th></tr></thead>
+        <tbody>${rows.length ? rows.map(r => `
+          <tr>
+            <td>${esc(r.date)}</td>
+            <td><b>${esc(prodName(r.product_id))}</b></td>
+            <td>${esc(r.channel)}</td>
+            <td class="num">${fmt(r.qty)}</td>
+            <td class="num">₩${fmt(r.unit_price)}</td>
+            <td class="num"><b>₩${fmt(r.amount)}</b></td>
+            <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(r.memo)}</td>
+            <td>${esc(r.created_by)}</td>
+            <td><button class="btn sm danger" onclick="deleteErpRow('sales','${r.id}')">삭제</button></td>
+          </tr>`).join("") : `<tr><td colspan="9" class="empty">${erpMonth}월 매출이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+function onSaleProductChange() {
+  const sel = document.getElementById("s-product");
+  const price = sel.selectedOptions[0]?.dataset.price;
+  if (price) document.getElementById("s-price").value = price;
+  calcSaleAmount();
+}
+function calcSaleAmount() {
+  const qty = Number(document.getElementById("s-qty").value) || 0;
+  const price = Number(document.getElementById("s-price").value) || 0;
+  document.getElementById("s-amount").value = "₩" + fmt(qty * price);
+}
+
+async function saveSale() {
+  const product_id = document.getElementById("s-product").value;
+  const date = document.getElementById("s-date").value;
+  const qty = Number(document.getElementById("s-qty").value) || 0;
+  const unit_price = Number(document.getElementById("s-price").value) || 0;
+  if (!product_id) return toast("제품을 선택해 주세요");
+  if (!date) return toast("판매일을 선택해 주세요");
+  if (qty <= 0) return toast("수량을 입력해 주세요");
+  const { error } = await sb.from("sales").insert({
+    date, product_id, qty, unit_price, amount: qty * unit_price,
+    channel: document.getElementById("s-channel").value,
+    memo: document.getElementById("s-memo").value.trim(),
+    created_by: me.name,
+  });
+  if (error) return toast("저장에 실패했습니다");
+  toast("매출이 저장되었습니다");
+  erpMonth = date.slice(0, 7);
+  route();
+}
+
+/* ---------- 매입 ---------- */
+async function viewPurchases() {
+  const [prodRes, res] = await Promise.all([
+    sb.from("products").select("*").order("name"),
+    sb.from("purchases").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }).limit(500),
+  ]);
+  erpProducts = prodRes.data || [];
+  const rows = (res.data || []).filter(r => monthOf(r) === erpMonth);
+
+  return `
+    <div class="card">
+      <h2>매입 입력 (사입)</h2>
+      <div class="form-grid">
+        <div class="field"><label>매입일 *</label><input id="b-date" type="date" value="${today()}"></div>
+        <div class="field"><label>거래처</label><input id="b-supplier" placeholder="예) OO상사" maxlength="40"></div>
+        <div class="field"><label>제품 *</label>
+          <select id="b-product">
+            <option value="">제품 선택</option>
+            ${erpProducts.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.code)})</option>`).join("")}
+          </select></div>
+        <div class="field"><label>수량 *</label><input id="b-qty" type="number" min="1" value="1" oninput="calcBuyAmount()"></div>
+        <div class="field"><label>매입 단가(원) *</label><input id="b-cost" type="number" min="0" oninput="calcBuyAmount()"></div>
+        <div class="field"><label>합계</label><input id="b-amount" readonly style="background:var(--gray-bg);font-weight:700"></div>
+        <div class="field full"><label>메모</label><input id="b-memo" placeholder="발주번호, 특이사항 등" maxlength="100"></div>
+      </div>
+      <div class="modal-actions"><button class="btn" onclick="savePurchase()">매입 저장</button></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>매입 내역</h2>${monthPicker()}</div>
+      ${erpSummaryCards(rows, "매입")}
+      <div class="table-wrap"><table>
+        <thead><tr><th>매입일</th><th>제품</th><th>거래처</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>메모</th><th>입력자</th><th></th></tr></thead>
+        <tbody>${rows.length ? rows.map(r => `
+          <tr>
+            <td>${esc(r.date)}</td>
+            <td><b>${esc(prodName(r.product_id))}</b></td>
+            <td>${esc(r.supplier)}</td>
+            <td class="num">${fmt(r.qty)}</td>
+            <td class="num">₩${fmt(r.unit_cost)}</td>
+            <td class="num"><b>₩${fmt(r.amount)}</b></td>
+            <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(r.memo)}</td>
+            <td>${esc(r.created_by)}</td>
+            <td><button class="btn sm danger" onclick="deleteErpRow('purchases','${r.id}')">삭제</button></td>
+          </tr>`).join("") : `<tr><td colspan="9" class="empty">${erpMonth}월 매입이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+function calcBuyAmount() {
+  const qty = Number(document.getElementById("b-qty").value) || 0;
+  const cost = Number(document.getElementById("b-cost").value) || 0;
+  document.getElementById("b-amount").value = "₩" + fmt(qty * cost);
+}
+
+async function savePurchase() {
+  const product_id = document.getElementById("b-product").value;
+  const date = document.getElementById("b-date").value;
+  const qty = Number(document.getElementById("b-qty").value) || 0;
+  const unit_cost = Number(document.getElementById("b-cost").value) || 0;
+  if (!product_id) return toast("제품을 선택해 주세요");
+  if (!date) return toast("매입일을 선택해 주세요");
+  if (qty <= 0) return toast("수량을 입력해 주세요");
+  const { error } = await sb.from("purchases").insert({
+    date, product_id, qty, unit_cost, amount: qty * unit_cost,
+    supplier: document.getElementById("b-supplier").value.trim(),
+    memo: document.getElementById("b-memo").value.trim(),
+    created_by: me.name,
+  });
+  if (error) return toast("저장에 실패했습니다");
+  toast("매입이 저장되었습니다");
+  erpMonth = date.slice(0, 7);
+  route();
+}
+
+async function deleteErpRow(table, id) {
+  if (!confirm("이 내역을 삭제할까요?")) return;
+  const { error } = await sb.from(table).delete().eq("id", id);
+  if (error) return toast("삭제에 실패했습니다");
+  toast("삭제되었습니다");
+  route();
+}
+
+/* ---------- 재고 현황 ---------- */
+async function viewInventory() {
+  const [prodRes, buyRes, saleRes] = await Promise.all([
+    sb.from("products").select("*").order("name"),
+    sb.from("purchases").select("product_id,qty,unit_cost,date"),
+    sb.from("sales").select("product_id,qty"),
+  ]);
+  erpProducts = prodRes.data || [];
+  const buys = buyRes.data || [];
+  const sales = saleRes.data || [];
+
+  const inv = erpProducts.map(p => {
+    const myBuys = buys.filter(b => b.product_id === p.id);
+    const bought = myBuys.reduce((s, b) => s + Number(b.qty), 0);
+    const sold = sales.filter(x => x.product_id === p.id).reduce((s, x) => s + Number(x.qty), 0);
+    const lastBuy = myBuys.sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+    const lastCost = lastBuy ? Number(lastBuy.unit_cost) : 0;
+    const stock = bought - sold;
+    return { p, bought, sold, stock, lastCost, value: stock * lastCost };
+  });
+  const totalValue = inv.reduce((s, r) => s + r.value, 0);
+
+  return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">재고 평가액 (최근 매입가 기준)</div>
+        <div class="stat-value blue">₩${fmt(totalValue)}</div></div>
+      <div class="stat"><div class="stat-label">등록 제품</div>
+        <div class="stat-value">${erpProducts.length}종</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>제품별 재고</h2>
+        <button class="btn sm secondary" onclick="location.hash='#/purchases'">＋ 매입 입력</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>제품</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">현재 재고</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
+        <tbody>${inv.length ? inv.map(r => `
+          <tr>
+            <td><b>${esc(r.p.name)}</b><br><small style="color:var(--text-sub)">${esc(r.p.code)} · ${esc(r.p.spec)}</small></td>
+            <td class="num">${fmt(r.bought)}</td>
+            <td class="num">${fmt(r.sold)}</td>
+            <td class="num" style="font-weight:800;color:${r.stock < 0 ? "var(--red)" : r.stock <= 5 ? "var(--amber)" : "var(--text)"}">${fmt(r.stock)}</td>
+            <td class="num">₩${fmt(r.lastCost)}</td>
+            <td class="num">₩${fmt(r.value)}</td>
+          </tr>`).join("") : `<tr><td colspan="6" class="empty">제품이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+      <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
+        ※ 재고 = 매입 수량 − 판매 수량. 재고가 음수면 매입 입력이 누락된 것입니다.
+      </p>
+    </div>`;
+}
+
 /* ---------- 화면: 설정 ---------- */
 async function viewSettings() {
+  const pushSupported = "serviceWorker" in navigator && "PushManager" in window && typeof Notification !== "undefined";
+  const perm = pushSupported ? Notification.permission : "unsupported";
+  const pushStatus =
+    perm === "granted" ? '<span class="chip approved">켜짐</span>' :
+    perm === "denied" ? '<span class="chip rejected">차단됨 (브라우저 설정에서 허용 필요)</span>' :
+    perm === "unsupported" ? '<span class="chip waiting">미지원</span>' :
+    '<span class="chip waiting">꺼짐</span>';
   return `
+    <div class="card">
+      <div class="card-head"><h2>결재 알림</h2>${pushStatus}</div>
+      <p style="color:var(--text-sub);font-size:13.5px;margin-bottom:12px">
+        내 결재 차례가 오거나, 내가 올린 문서가 승인/반려되면 이 기기로 알림이 옵니다.<br>
+        기기마다 한 번씩 켜주세요. (아이폰은 Safari에서 <b>홈 화면에 추가</b> 후 앱을 열어 켜야 합니다)
+      </p>
+      <button class="btn" onclick="ensurePushSubscribed(true).then(()=>route())">🔔 이 기기에서 알림 켜기</button>
+    </div>
+
     <div class="card">
       <h2>데이터 저장 방식</h2>
       <p style="color:var(--text-sub);font-size:13.5px">
@@ -755,4 +1102,7 @@ document.getElementById("menu-toggle").addEventListener("click", () => {
 /* ---------- 시작 ---------- */
 document.getElementById("btn-logout").addEventListener("click", logout);
 window.addEventListener("hashchange", route);
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js").catch(() => { /* 미지원 환경 무시 */ });
+}
 boot();

@@ -85,7 +85,11 @@ a { text-decoration: none; color: inherit; }
 .sidebar-logo { padding: 22px 20px 18px; }
 .logo-mark { font-weight: 900; font-size: 19px; letter-spacing: 1.5px; color: #fff; display: block; }
 .logo-sub { font-size: 12px; color: #8b96b0; letter-spacing: 4px; }
-.nav { flex: 1; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+.nav { flex: 1; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.nav-label {
+  font-size: 10.5px; letter-spacing: 1.5px; color: #6d7891;
+  padding: 14px 12px 4px; font-weight: 700;
+}
 .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-radius: 9px; font-size: 14px;
