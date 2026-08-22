@@ -874,7 +874,7 @@ function erpSummaryCards(rows, label) {
 
 function monthPicker() {
   return `<input type="month" value="${erpMonth}" style="border:1.5px solid var(--line);border-radius:9px;padding:8px 12px"
-    onchange="erpMonth=this.value;route()">`;
+    onchange="if(this.value){erpMonth=this.value;route()}else{this.value=erpMonth}">`;
 }
 
 /* ---------- 매출 (전표식 다품목 입력) ---------- */
@@ -1336,7 +1336,7 @@ async function viewTasks() {
           <textarea id="t-detail" placeholder="참고 링크, 세부 내용 등"></textarea></div>
       </div>
       <div class="modal-actions">
-        <button class="btn" onclick="createTask()">지시 보내기 (알림 발송)</button>
+        <button class="btn" id="btn-create-task" onclick="createTask()">지시 보내기 (알림 발송)</button>
       </div>
     </div>
 
@@ -1378,14 +1378,18 @@ async function viewTasks() {
 async function createTask() {
   const title = document.getElementById("t-title").value.trim();
   if (!title) return toast("지시 내용을 입력해 주세요");
+  const assignee = document.getElementById("t-assignee").value;
+  if (!assignee) return toast("담당자를 선택해 주세요");
+  const btn = document.getElementById("btn-create-task");
+  btn.disabled = true; // 연타로 중복 등록 방지
   const { error } = await sb.from("tasks").insert({
     title,
     detail: document.getElementById("t-detail").value.trim(),
-    assignee_id: document.getElementById("t-assignee").value,
+    assignee_id: assignee,
     creator_id: me.id,
     due_date: document.getElementById("t-due").value || null,
   });
-  if (error) return toast("지시 등록에 실패했습니다");
+  if (error) { btn.disabled = false; return toast("지시 등록에 실패했습니다"); }
   toast("지시를 보냈습니다 (알림 발송)");
   route();
 }
@@ -1464,7 +1468,7 @@ async function viewCash() {
       <div class="card-head"><h2>계좌별 자금 현황</h2>
         <div style="display:flex;gap:8px;align-items:center">
           <input type="date" value="${cashDate}" style="border:1.5px solid var(--line);border-radius:9px;padding:8px 12px"
-            onchange="cashDate=this.value;route()">
+            onchange="if(this.value){cashDate=this.value;route()}else{this.value=cashDate}">
           <button class="btn sm secondary" onclick="openCashAccountModal()">＋ 계좌</button>
         </div></div>
       <div class="table-wrap"><table>
@@ -1472,7 +1476,9 @@ async function viewCash() {
         <tbody>
           ${rows.map(r => `
           <tr>
-            <td><b>${esc(r.a.name)}</b>${r.a.bank ? `<br><small style="color:var(--text-sub)">${esc(r.a.bank)}</small>` : ""}</td>
+            <td><b>${esc(r.a.name)}</b>
+              <button class="btn-ghost" title="계좌 수정" style="font-size:12px" onclick="openCashAccountModal('${r.a.id}')">✎</button>
+              ${r.a.bank ? `<br><small style="color:var(--text-sub)">${esc(r.a.bank)}</small>` : ""}</td>
             <td class="num">₩${fmt(r.prev)}</td>
             <td class="num" style="color:var(--green)">${r.dayIn ? "+₩" + fmt(r.dayIn) : "—"}</td>
             <td class="num" style="color:var(--red)">${r.dayOut ? "−₩" + fmt(r.dayOut) : "—"}</td>
@@ -1534,36 +1540,53 @@ function refreshCashCats() {
   document.getElementById("c-cat").innerHTML = cats.map(c => `<option>${c}</option>`).join("");
 }
 
-function openCashAccountModal() {
+function openCashAccountModal(id) {
+  const a = id ? cashAccounts.find(x => x.id === id) : null;
   const root = document.getElementById("modal-root");
   root.innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal">
-        <h3>계좌 등록</h3>
+        <h3>${a ? "계좌 수정" : "계좌 등록"}</h3>
         <div class="form-grid">
-          <div class="field"><label>계좌명 *</label><input id="a-name" placeholder="예) 기업은행 주거래" maxlength="30"></div>
-          <div class="field"><label>은행/비고</label><input id="a-bank" placeholder="예) 기업은행 123-456" maxlength="40"></div>
-          <div class="field full"><label>기초잔액(원) *</label><input id="a-balance" type="number" placeholder="자금일보 시작 시점의 잔액">
-            <p style="color:var(--text-sub);font-size:12px;margin-top:4px">오늘 기준 통장 잔액을 입력하면 그 금액부터 시작합니다.</p></div>
+          <div class="field"><label>계좌명 *</label><input id="a-name" value="${esc(a?.name || "")}" placeholder="예) 기업은행 주거래" maxlength="30"></div>
+          <div class="field"><label>은행/비고</label><input id="a-bank" value="${esc(a?.bank || "")}" placeholder="예) 기업은행 123-456" maxlength="40"></div>
+          <div class="field full"><label>기초잔액(원) *</label><input id="a-balance" type="number" value="${a ? Number(a.initial_balance) : ""}" placeholder="자금일보 시작 시점의 잔액">
+            <p style="color:var(--text-sub);font-size:12px;margin-top:4px">자금일보 시작 시점의 통장 잔액입니다. 수정하면 모든 날짜의 잔액이 다시 계산됩니다.</p></div>
         </div>
-        <div class="modal-actions">
-          <button class="btn secondary" onclick="closeModal()">취소</button>
-          <button class="btn" onclick="saveCashAccount()">등록</button>
+        <div class="modal-actions" style="justify-content:space-between">
+          <span>${a ? `<button class="btn danger" onclick="deleteCashAccount('${a.id}')">계좌 삭제</button>` : ""}</span>
+          <span style="display:flex;gap:10px">
+            <button class="btn secondary" onclick="closeModal()">취소</button>
+            <button class="btn" onclick="saveCashAccount('${id || ""}')">${a ? "저장" : "등록"}</button>
+          </span>
         </div>
       </div>
     </div>`;
 }
 
-async function saveCashAccount() {
+async function saveCashAccount(id) {
   const name = document.getElementById("a-name").value.trim();
   if (!name) return toast("계좌명을 입력해 주세요");
-  const { error } = await sb.from("cash_accounts").insert({
+  const data = {
     name,
     bank: document.getElementById("a-bank").value.trim(),
     initial_balance: Number(document.getElementById("a-balance").value) || 0,
-  });
-  if (error) return toast("등록에 실패했습니다");
-  toast("계좌가 등록되었습니다");
+  };
+  const res = id
+    ? await sb.from("cash_accounts").update(data).eq("id", id)
+    : await sb.from("cash_accounts").insert(data);
+  if (res.error) return toast("저장에 실패했습니다");
+  toast(id ? "계좌가 수정되었습니다" : "계좌가 등록되었습니다");
+  closeModal();
+  route();
+}
+
+async function deleteCashAccount(id) {
+  const cnt = cashTxns.filter(t => t.account_id === id).length;
+  if (!confirm(`이 계좌를 삭제할까요?${cnt ? `\n입출금 내역 ${cnt}건도 함께 삭제됩니다.` : ""}`)) return;
+  const { error } = await sb.from("cash_accounts").delete().eq("id", id);
+  if (error) return toast("삭제에 실패했습니다");
+  toast("계좌가 삭제되었습니다");
   closeModal();
   route();
 }
@@ -1572,6 +1595,7 @@ async function saveCashTxn() {
   const amount = Number(document.getElementById("c-amount").value) || 0;
   if (amount <= 0) return toast("금액을 입력해 주세요");
   const date = document.getElementById("c-date").value;
+  if (!date) return toast("일자를 선택해 주세요");
   const { error } = await sb.from("cash_txns").insert({
     date,
     account_id: document.getElementById("c-account").value,
