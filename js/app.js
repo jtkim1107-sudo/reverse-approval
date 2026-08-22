@@ -2516,8 +2516,10 @@ async function viewCash() {
   const accName = id => { const a = cashAccounts.find(x => x.id === id); return a ? a.name : "?"; };
 
   // ===== 향후 30일 자금 예측 =====
+  // 실제 잔액에는 '오늘까지 실제로 오간 돈'만 포함 (미래 날짜 거래는 아직 통장에 없음)
+  const futureTxns = cashTxns.filter(t => t.date > today());
   const curBal = cashAccounts.reduce((s, a) =>
-    s + Number(a.initial_balance) + cashTxns.filter(t => t.account_id === a.id)
+    s + Number(a.initial_balance) + cashTxns.filter(t => t.account_id === a.id && t.date <= today())
       .reduce((ss, t) => ss + (t.kind === "입금" ? 1 : -1) * Number(t.amount), 0), 0);
   const occ = planOccurrences(cashPlans, today(), 30);
   let runBal = curBal;
@@ -2531,13 +2533,37 @@ async function viewCash() {
 
   return `
     <div class="grid-stats">
-      <div class="stat"><div class="stat-label">${cashDate} 총 잔액</div>
+      <div class="stat"><div class="stat-label">${cashDate} 총 잔액 (실제)</div>
         <div class="stat-value blue">₩${fmt(tot.bal)}</div></div>
       <div class="stat"><div class="stat-label">당일 입금</div>
         <div class="stat-value green">₩${fmt(tot.dayIn)}</div></div>
       <div class="stat"><div class="stat-label">당일 출금</div>
         <div class="stat-value red">₩${fmt(tot.dayOut)}</div></div>
+      <div class="stat"><div class="stat-label">들어올 돈 (30일)</div>
+        <div class="stat-value green">+₩${fmt(planIn)}</div></div>
     </div>
+
+    ${futureTxns.length ? `
+    <div class="card" style="border:2px solid #d9480f">
+      <h2 style="color:#d9480f">⚠️ 아직 들어오지 않은 돈이 '실제 거래'로 기록돼 있습니다</h2>
+      <p style="font-size:13.5px;color:var(--text-sub);margin:6px 0 12px">
+        아래 ${futureTxns.length}건은 <b>오늘(${today()}) 이후 날짜</b>인데 실제 입출금 내역에 들어가 있습니다.
+        예정된 돈이라면 <b>[예정으로 옮기기]</b>를 눌러 주세요 — 실제 잔액에서 빠지고 '들어올 돈'으로 관리됩니다.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>날짜</th><th>구분</th><th class="num">금액</th><th>적요</th><th></th></tr></thead>
+        <tbody>${futureTxns.map(t => `
+          <tr>
+            <td><b>${esc(t.date)}</b></td>
+            <td>${t.kind === "입금" ? '<span class="chip approved">입금</span>' : '<span class="chip rejected">출금</span>'}</td>
+            <td class="num"><b>${t.kind === "입금" ? "+" : "−"}₩${fmt(t.amount)}</b></td>
+            <td>${esc(t.memo || t.category)}</td>
+            <td style="white-space:nowrap">
+              <button class="btn sm" onclick="convertTxnToPlan('${t.id}')">예정으로 옮기기</button>
+              <button class="btn sm danger" onclick="deleteCashTxn('${t.id}')">삭제</button></td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>
+    </div>` : ""}
 
     <div class="card">
       <div class="card-head"><h2>계좌별 자금 현황</h2>
@@ -2571,10 +2597,18 @@ async function viewCash() {
     </div>
 
     <div class="card" ${minRow && minRow.bal < 0 ? 'style="border:2px solid var(--red)"' : ""}>
-      <div class="card-head"><h2>📅 향후 30일 자금 예측</h2>
-        ${minRow && minRow.bal < 0
-          ? `<span class="chip rejected">⚠️ ${esc(minRow.occDate.slice(5))} 자금 부족 예상</span>`
-          : '<span class="chip approved">30일 내 이상 없음</span>'}</div>
+      <div class="card-head"><h2>📅 들어올 돈 · 나갈 돈 (향후 30일)</h2>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn sm" onclick="openPlanModal('입금')">＋ 들어올 돈</button>
+          <button class="btn sm secondary" onclick="openPlanModal('출금')">＋ 나갈 돈</button>
+          ${minRow && minRow.bal < 0
+            ? `<span class="chip rejected">⚠️ ${esc(minRow.occDate.slice(5))} 자금 부족 예상</span>`
+            : '<span class="chip approved">30일 내 이상 없음</span>'}
+        </div></div>
+      <p style="font-size:13px;color:var(--text-sub);margin:-4px 0 12px">
+        아직 통장에 들어오지 않았지만 <b>들어올 예정인 돈</b>(자본금·정산금 등)과
+        <b>나갈 예정인 돈</b>(매입대금·급여 등)을 여기에 등록하세요.
+        실제 잔액과 섞이지 않고, 언제 자금이 부족해지는지 미리 알려줍니다.</p>
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">현재 잔액</div>
           <div class="stat-value blue">₩${fmt(curBal)}</div></div>
@@ -2585,24 +2619,6 @@ async function viewCash() {
         <div class="stat"><div class="stat-label">30일 후 예상 잔액</div>
           <div class="stat-value ${curBal + planIn - planOut < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut)}</div></div>
       </div>
-
-      <h2 style="font-size:14.5px;margin:14px 0 10px">예정 입출금 등록</h2>
-      <div class="form-grid">
-        <div class="field"><label>예정일 *</label><input id="cp-date" type="date" value="${addDaysStr(today(), 7)}"></div>
-        <div class="field"><label>구분 *</label>
-          <select id="cp-kind">
-            <option value="출금">출금 (−) 예: 매입대금·급여·세금</option>
-            <option value="입금">입금 (+) 예: 정산 입금</option>
-          </select></div>
-        <div class="field"><label>내용 *</label><input id="cp-title" placeholder="예) 한빛유통 매입대금" maxlength="60"></div>
-        <div class="field"><label>금액(원) *</label><input id="cp-amount" type="number" min="1" placeholder="0"></div>
-        <div class="field"><label>반복</label>
-          <select id="cp-repeat">
-            <option value="없음">한 번만</option>
-            <option value="매월">매월 반복 (급여·임대료 등)</option>
-          </select></div>
-      </div>
-      <div class="modal-actions"><button class="btn" onclick="saveCashPlan()">계획 추가</button></div>
 
       <h2 style="font-size:14.5px;margin:16px 0 10px">잔액 흐름 (예정 반영)</h2>
       <div class="table-wrap"><table>
@@ -2724,6 +2740,24 @@ async function saveCashTxn() {
   if (amount <= 0) return toast("금액을 입력해 주세요");
   const date = document.getElementById("c-date").value;
   if (!date) return toast("일자를 선택해 주세요");
+  const kind = document.getElementById("c-kind").value;
+  // 아직 오지 않은 날짜 = 실제 거래가 아니라 '예정' — 잔액에 섞이지 않게 계획으로 유도
+  if (date > today()) {
+    const go = confirm(
+      `${date}는 아직 오지 않은 날짜입니다.\n\n`
+      + `아직 통장에 ${kind === "입금" ? "들어오지" : "나가지"} 않은 돈이라면 '들어올 돈·나갈 돈(예정)'으로 등록해야 합니다.\n`
+      + `(실제 잔액에 섞이지 않고, 자금 부족 예측에 반영됩니다)\n\n`
+      + `확인 = 예정으로 등록 / 취소 = 그대로 실제 거래로 저장`);
+    if (go) {
+      openPlanModal(kind, {
+        date, amount,
+        title: document.getElementById("c-memo").value.trim()
+          || document.getElementById("c-cat").value
+          || (kind === "입금" ? "입금 예정" : "출금 예정"),
+      });
+      return;
+    }
+  }
   const { error } = await sb.from("cash_txns").insert({
     date,
     account_id: document.getElementById("c-account").value,
@@ -2739,22 +2773,72 @@ async function saveCashTxn() {
   route();
 }
 
-async function saveCashPlan() {
+function openPlanModal(kind, preset) {
+  const isIn = kind === "입금";
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>${isIn ? "💵 들어올 돈 등록" : "💸 나갈 돈 등록"}</h3>
+        <p style="font-size:13px;color:var(--text-sub);margin:4px 0 12px">
+          ${isIn
+            ? "아직 통장에 들어오지 않았지만 들어올 예정인 돈입니다. (자본금 입금·정산금 등)"
+            : "앞으로 나갈 예정인 돈입니다. (매입대금·급여·세금 등)"}<br>
+          실제 잔액에는 더해지지 않고, 예정 잔액 흐름에만 반영됩니다.</p>
+        <div class="form-grid">
+          <div class="field"><label>${isIn ? "입금" : "출금"} 예정일 *</label>
+            <input id="cp-date" type="date" value="${esc(preset?.date || addDaysStr(today(), 7))}"></div>
+          <div class="field"><label>금액(원) *</label>
+            <input id="cp-amount" type="number" min="1" value="${preset?.amount ?? ""}" placeholder="0"></div>
+          <div class="field full"><label>내용 *</label>
+            <input id="cp-title" value="${esc(preset?.title || "")}" maxlength="60"
+              placeholder="${isIn ? "예) 자본금 추가 입금" : "예) 한빛유통 매입대금"}"></div>
+          <div class="field full"><label>반복</label>
+            <select id="cp-repeat">
+              <option value="없음">한 번만</option>
+              <option value="매월">매월 반복 (급여·임대료 등)</option>
+            </select></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-cp-save" onclick="saveCashPlan('${kind}'${preset?.fromTxnId ? `,'${preset.fromTxnId}'` : ""})">등록</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("cp-title").focus();
+}
+
+async function saveCashPlan(kind, fromTxnId) {
   const title = document.getElementById("cp-title").value.trim();
   const amount = Number(document.getElementById("cp-amount").value) || 0;
   const date = document.getElementById("cp-date").value;
   if (!title) return toast("내용을 입력해 주세요");
   if (amount <= 0) return toast("금액을 입력해 주세요");
   if (!date) return toast("예정일을 선택해 주세요");
+  const btn = document.getElementById("btn-cp-save");
+  if (btn) btn.disabled = true;
   const { error } = await sb.from("cash_plans").insert({
     date, title, amount,
-    kind: document.getElementById("cp-kind").value,
+    kind: kind || document.getElementById("cp-kind")?.value || "출금",
     repeat: document.getElementById("cp-repeat").value,
     created_by: me.name,
   });
-  if (error) return toast("저장에 실패했습니다");
-  toast("자금 계획이 추가되었습니다");
+  if (error) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
+  // 실제 거래에서 옮겨온 경우, 원래 거래는 삭제 (잔액 이중 계산 방지)
+  if (fromTxnId) await sb.from("cash_txns").delete().eq("id", fromTxnId);
+  toast(fromTxnId ? "예정으로 옮겼습니다" : "등록되었습니다");
+  closeModal();
   route();
+}
+
+// 미래 날짜로 잘못 기록된 실제 거래 → 예정으로 이동
+function convertTxnToPlan(id) {
+  const t = cashTxns.find(x => x.id === id);
+  if (!t) return;
+  openPlanModal(t.kind, {
+    date: t.date, amount: Number(t.amount),
+    title: t.memo || t.category || (t.kind === "입금" ? "입금 예정" : "출금 예정"),
+    fromTxnId: id,
+  });
 }
 
 async function deleteCashTxn(id) {
