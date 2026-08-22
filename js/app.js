@@ -254,6 +254,7 @@ const routes = {
   sales: { title: "매출 입력·조회", render: viewSales, after: () => addSaleRow() },
   purchases: { title: "매입 입력·조회", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
+  profit: { title: "공헌이익", render: viewProfit },
   report: { title: "월별 리포트", render: viewReport },
   cash: { title: "자금일보", render: viewCash },
   tasks: { title: "업무 지시", render: viewTasks },
@@ -1073,6 +1074,8 @@ async function saveSales() {
     const st = erpStock[pid]?.stock ?? 0;
     if (tradeTypeOfId(pid) === "사입" && qty > st) stockWarn = `'${prodName(pid)}' 재고(${fmt(st)})보다 많은 수량(${fmt(qty)})입니다.`;
     recs.push({ date, channel, product_id: pid, qty, unit_price: price, amount: qty * price,
+      // 판매 시점 원가를 남겨야 나중에 원가가 바뀌어도 과거 이익이 흔들리지 않음
+      unit_cost: Number(erpProducts.find(p => p.id === pid)?.cost_price) || null,
       memo: tr.querySelector(".sr-memo").value.trim(), created_by: me.name });
   }
   if (!recs.length) return toast("품목을 1개 이상 입력해 주세요");
@@ -1450,7 +1453,8 @@ async function confirmExcelImport() {
       amount: qty * price, memo: tr.querySelector(".xr-memo").value.trim(), created_by: me.name,
     };
     recs.push(isSale
-      ? { ...base, unit_price: price, channel: party || "기타" }
+      ? { ...base, unit_price: price, channel: party || "기타",
+          unit_cost: Number(erpProducts.find(p => p.id === pid)?.cost_price) || null }
       : { ...base, unit_cost: price, supplier: party });
   });
   if (!recs.length) return;
@@ -1723,6 +1727,364 @@ async function saveTransfer() {
 }
 
 /* ---------- 월별 리포트 ---------- */
+/* ---------- 공헌이익 (매출 − 변동비) ---------- */
+// 변동비 = 상품원가 + 판매수수료 + 출고배송비 + 광고비
+// 공헌이익이 고정비를 넘어서는 순간부터 회사가 흑자입니다.
+
+function channelSetting(name) {
+  const c = erpChannelList.find(x => x.name === name);
+  return { fee: Number(c?.fee_rate) || 0, ship: Number(c?.ship_fee) || 0 };
+}
+
+// 매출 1줄의 공헌이익 계산 (광고비 제외 — 광고비는 기간 단위로 배분)
+function cmOfSale(r) {
+  const revenue = Number(r.amount) || 0;
+  const qty = Number(r.qty) || 0;
+  // 판매 시점 원가 스냅샷 우선, 없으면 현재 제품 마스터 원가
+  const p = erpProducts.find(x => x.id === r.product_id);
+  const unitCost = Number(r.unit_cost ?? p?.cost_price) || 0;
+  const cost = unitCost * qty;
+  const st = channelSetting(r.channel);
+  const fee = Math.round(revenue * st.fee / 100);
+  const ship = st.ship; // 매출 1줄 = 주문 1건 기준
+  return { revenue, qty, cost, fee, ship, cm: revenue - cost - fee - ship, noCost: !unitCost };
+}
+
+function sumCM(rows) {
+  return rows.reduce((s, r) => {
+    const c = cmOfSale(r);
+    s.revenue += c.revenue; s.qty += c.qty; s.cost += c.cost;
+    s.fee += c.fee; s.ship += c.ship; s.cm += c.cm;
+    if (c.noCost) s.noCostRows++;
+    return s;
+  }, { revenue: 0, qty: 0, cost: 0, fee: 0, ship: 0, cm: 0, noCostRows: 0 });
+}
+
+async function viewProfit() {
+  const { sales } = await loadErpBase();
+  const [adRes, fixRes] = await Promise.all([
+    sb.from("ad_costs").select("*").order("date", { ascending: false }),
+    sb.from("fixed_costs").select("*").order("created_at"),
+  ]);
+  const ads = adRes.data || [];
+  const fixed = (fixRes.data || []).filter(f => f.active !== false);
+  profitAdsCache = ads;
+  profitFixedCache = fixed;
+
+  const rows = sales.filter(r => monthOf(r) === erpMonth);
+  const monthAds = ads.filter(a => String(a.date).slice(0, 7) === erpMonth);
+  const adTotal = monthAds.reduce((s, a) => s + Number(a.amount), 0);
+  const fixTotal = fixed.reduce((s, f) => s + Number(f.amount), 0);
+
+  const t = sumCM(rows);
+  const cmNet = t.cm - adTotal;                       // 광고비까지 뺀 최종 공헌이익
+  const cmRate = t.revenue ? (cmNet / t.revenue) * 100 : 0;
+  const op = cmNet - fixTotal;                        // 영업이익 (고정비 차감)
+  const bepRate = fixTotal ? Math.min(100, Math.round((cmNet / fixTotal) * 100)) : null;
+
+  // 일별 누적 (쌓여가는 구조)
+  const dayMap = {};
+  rows.forEach(r => {
+    const d = r.date;
+    if (!dayMap[d]) dayMap[d] = { revenue: 0, cm: 0 };
+    const c = cmOfSale(r);
+    dayMap[d].revenue += c.revenue;
+    dayMap[d].cm += c.cm;
+  });
+  monthAds.forEach(a => {
+    const d = String(a.date);
+    if (!dayMap[d]) dayMap[d] = { revenue: 0, cm: 0 };
+    dayMap[d].cm -= Number(a.amount);
+  });
+  const days = Object.keys(dayMap).sort();
+  let acc = 0;
+  const dayRows = days.map(d => { acc += dayMap[d].cm; return { d, ...dayMap[d], acc }; });
+  const maxAcc = Math.max(fixTotal, ...dayRows.map(x => Math.abs(x.acc)), 1);
+
+  // BEP 달성 예상일
+  let bepMsg = "";
+  if (fixTotal > 0) {
+    const hit = dayRows.find(x => x.acc >= fixTotal);
+    if (hit) {
+      bepMsg = `🎉 <b>${hit.d.slice(5)}에 손익분기 돌파</b> — 이후 공헌이익은 그대로 이익입니다`;
+    } else if (dayRows.length >= 2 && acc > 0) {
+      const perDay = acc / dayRows.length;
+      const need = Math.ceil((fixTotal - acc) / perDay);
+      bepMsg = `현재 속도(하루 평균 ₩${fmt(Math.round(perDay))})면 <b>약 ${need}일 더</b> 필요합니다`;
+    } else {
+      bepMsg = `손익분기까지 <b>₩${fmt(fixTotal - cmNet)}</b> 남았습니다`;
+    }
+  }
+
+  // 채널별
+  const byCh = {};
+  rows.forEach(r => {
+    const k = r.channel || "기타";
+    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, cm: 0, ad: 0 };
+    const c = cmOfSale(r);
+    byCh[k].revenue += c.revenue; byCh[k].cost += c.cost;
+    byCh[k].fee += c.fee; byCh[k].ship += c.ship; byCh[k].cm += c.cm;
+  });
+  monthAds.forEach(a => {
+    const k = a.channel || "기타";
+    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, cm: 0, ad: 0 };
+    byCh[k].ad += Number(a.amount);
+    byCh[k].cm -= Number(a.amount);
+  });
+
+  // 품목별
+  const byProd = {};
+  rows.forEach(r => {
+    if (!byProd[r.product_id]) byProd[r.product_id] = { qty: 0, revenue: 0, cm: 0 };
+    const c = cmOfSale(r);
+    byProd[r.product_id].qty += c.qty;
+    byProd[r.product_id].revenue += c.revenue;
+    byProd[r.product_id].cm += c.cm;
+  });
+  const prodList = Object.entries(byProd).sort((a, b) => b[1].cm - a[1].cm);
+
+  const noSetting = erpChannelList.filter(c => !Number(c.fee_rate)).map(c => c.name);
+
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h2>${erpMonth} 공헌이익</h2>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          ${monthPicker()}
+          <button class="btn sm secondary" onclick="openAdModal()">＋ 광고비</button>
+          <button class="btn sm secondary" onclick="openFixedModal()">고정비 설정</button>
+        </div>
+      </div>
+      <div class="grid-stats">
+        <div class="stat"><div class="stat-label">매출</div>
+          <div class="stat-value">₩${fmt(t.revenue)}</div></div>
+        <div class="stat"><div class="stat-label">변동비 합계</div>
+          <div class="stat-value amber">₩${fmt(t.cost + t.fee + t.ship + adTotal)}</div></div>
+        <div class="stat"><div class="stat-label">공헌이익</div>
+          <div class="stat-value" style="color:${cmNet >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(cmNet)}</div></div>
+        <div class="stat"><div class="stat-label">공헌이익률</div>
+          <div class="stat-value ${cmRate >= 30 ? "blue" : "amber"}">${cmRate.toFixed(1)}%</div></div>
+      </div>
+      ${t.noCostRows ? `<p style="color:#d9480f;font-size:13px;margin-top:10px">
+        ⚠️ 원가가 등록되지 않은 매출이 ${t.noCostRows}줄 있습니다 — 제품 마스터에 원가를 넣어야 이익이 정확해집니다.</p>` : ""}
+      ${noSetting.length ? `<p style="color:var(--text-sub);font-size:13px;margin-top:6px">
+        ℹ️ 수수료율 미설정 채널: ${noSetting.map(esc).join(", ")} — 판매채널 화면에서 채널별 수수료율·배송비를 넣으면 더 정확해집니다.</p>` : ""}
+    </div>
+
+    <div class="card">
+      <h2>변동비 구성</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>항목</th><th class="num">금액</th><th class="num">매출 대비</th></tr></thead>
+        <tbody>
+          <tr><td>매출액</td><td class="num"><b>₩${fmt(t.revenue)}</b></td><td class="num">100%</td></tr>
+          ${[["상품원가", t.cost], ["판매수수료", t.fee], ["출고배송비", t.ship], ["광고비", adTotal]].map(([label, v]) => `
+            <tr><td style="padding-left:18px;color:var(--text-sub)">− ${label}</td>
+              <td class="num">₩${fmt(v)}</td>
+              <td class="num">${t.revenue ? (v / t.revenue * 100).toFixed(1) : 0}%</td></tr>`).join("")}
+          <tr style="border-top:2px solid var(--line)">
+            <td><b>= 공헌이익</b></td>
+            <td class="num"><b style="color:${cmNet >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(cmNet)}</b></td>
+            <td class="num"><b>${cmRate.toFixed(1)}%</b></td></tr>
+          <tr><td style="padding-left:18px;color:var(--text-sub)">− 고정비 (월)</td>
+            <td class="num">₩${fmt(fixTotal)}</td><td class="num">—</td></tr>
+          <tr style="border-top:2px solid var(--line)">
+            <td><b>= 영업이익</b></td>
+            <td class="num"><b style="color:${op >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(op)}</b></td>
+            <td class="num">${t.revenue ? (op / t.revenue * 100).toFixed(1) + "%" : "—"}</td></tr>
+        </tbody>
+      </table></div>
+      ${fixTotal ? `
+        <div style="margin-top:16px">
+          <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px">
+            <span>손익분기 달성률</span><b>${bepRate}%</b></div>
+          <div style="height:14px;background:var(--line);border-radius:7px;overflow:hidden">
+            <div style="height:100%;width:${Math.max(0, bepRate)}%;background:${bepRate >= 100 ? "var(--green)" : "var(--brand)"};transition:width .4s"></div>
+          </div>
+          <p style="font-size:13px;color:var(--text-sub);margin-top:8px">${bepMsg}</p>
+        </div>` : `
+        <p style="color:var(--text-sub);font-size:13px;margin-top:12px">
+          ※ [고정비 설정]에 월 고정비(임대료·급여·통신비 등)를 넣으면 손익분기 도달 여부가 표시됩니다.</p>`}
+    </div>
+
+    <div class="card">
+      <h2>일별 공헌이익 누적</h2>
+      ${dayRows.length ? `
+      <div class="table-wrap"><table>
+        <thead><tr><th>일자</th><th class="num">매출</th><th class="num">공헌이익</th><th class="num">누적</th><th style="min-width:120px">누적 추이</th></tr></thead>
+        <tbody>${dayRows.map(x => {
+          const w = Math.min(100, Math.round(Math.abs(x.acc) / maxAcc * 100));
+          const over = fixTotal && x.acc >= fixTotal;
+          return `<tr>
+            <td>${esc(x.d.slice(5))}</td>
+            <td class="num">₩${fmt(x.revenue)}</td>
+            <td class="num" style="color:${x.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(x.cm)}</td>
+            <td class="num"><b>₩${fmt(x.acc)}</b></td>
+            <td><div style="height:10px;background:var(--line);border-radius:5px;overflow:hidden">
+              <div style="height:100%;width:${w}%;background:${x.acc < 0 ? "var(--red)" : over ? "var(--green)" : "var(--brand)"}"></div></div></td>
+          </tr>`; }).join("")}
+        </tbody>
+      </table></div>
+      ${fixTotal ? `<p style="font-size:12px;color:var(--text-sub);margin-top:8px">
+        막대는 월 고정비 ₩${fmt(fixTotal)} 기준입니다. 초록색이면 그 날짜에 손익분기를 넘긴 상태입니다.</p>` : ""}
+      ` : `<div class="table-wrap"><table><tbody><tr><td class="empty">${erpMonth} 매출이 없습니다</td></tr></tbody></table></div>`}
+    </div>
+
+    <div class="card">
+      <h2>채널별 공헌이익</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>채널</th><th class="num">매출</th><th class="num">원가</th><th class="num">수수료</th><th class="num">배송비</th><th class="num">광고비</th><th class="num">공헌이익</th><th class="num">이익률</th></tr></thead>
+        <tbody>${Object.keys(byCh).length ? Object.entries(byCh)
+          .sort((a, b) => b[1].cm - a[1].cm).map(([k, v]) => `
+          <tr>
+            <td><b>${esc(k)}</b></td>
+            <td class="num">₩${fmt(v.revenue)}</td>
+            <td class="num">₩${fmt(v.cost)}</td>
+            <td class="num">₩${fmt(v.fee)}</td>
+            <td class="num">₩${fmt(v.ship)}</td>
+            <td class="num">₩${fmt(v.ad)}</td>
+            <td class="num"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
+            <td class="num">${v.revenue ? (v.cm / v.revenue * 100).toFixed(1) + "%" : "—"}</td>
+          </tr>`).join("") : `<tr><td colspan="8" class="empty">데이터가 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h2>품목별 공헌이익</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>품목</th><th class="num">수량</th><th class="num">매출</th><th class="num">공헌이익</th><th class="num">이익률</th><th class="num">개당 이익</th></tr></thead>
+        <tbody>${prodList.length ? prodList.map(([pid, v]) => {
+          const rate = v.revenue ? (v.cm / v.revenue * 100) : 0;
+          return `<tr>
+            <td><b>${esc(prodName(pid))}</b></td>
+            <td class="num">${fmt(v.qty)}</td>
+            <td class="num">₩${fmt(v.revenue)}</td>
+            <td class="num"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
+            <td class="num" style="color:${rate < 15 ? "#d9480f" : "inherit"}">${rate.toFixed(1)}%</td>
+            <td class="num">₩${fmt(v.qty ? Math.round(v.cm / v.qty) : 0)}</td>
+          </tr>`; }).join("") : `<tr><td colspan="6" class="empty">데이터가 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+      <p style="font-size:12px;color:var(--text-sub);margin-top:10px">
+        ※ 이익률 15% 미만은 주황색입니다. 많이 팔릴수록 손해인 상품을 여기서 잡아냅니다.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>${erpMonth} 광고비 내역</h2>
+        <button class="btn sm secondary" onclick="openAdModal()">＋ 광고비 입력</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>일자</th><th>채널</th><th class="num">금액</th><th>메모</th><th>입력자</th><th></th></tr></thead>
+        <tbody>${monthAds.length ? monthAds.map(a => `
+          <tr>
+            <td>${esc(String(a.date))}</td>
+            <td>${esc(a.channel || "전체")}</td>
+            <td class="num"><b>₩${fmt(a.amount)}</b></td>
+            <td>${esc(a.memo)}</td>
+            <td>${esc(a.created_by)}</td>
+            <td><button class="btn sm danger" onclick="deleteErpRow('ad_costs','${a.id}')">삭제</button></td>
+          </tr>`).join("") : `<tr><td colspan="6" class="empty">${erpMonth} 광고비가 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+let profitAdsCache = [], profitFixedCache = [];
+
+function openAdModal() {
+  const chOpts = erpChannels.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>광고비 입력</h3>
+        <div class="form-grid">
+          <div class="field"><label>일자 *</label><input id="ad-date" type="date" value="${today()}"></div>
+          <div class="field"><label>채널</label>
+            <select id="ad-ch"><option value="">전체 (공통)</option>${chOpts}</select></div>
+          <div class="field full"><label>금액(원) *</label><input id="ad-amt" type="number" min="0" placeholder="0"></div>
+          <div class="field full"><label>메모</label><input id="ad-memo" maxlength="100" placeholder="예) 쿠팡 광고 8월 1주차"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-ad-save" onclick="saveAd()">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveAd() {
+  const date = document.getElementById("ad-date").value;
+  const amount = Number(document.getElementById("ad-amt").value) || 0;
+  if (!date) return toast("일자를 선택해 주세요");
+  if (amount <= 0) return toast("금액을 입력해 주세요");
+  const btn = document.getElementById("btn-ad-save");
+  btn.disabled = true;
+  const { error } = await sb.from("ad_costs").insert({
+    date, amount,
+    channel: document.getElementById("ad-ch").value || null,
+    memo: document.getElementById("ad-memo").value.trim(),
+    created_by: me.name,
+  });
+  if (error) { btn.disabled = false; return toast("저장에 실패했습니다"); }
+  toast("광고비가 저장되었습니다");
+  closeModal();
+  erpMonth = date.slice(0, 7);
+  route();
+}
+
+function openFixedModal() {
+  const list = profitFixedCache;
+  const total = list.reduce((s, f) => s + Number(f.amount), 0);
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:560px">
+        <h3>월 고정비 설정</h3>
+        <p style="font-size:13px;color:var(--text-sub);margin:4px 0 12px">
+          매달 고정으로 나가는 비용입니다 (임대료·급여·통신비·구독료 등).<br>
+          공헌이익이 이 금액을 넘으면 그 달은 흑자입니다.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>항목</th><th class="num">월 금액</th><th></th></tr></thead>
+          <tbody>${list.length ? list.map(f => `
+            <tr><td>${esc(f.title)}</td><td class="num">₩${fmt(f.amount)}</td>
+              <td><button class="btn sm danger" onclick="deleteFixed('${f.id}')">삭제</button></td></tr>`).join("")
+            : `<tr><td colspan="3" class="empty">등록된 고정비가 없습니다</td></tr>`}
+          </tbody>
+          ${list.length ? `<tfoot><tr><td><b>합계</b></td><td class="num"><b>₩${fmt(total)}</b></td><td></td></tr></tfoot>` : ""}
+        </table></div>
+        <div class="form-grid" style="margin-top:14px">
+          <div class="field"><label>항목명</label><input id="fx-title" maxlength="40" placeholder="예) 사무실 임대료"></div>
+          <div class="field"><label>월 금액(원)</label><input id="fx-amt" type="number" min="0" placeholder="0"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">닫기</button>
+          <button class="btn" id="btn-fx-save" onclick="saveFixed()">추가</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveFixed() {
+  const title = document.getElementById("fx-title").value.trim();
+  const amount = Number(document.getElementById("fx-amt").value) || 0;
+  if (!title) return toast("항목명을 입력해 주세요");
+  if (amount <= 0) return toast("금액을 입력해 주세요");
+  const btn = document.getElementById("btn-fx-save");
+  btn.disabled = true;
+  const { error } = await sb.from("fixed_costs").insert({ title, amount });
+  if (error) { btn.disabled = false; return toast("저장에 실패했습니다"); }
+  toast("고정비가 추가되었습니다");
+  closeModal();
+  route();
+}
+
+async function deleteFixed(id) {
+  if (!confirm("이 고정비 항목을 삭제할까요?")) return;
+  const { error } = await sb.from("fixed_costs").delete().eq("id", id);
+  if (error) return toast("삭제에 실패했습니다");
+  toast("삭제되었습니다");
+  closeModal();
+  route();
+}
+
 async function viewReport() {
   const { buys, sales, costs } = await loadErpBase();
 
@@ -1829,10 +2191,12 @@ async function viewChannels() {
         ⚠️ 비밀번호는 로그인한 직원이 볼 수 있으니, 이 앱의 로그인 비밀번호를 잘 관리하세요.
       </p>
       <div class="table-wrap"><table>
-        <thead><tr><th>채널명</th><th>사이트</th><th>아이디</th><th>비밀번호</th><th>메모</th><th></th></tr></thead>
+        <thead><tr><th>채널명</th><th class="num">수수료</th><th class="num">배송비</th><th>사이트</th><th>아이디</th><th>비밀번호</th><th>메모</th><th></th></tr></thead>
         <tbody>${list.length ? list.map(c => `
           <tr>
             <td><b>${esc(c.name)}</b></td>
+            <td class="num">${Number(c.fee_rate) ? Number(c.fee_rate).toFixed(1) + "%" : '<span style="color:#d9480f">미설정</span>'}</td>
+            <td class="num">${Number(c.ship_fee) ? "₩" + fmt(c.ship_fee) : '<span style="color:var(--text-sub)">—</span>'}</td>
             <td>${c.url ? `<a href="${esc(normUrl(c.url))}" target="_blank" rel="noopener" style="color:var(--brand)">바로가기 ↗</a>` : "—"}</td>
             <td>${c.login_id ? `${esc(c.login_id)} <button class="btn-ghost" style="font-size:12px" title="복사" onclick="copyText('${esc(c.login_id)}')">📋</button>` : "—"}</td>
             <td>${c.login_pw
@@ -1844,7 +2208,7 @@ async function viewChannels() {
             <td style="white-space:nowrap">
               <button class="btn sm secondary" onclick="openChannelModal('${c.id}')">수정</button>
               <button class="btn sm danger" onclick="deleteChannel('${c.id}')">삭제</button></td>
-          </tr>`).join("") : `<tr><td colspan="6" class="empty">등록된 채널이 없습니다</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="8" class="empty">등록된 채널이 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>`;
@@ -1902,6 +2266,12 @@ async function openChannelModal(id) {
           <div class="field full"><label>관리시스템(SCM) 주소</label><input id="ch-url" value="${esc(c?.url || "")}" placeholder="https://..." maxlength="200"></div>
           <div class="field"><label>아이디</label><input id="ch-id" value="${esc(c?.login_id || "")}" maxlength="60" autocomplete="off"></div>
           <div class="field"><label>비밀번호</label><input id="ch-pw" value="${esc(c?.login_pw || "")}" maxlength="60" autocomplete="off"></div>
+          <div class="field"><label>판매수수료 (%)</label>
+            <input id="ch-fee" type="number" min="0" max="100" step="0.1" value="${c?.fee_rate ?? ""}" placeholder="예) 10.8"></div>
+          <div class="field"><label>출고배송비 (건당, 원)</label>
+            <input id="ch-ship" type="number" min="0" value="${c?.ship_fee ?? ""}" placeholder="예) 3000"></div>
+          <div class="field full" style="font-size:12px;color:var(--text-sub)">
+            ※ 수수료율·배송비를 넣으면 공헌이익 화면에서 채널별 실제 이익이 자동 계산됩니다.</div>
           <div class="field full"><label>메모</label><textarea id="ch-memo" maxlength="200">${esc(c?.memo || "")}</textarea></div>
         </div>
         <div class="modal-actions">
@@ -1920,6 +2290,8 @@ async function saveChannel(id) {
     url: normUrl(document.getElementById("ch-url").value),
     login_id: document.getElementById("ch-id").value.trim(),
     login_pw: document.getElementById("ch-pw").value,
+    fee_rate: Number(document.getElementById("ch-fee").value) || 0,
+    ship_fee: Number(document.getElementById("ch-ship").value) || 0,
     memo: document.getElementById("ch-memo").value.trim(),
   };
   const res = id
