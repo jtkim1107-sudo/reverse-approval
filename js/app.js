@@ -1606,7 +1606,8 @@ function openProductModal(id) {
               <option value="">낱개 상품을 선택하세요</option>
               ${prodCache.filter(x => !isSetProd(x) && x.id !== id).map(x =>
                 `<option value="${x.id}" ${x.id === p?.set_parent_id ? "selected" : ""}>${esc(x.name)}${x.cost_price ? ` (원가 ₩${fmt(x.cost_price)})` : ""}</option>`).join("")}
-            </select></div>
+            </select>
+            <div id="set-filter-note" style="font-size:12px;color:#d9480f;margin-top:4px;line-height:1.6"></div></div>
           <div class="field" id="fld-set-qty"><label>구성 수량 (세트 1개당 낱개 몇 개?) *</label>
             <input id="p-set-qty" type="number" min="1" value="${p?.set_qty ?? 2}" oninput="calcMarginHint()"></div>
           <div class="field"><label>분류</label><input id="p-cat" value="${esc(p?.category || "")}" placeholder="예) 건강식품" maxlength="30"></div>
@@ -1679,7 +1680,13 @@ function filterSetParents() {
   const all = prodCache.filter(x => !isSetProd(x) && x.id !== (sel.dataset.self || ""));
   let list = tokens.length ? all.filter(x => { const n = norm(x.name); return tokens.every(t => n.includes(t)); }) : all;
   const narrowed = tokens.length && list.length && list.length < all.length;
+  const noMatch = tokens.length && !list.length;
   if (!list.length) list = all;
+  // 못 찾았으면 이유를 알려준다 — 조용히 전체 목록만 보여주면 필터가 고장난 것처럼 보임
+  const note = document.getElementById("set-filter-note");
+  if (note) note.textContent = noMatch
+    ? `⚠️ 이 이름과 비슷한 낱개 상품이 마스터에 없습니다. 용량·색상이 다른 새 상품이라면 형태를 '단품'으로 등록하세요. 묶음이 맞다면 낱개 상품부터 먼저 등록해야 합니다.`
+    : "";
   const prev = sel.value;
   sel.innerHTML = `<option value="">낱개 상품을 선택하세요${narrowed ? ` (${list.length}개로 좁혀짐)` : ""}</option>`
     + list.map(x => `<option value="${x.id}">${esc(x.name)}${x.cost_price ? ` (원가 ₩${fmt(x.cost_price)})` : ""}</option>`).join("");
