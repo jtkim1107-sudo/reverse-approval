@@ -13,7 +13,7 @@ const sb = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 
 const VAPID_PUBLIC_KEY = "BDGjrHCi-tBEuRwLkJ5HGtuB32VcQNwF69x1T0XJZy4QyUsO7D9RlWEfbVaXL-qQXI9S9JgRGJikX4DkdBFqbf4";
 
-const ACCOUNTS = ["복리후생비", "여비교통비", "접대비", "소모품비", "지급수수료", "광고선전비", "통신비", "차량유지비", "교육훈련비", "기타"];
+const ACCOUNTS = ["상품매입비", "운반비", "복리후생비", "여비교통비", "접대비", "소모품비", "지급수수료", "광고선전비", "통신비", "차량유지비", "교육훈련비", "기타"];
 const PAY_METHODS = ["법인카드", "개인카드(환급)", "계좌이체", "현금"];
 
 /* ---------- 전역 상태 ---------- */
