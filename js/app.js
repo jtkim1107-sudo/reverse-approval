@@ -1549,7 +1549,7 @@ function productTable() {
         <td><b>${esc(p.name)}</b></td>
         <td>${(p.trade_type || "사입") === "위탁"
           ? '<span class="chip waiting">위탁</span>'
-          : '<span class="chip mine">사입</span>'}</td>
+          : '<span class="chip mine">사입</span>'}${p.is_set ? ' <span class="chip progress">세트</span>' : ""}</td>
         <td>${taxable ? '<span style="color:var(--text-sub)">과세</span>' : '<span class="chip waiting">면세</span>'}</td>
         <td>${esc(p.category)}</td>
         <td class="num">${cost ? "₩" + fmt(cost) : '<span style="color:var(--text-sub)">—</span>'}</td>
@@ -1586,6 +1586,11 @@ function openProductModal(id) {
             <select id="p-type">
               <option value="사입" ${(p?.trade_type || "사입") === "사입" ? "selected" : ""}>사입 (직접 재고 보유)</option>
               <option value="위탁" ${p?.trade_type === "위탁" ? "selected" : ""}>위탁 (공급처 직배송)</option>
+            </select></div>
+          <div class="field"><label>세트 표기 <small style="color:var(--text-sub);font-weight:400">— 표시용, 계산엔 영향 없음</small></label>
+            <select id="p-is-set">
+              <option value="">일반 상품</option>
+              <option value="1" ${p?.is_set ? "selected" : ""}>세트상품 (묶음 리스팅)</option>
             </select></div>
           <div class="field full"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60"></div>
           <div class="field"><label>분류</label><input id="p-cat" value="${esc(p?.category || "")}" placeholder="예) 건강식품" maxlength="30"></div>
@@ -1642,6 +1647,7 @@ async function saveProduct(id) {
   const data = {
     code, name,
     trade_type: document.getElementById("p-type").value,
+    is_set: document.getElementById("p-is-set").value === "1",
     tax_type: document.getElementById("p-tax").value,
     category: document.getElementById("p-cat").value.trim(),
     spec: document.getElementById("p-spec").value.trim(),
@@ -1695,7 +1701,7 @@ async function deleteProduct(id) {
 }
 
 function exportProductsCSV() {
-  const head = ["제품코드", "제품명", "구분", "부가세", "분류", "규격", "단위", "원가", "판매가",
+  const head = ["제품코드", "제품명", "구분", "세트", "부가세", "분류", "규격", "단위", "원가", "판매가",
     "마진(부가세제외)", "마진율(%)", "MSRP", "박스입수", "메모", "최종수정일", "수정자"];
   const rows = prodCache.map(p => {
     const cost = Number(p.cost_price) || 0, price = Number(p.price) || 0;
@@ -1704,7 +1710,7 @@ function exportProductsCSV() {
     const nCost = taxable ? netAmt(cost, vatCfg.purchaseCostIncludesVat) : cost;
     const margin = cost && price ? nPrice - nCost : "";
     const rate = margin !== "" && nPrice ? Math.round((margin / nPrice) * 100) : "";
-    return [p.code, p.name, p.trade_type || "사입", p.tax_type || "과세", p.category, p.spec, p.unit,
+    return [p.code, p.name, p.trade_type || "사입", p.is_set ? "세트" : "", p.tax_type || "과세", p.category, p.spec, p.unit,
       p.cost_price ?? "", price, margin, rate, p.msrp ?? "", p.box_qty ?? "",
       p.memo, p.updated_at, p.updated_by || ""];
   });
@@ -1814,9 +1820,10 @@ function productOptions(sel, mode) {
   // 매입은 사입 상품만 대상 (위탁은 우리가 사입하지 않음)
   const list = mode === "buy" ? erpProducts.filter(p => tradeTypeOf(p) === "사입") : erpProducts;
   return `<option value="">품목 선택</option>` + list.map(p => {
-    const tag = mode === "buy"
+    const tag = (mode === "buy"
       ? (p.cost_price ? `원가 ₩${fmt(p.cost_price)}` : "원가 미등록")
-      : (tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`);
+      : (tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`))
+      + (p.is_set ? " · 세트" : "");
     return `<option value="${p.id}" ${p.id === sel ? "selected" : ""}>${esc(p.name)} (${tag})</option>`;
   }).join("");
 }
