@@ -1592,7 +1592,7 @@ function openProductModal(id) {
               <option value="사입" ${(p?.trade_type || "사입") === "사입" ? "selected" : ""}>사입 (직접 재고 보유)</option>
               <option value="위탁" ${p?.trade_type === "위탁" ? "selected" : ""}>위탁 (공급처 직배송)</option>
             </select></div>
-          <div class="field full"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60"></div>
+          <div class="field full"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60" oninput="syncSetSearch()"></div>
           <div class="field full"><label>형태</label>
             <select id="p-set-on" onchange="toggleSetFields()">
               <option value="">단품 (기본)</option>
@@ -1600,7 +1600,7 @@ function openProductModal(id) {
             </select></div>
           <div class="field" id="fld-set-parent"><label>구성 상품 *
             <small style="color:var(--text-sub);font-weight:400">— 제품명과 비슷한 상품만 보여줍니다</small></label>
-            <input id="p-set-search" placeholder="상품명으로 검색해 좁히기" oninput="filterSetParents()"
+            <input id="p-set-search" placeholder="상품명으로 검색해 좁히기" oninput="this.dataset.manual='1';filterSetParents()"
               style="margin-bottom:6px" autocomplete="off">
             <select id="p-set-parent" data-self="${id || ""}" onchange="calcMarginHint()">
               <option value="">낱개 상품을 선택하세요</option>
@@ -1650,11 +1650,21 @@ function toggleSetFields() {
   if (on) {
     // 검색어가 비어 있으면 제품명으로 미리 채워 목록을 좁혀 준다
     const s = document.getElementById("p-set-search");
-    if (s && !s.value.trim()) s.value = document.getElementById("p-name")?.value.trim() || "";
+    if (s && !s.value.trim()) { s.value = document.getElementById("p-name")?.value.trim() || ""; delete s.dataset.manual; }
     filterSetParents();
     return; // filterSetParents가 calcMarginHint까지 호출
   }
   calcMarginHint();
+}
+
+// 제품명을 치는 대로 구성 상품 목록도 따라서 좁혀진다
+// (사용자가 검색칸을 직접 수정했다면 그 검색어를 존중하고 건드리지 않음)
+function syncSetSearch() {
+  const on = document.getElementById("p-set-on")?.value === "1";
+  const s = document.getElementById("p-set-search");
+  if (!on || !s || s.dataset.manual === "1") return;
+  s.value = document.getElementById("p-name")?.value.trim() || "";
+  filterSetParents();
 }
 
 // 구성 상품 목록을 검색어(보통 제품명)로 거른다 — '캐비넷락 5입'을 등록 중이면 캐비넷락만 보이게.
