@@ -626,9 +626,8 @@ function collectHygiene(st) {
       `마이너스가 된 재고 ${Object.values(erpStock).filter(s => s.stock < 0 || s.inHouse < 0).length}종`, "#/inventory");
   add(erpChannelList.filter(c => !Number(c.fee_rate)).length,
       `수수료율이 비어 있는 채널 ${erpChannelList.filter(c => !Number(c.fee_rate)).length}개`, "#/channels");
-  // 세트상품은 낱개 원가에서 자동 계산되므로 제외 (낱개에 원가가 없으면 낱개 쪽이 잡힌다)
-  add(erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p) && !p.cost_price).length,
-      `원가가 없는 사입 상품 ${erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p) && !p.cost_price).length}종`, "#/products");
+  add(erpProducts.filter(p => tradeTypeOf(p) === "사입" && !p.cost_price).length,
+      `원가가 없는 사입 상품 ${erpProducts.filter(p => tradeTypeOf(p) === "사입" && !p.cost_price).length}종`, "#/products");
   return { count: items.length, items, top: items[0] || null };
 }
 
@@ -1538,9 +1537,7 @@ function productTable() {
       <th class="num">원가</th><th class="num">판매가</th><th class="num">마진<br><small>부가세 제외</small></th><th class="num">마진율</th>
       <th class="num">MSRP</th><th class="num">박스입수</th><th>메모</th><th>최종수정</th><th></th></tr></thead>
     <tbody>${list.map(p => {
-      // 세트상품 원가는 '낱개 원가 × 구성 수량' 자동 계산
-      const cost = effCost(p, prodCache) || 0, price = Number(p.price) || 0;
-      const base = setBaseOf(p, prodCache);
+      const cost = Number(p.cost_price) || 0, price = Number(p.price) || 0;
       const taxable = isTaxable(p);
       const nPrice = taxable ? netAmt(price, vatCfg.salePriceIncludesVat) : price;
       const nCost = taxable ? netAmt(cost, vatCfg.purchaseCostIncludesVat) : cost;
@@ -1549,15 +1546,13 @@ function productTable() {
       return `
       <tr>
         <td>${esc(p.code)}</td>
-        <td><b>${esc(p.name)}</b>${isSetProd(p) ? `<br><small style="color:var(--text-sub)">구성: ${esc(base?.name || "?")} × ${fmt(p.set_qty)}개</small>` : ""}</td>
-        <td>${isSetProd(p)
-          ? `<span class="chip progress">세트×${fmt(p.set_qty)}</span>`
-          : (p.trade_type || "사입") === "위탁"
-            ? '<span class="chip waiting">위탁</span>'
-            : '<span class="chip mine">사입</span>'}</td>
+        <td><b>${esc(p.name)}</b></td>
+        <td>${(p.trade_type || "사입") === "위탁"
+          ? '<span class="chip waiting">위탁</span>'
+          : '<span class="chip mine">사입</span>'}</td>
         <td>${taxable ? '<span style="color:var(--text-sub)">과세</span>' : '<span class="chip waiting">면세</span>'}</td>
         <td>${esc(p.category)}</td>
-        <td class="num">${cost ? "₩" + fmt(cost) + (isSetProd(p) ? ' <small style="color:var(--text-sub)">자동</small>' : "") : '<span style="color:var(--text-sub)">—</span>'}</td>
+        <td class="num">${cost ? "₩" + fmt(cost) : '<span style="color:var(--text-sub)">—</span>'}</td>
         <td class="num">₩${fmt(price)}</td>
         <td class="num">${margin !== null ? "₩" + fmt(margin) : '<span style="color:var(--text-sub)">—</span>'}</td>
         <td class="num">${rate !== null
@@ -1592,24 +1587,7 @@ function openProductModal(id) {
               <option value="사입" ${(p?.trade_type || "사입") === "사입" ? "selected" : ""}>사입 (직접 재고 보유)</option>
               <option value="위탁" ${p?.trade_type === "위탁" ? "selected" : ""}>위탁 (공급처 직배송)</option>
             </select></div>
-          <div class="field full"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60" oninput="syncSetSearch()"></div>
-          <div class="field full"><label>형태</label>
-            <select id="p-set-on" onchange="toggleSetFields()">
-              <option value="">단품 (기본)</option>
-              <option value="1" ${isSetProd(p) ? "selected" : ""}>세트상품 — 같은 상품 여러 개 묶음 (판매가만 다른 리스팅)</option>
-            </select></div>
-          <div class="field" id="fld-set-parent"><label>구성 상품 *
-            <small style="color:var(--text-sub);font-weight:400">— 제품명과 비슷한 상품만 보여줍니다</small></label>
-            <input id="p-set-search" placeholder="상품명으로 검색해 좁히기" oninput="this.dataset.manual='1';filterSetParents()"
-              style="margin-bottom:6px" autocomplete="off">
-            <select id="p-set-parent" data-self="${id || ""}" onchange="calcMarginHint()">
-              <option value="">낱개 상품을 선택하세요</option>
-              ${prodCache.filter(x => !isSetProd(x) && x.id !== id).map(x =>
-                `<option value="${x.id}" ${x.id === p?.set_parent_id ? "selected" : ""}>${esc(x.name)}${x.cost_price ? ` (원가 ₩${fmt(x.cost_price)})` : ""}</option>`).join("")}
-            </select>
-            <div id="set-filter-note" style="font-size:12px;color:#d9480f;margin-top:4px;line-height:1.6"></div></div>
-          <div class="field" id="fld-set-qty"><label>구성 수량 (세트 1개당 낱개 몇 개?) *</label>
-            <input id="p-set-qty" type="number" min="1" value="${p?.set_qty ?? 2}" oninput="calcMarginHint()"></div>
+          <div class="field full"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60"></div>
           <div class="field"><label>분류</label><input id="p-cat" value="${esc(p?.category || "")}" placeholder="예) 건강식품" maxlength="30"></div>
           <div class="field"><label>부가세</label>
             <select id="p-tax">
@@ -1618,7 +1596,7 @@ function openProductModal(id) {
             </select></div>
           <div class="field"><label>규격</label><input id="p-spec" value="${esc(p?.spec || "")}" placeholder="예) 30g x 10입" maxlength="40"></div>
           <div class="field"><label>단위</label><input id="p-unit" value="${esc(p?.unit || "")}" placeholder="BOX / EA / 병" maxlength="10"></div>
-          <div class="field" id="fld-cost"><label>원가(원) — 매입 단가${vatTag("buy")}</label>
+          <div class="field"><label>원가(원) — 매입 단가${vatTag("buy")}</label>
             <input id="p-cost" type="text" inputmode="numeric" class="comma" value="${cfv(p?.cost_price)}" oninput="calcMarginHint()"></div>
           <div class="field"><label>판매가(원) — 실제 판매${vatTag("sale")}</label>
             <input id="p-price" type="text" inputmode="numeric" class="comma" value="${cfv(p?.price)}" oninput="calcMarginHint()"></div>
@@ -1635,86 +1613,15 @@ function openProductModal(id) {
         </div>
       </div>
     </div>`;
-  toggleSetFields();
-}
-
-// 형태(단품/세트)에 따라 관련 칸을 보이고 숨긴다
-function toggleSetFields() {
-  const on = document.getElementById("p-set-on")?.value === "1";
-  const show = (fid, v) => { const el = document.getElementById(fid); if (el) el.style.display = v ? "" : "none"; };
-  show("fld-set-parent", on);
-  show("fld-set-qty", on);
-  show("fld-cost", !on);            // 세트 원가는 '낱개 원가 × 수량' 자동 — 직접 입력하지 않음
-  // 구분·부가세는 구성 상품을 그대로 따라가므로 세트에서는 잠근다
-  const t = document.getElementById("p-type"); if (t) t.disabled = on;
-  const tax = document.getElementById("p-tax"); if (tax) tax.disabled = on;
-  if (on) {
-    // 검색어가 비어 있으면 제품명으로 미리 채워 목록을 좁혀 준다
-    const s = document.getElementById("p-set-search");
-    if (s && !s.value.trim()) { s.value = document.getElementById("p-name")?.value.trim() || ""; delete s.dataset.manual; }
-    filterSetParents();
-    return; // filterSetParents가 calcMarginHint까지 호출
-  }
-  calcMarginHint();
-}
-
-// 제품명을 치는 대로 구성 상품 목록도 따라서 좁혀진다
-// (사용자가 검색칸을 직접 수정했다면 그 검색어를 존중하고 건드리지 않음)
-function syncSetSearch() {
-  const on = document.getElementById("p-set-on")?.value === "1";
-  const s = document.getElementById("p-set-search");
-  if (!on || !s || s.dataset.manual === "1") return;
-  s.value = document.getElementById("p-name")?.value.trim() || "";
-  filterSetParents();
-}
-
-// 구성 상품 목록을 검색어(보통 제품명)로 거른다 — '캐비넷락 5입'을 등록 중이면 캐비넷락만 보이게.
-// 수량 표기(5입·15개입 등)는 검색어에서 자동으로 뺀다. 못 찾으면 전체를 보여줘 직접 고르게 한다.
-function filterSetParents() {
-  const sel = document.getElementById("p-set-parent");
-  if (!sel) return;
-  const norm = s => String(s || "").toLowerCase().replace(/\s+/g, "");
-  const q = String(document.getElementById("p-set-search")?.value || "")
-    .replace(/\d+\s*(개입|입|개|세트|셋트|팩|매)/g, " ");
-  const tokens = q.split(/\s+/).map(t => t.replace(/[()\[\]]/g, "")).filter(t => t.length >= 2).map(norm);
-  const all = prodCache.filter(x => !isSetProd(x) && x.id !== (sel.dataset.self || ""));
-  let list = tokens.length ? all.filter(x => { const n = norm(x.name); return tokens.every(t => n.includes(t)); }) : all;
-  const narrowed = tokens.length && list.length && list.length < all.length;
-  const noMatch = tokens.length && !list.length;
-  if (!list.length) list = all;
-  // 못 찾았으면 이유를 알려준다 — 조용히 전체 목록만 보여주면 필터가 고장난 것처럼 보임
-  const note = document.getElementById("set-filter-note");
-  if (note) note.textContent = noMatch
-    ? `⚠️ 이 이름과 비슷한 낱개 상품이 마스터에 없습니다. 용량·색상이 다른 새 상품이라면 형태를 '단품'으로 등록하세요. 묶음이 맞다면 낱개 상품부터 먼저 등록해야 합니다.`
-    : "";
-  const prev = sel.value;
-  sel.innerHTML = `<option value="">낱개 상품을 선택하세요${narrowed ? ` (${list.length}개로 좁혀짐)` : ""}</option>`
-    + list.map(x => `<option value="${x.id}">${esc(x.name)}${x.cost_price ? ` (원가 ₩${fmt(x.cost_price)})` : ""}</option>`).join("");
-  if (list.some(x => x.id === prev)) sel.value = prev;
-  else if (list.length === 1) sel.value = list[0].id;   // 후보가 딱 하나면 자동 선택
   calcMarginHint();
 }
 
 function calcMarginHint() {
   const el = document.getElementById("margin-hint");
   if (!el) return;
-  const setOn = document.getElementById("p-set-on")?.value === "1";
-  let cost;
-  if (setOn) {
-    // 세트: 구성 상품 원가 × 수량. 구분·부가세도 구성 상품을 따라간다
-    const parent = prodCache.find(x => x.id === document.getElementById("p-set-parent")?.value);
-    const n = Number(document.getElementById("p-set-qty")?.value) || 0;
-    if (parent) {
-      const t = document.getElementById("p-type"); if (t) t.value = parent.trade_type || "사입";
-      const tx = document.getElementById("p-tax"); if (tx) tx.value = parent.tax_type || "과세";
-    }
-    cost = (Number(parent?.cost_price) || 0) * n;
-    if (parent && n && !parent.cost_price) { el.innerHTML = `⚠️ 구성 상품 '${esc(parent.name)}'의 원가가 등록되어 있지 않습니다 — 먼저 낱개 상품에 원가를 넣어 주세요.`; return; }
-  } else {
-    cost = numOf(document.getElementById("p-cost")?.value) || 0;
-  }
+  const cost = numOf(document.getElementById("p-cost")?.value) || 0;
   const price = numOf(document.getElementById("p-price")?.value) || 0;
-  if (!cost || !price) { el.textContent = setOn ? "구성 상품·수량·판매가를 넣으면 마진이 자동 계산됩니다." : "원가와 판매가를 넣으면 마진이 자동 계산됩니다."; return; }
+  if (!cost || !price) { el.textContent = "원가와 판매가를 넣으면 마진이 자동 계산됩니다."; return; }
   const taxable = (document.getElementById("p-tax")?.value || "과세") === "과세";
   // 부가세를 뺀 금액끼리 비교해야 실제 마진
   const netPrice = taxable ? netAmt(price, vatCfg.salePriceIncludesVat) : price;
@@ -1732,27 +1639,15 @@ async function saveProduct(id) {
   const name = document.getElementById("p-name").value.trim();
   if (!code || !name) return toast("제품코드와 제품명은 필수입니다");
 
-  // 세트상품: 구성 상품·수량 검증 (구분·부가세·원가는 구성 상품을 따라감)
-  const setOn = document.getElementById("p-set-on").value === "1";
-  const setParentId = setOn ? document.getElementById("p-set-parent").value : null;
-  const setQty = setOn ? (Number(document.getElementById("p-set-qty").value) || 0) : null;
-  const setParent = setOn ? prodCache.find(x => x.id === setParentId) : null;
-  if (setOn && !setParent) return toast("세트의 구성 상품을 선택해 주세요");
-  if (setOn && setQty < 1) return toast("구성 수량을 1 이상으로 입력해 주세요");
-  if (setOn && setParentId === id) return toast("자기 자신을 구성 상품으로 넣을 수 없습니다");
-
   const data = {
     code, name,
-    set_parent_id: setOn ? setParentId : null,
-    set_qty: setOn ? setQty : null,
-    trade_type: setOn ? (setParent.trade_type || "사입") : document.getElementById("p-type").value,
-    tax_type: setOn ? (setParent.tax_type || "과세") : document.getElementById("p-tax").value,
+    trade_type: document.getElementById("p-type").value,
+    tax_type: document.getElementById("p-tax").value,
     category: document.getElementById("p-cat").value.trim(),
     spec: document.getElementById("p-spec").value.trim(),
     unit: document.getElementById("p-unit").value.trim(),
     price: numOf(document.getElementById("p-price").value) || 0,
-    // 세트 원가는 저장하지 않는다 — '낱개 원가 × 수량'으로 항상 자동 계산 (낱개 원가가 바뀌면 따라 바뀌도록)
-    cost_price: setOn ? null : (numOf(document.getElementById("p-cost").value) || null),
+    cost_price: numOf(document.getElementById("p-cost").value) || null,
     msrp: numOf(document.getElementById("p-msrp").value) || null,
     box_qty: numOf(document.getElementById("p-box").value) || null,
     memo: document.getElementById("p-memo").value.trim(),
@@ -1778,14 +1673,6 @@ async function saveProduct(id) {
 async function deleteProduct(id) {
   const p = prodCache.find(x => x.id === id);
   if (!p) return;
-  // 세트상품이 이 상품을 구성으로 쓰고 있으면 삭제 불가 (세트의 재고·원가 계산이 끊어짐)
-  const kids = prodCache.filter(x => x.set_parent_id === id);
-  if (kids.length) {
-    return alert(
-      `'${p.name}'은(는) 삭제할 수 없습니다.\n\n`
-      + `이 상품을 구성으로 쓰는 세트상품이 있습니다: ${kids.map(k => k.name).join(", ")}\n`
-      + `세트상품을 먼저 삭제하거나 구성 상품을 바꿔 주세요.`);
-  }
   // 거래 기록이 있으면 DB가 삭제를 막는다 — 이유를 알려줘야 사용자가 헤매지 않음
   const [s, b] = await Promise.all([
     sb.from("sales").select("id", { count: "exact", head: true }).eq("product_id", id),
@@ -1808,19 +1695,17 @@ async function deleteProduct(id) {
 }
 
 function exportProductsCSV() {
-  const head = ["제품코드", "제품명", "구분", "세트구성", "부가세", "분류", "규격", "단위", "원가", "판매가",
+  const head = ["제품코드", "제품명", "구분", "부가세", "분류", "규격", "단위", "원가", "판매가",
     "마진(부가세제외)", "마진율(%)", "MSRP", "박스입수", "메모", "최종수정일", "수정자"];
   const rows = prodCache.map(p => {
-    const cost = effCost(p, prodCache) || 0, price = Number(p.price) || 0;
+    const cost = Number(p.cost_price) || 0, price = Number(p.price) || 0;
     const taxable = isTaxable(p);
     const nPrice = taxable ? netAmt(price, vatCfg.salePriceIncludesVat) : price;
     const nCost = taxable ? netAmt(cost, vatCfg.purchaseCostIncludesVat) : cost;
     const margin = cost && price ? nPrice - nCost : "";
     const rate = margin !== "" && nPrice ? Math.round((margin / nPrice) * 100) : "";
-    return [p.code, p.name, isSetProd(p) ? "세트" : (p.trade_type || "사입"),
-      isSetProd(p) ? `${setBaseOf(p, prodCache)?.name || "?"} x ${p.set_qty}` : "",
-      p.tax_type || "과세", p.category, p.spec, p.unit,
-      cost || "", price, margin, rate, p.msrp ?? "", p.box_qty ?? "",
+    return [p.code, p.name, p.trade_type || "사입", p.tax_type || "과세", p.category, p.spec, p.unit,
+      p.cost_price ?? "", price, margin, rate, p.msrp ?? "", p.box_qty ?? "",
       p.memo, p.updated_at, p.updated_by || ""];
   });
   const csv = "﻿" + [head, ...rows]
@@ -1882,21 +1767,14 @@ async function loadErpBase() {
   // 재고는 '오늘까지 실제로 일어난' 입출고만 반영 (내일 입고 예정을 미리 입력해도 지금 재고는 그대로)
   const td = today();
   const upTo = arr => arr.filter(x => (x.date || "") <= td);
-  // 1차: 낱개 상품 — 세트상품 판매는 '낱개 수량'으로 환산해 여기서 함께 차감한다
   erpProducts.forEach(p => {
-    if (isSetProd(p)) return;  // 세트는 아래 2차에서 낱개 기준으로 파생
-    const children = erpProducts.filter(x => x.set_parent_id === p.id && Number(x.set_qty) > 0);
-    const unitQty = s => {
-      const c = children.find(x => x.id === s.product_id);
-      return c ? Number(s.qty) * Number(c.set_qty) : Number(s.qty);
-    };
     const myBuys = upTo(buys.filter(b => b.product_id === p.id));
     // 매입이 어디로 들어왔는지로 나눈다 — 리파코→로켓그로스 직송처럼 자사창고를 안 거치는 경우가 있음
     const boughtCoupang = myBuys.filter(b => b.warehouse === "쿠팡").reduce((s, b) => s + Number(b.qty), 0);
     const boughtHouse = myBuys.filter(b => b.warehouse !== "쿠팡").reduce((s, b) => s + Number(b.qty), 0);
     const bought = boughtHouse + boughtCoupang;
-    const mySales = upTo(sales.filter(x => x.product_id === p.id || children.some(c => c.id === x.product_id)));
-    const sold = mySales.reduce((s, x) => s + unitQty(x), 0);
+    const mySales = upTo(sales.filter(x => x.product_id === p.id));
+    const sold = mySales.reduce((s, x) => s + Number(x.qty), 0);
     // 창고에서 쿠팡으로 보낸(입고) − 회수
     const moved = upTo(erpTransfers.filter(t => t.product_id === p.id))
       .reduce((s, t) => s + (t.kind === "쿠팡입고" ? 1 : -1) * Number(t.qty), 0);
@@ -1907,7 +1785,7 @@ async function loadErpBase() {
       const ch = x.channel || "";
       const reg = erpChannelList.find(c => c.name === ch);
       return reg ? reg.ship_type === "풀필먼트" : ch.includes("쿠팡");
-    }).reduce((s, x) => s + unitQty(x), 0);
+    }).reduce((s, x) => s + Number(x.qty), 0);
     const houseSold = sold - coupangSold;
     // 쿠팡 재고 = 직송 입고 + 창고에서 보낸 것 − 쿠팡 판매
     const atCoupangRaw = boughtCoupang + moved - coupangSold;
@@ -1916,23 +1794,11 @@ async function loadErpBase() {
     const inHouse = boughtHouse - moved - houseSold;
     const stock = bought - sold;
     erpStock[p.id] = {
-      stock, atCoupang, inHouse, bought, sold,
+      stock, atCoupang, inHouse,
       boughtHouse, boughtCoupang,
       coupangUntracked: atCoupangRaw < 0 ? -atCoupangRaw : 0, // 입고/이동 기록 누락 의심 수량
       // 최근 매입단가 우선, 없으면 제품 마스터의 등록 원가
       lastCost: (myBuys.length && Number(myBuys[0].unit_cost)) || Number(p.cost_price) || 0,
-    };
-  });
-  // 2차: 세트상품 — 자체 재고는 없고, '낱개 재고로 몇 세트를 팔 수 있는가'를 보여준다
-  erpProducts.filter(isSetProd).forEach(p => {
-    const b = erpStock[p.set_parent_id] || { stock: 0, atCoupang: 0, inHouse: 0 };
-    const n = Number(p.set_qty) || 1;
-    erpStock[p.id] = {
-      stock: Math.floor(Math.max(0, b.stock) / n),
-      atCoupang: Math.floor(Math.max(0, b.atCoupang) / n),
-      inHouse: Math.floor(Math.max(0, b.inHouse) / n),
-      bought: 0, sold: 0, boughtHouse: 0, boughtCoupang: 0, coupangUntracked: 0,
-      lastCost: effCost(p), isSet: true,
     };
   });
   erpSuppliers = [...new Set([...buys.map(b => b.supplier), ...costs.map(c => c.supplier)].filter(Boolean))];
@@ -1944,30 +1810,13 @@ async function loadErpBase() {
 const tradeTypeOf = p => (p?.trade_type || "사입");
 const tradeTypeOfId = id => tradeTypeOf(erpProducts.find(p => p.id === id));
 
-/* ---------- 세트상품 ----------
-   세트상품 = 같은 낱개 상품 N개 묶음 (판매가만 다른 별도 리스팅).
-   재고·원가는 낱개 상품 하나만 관리한다 — 세트가 팔리면 낱개 재고에서 N개 차감, 원가도 낱개×N 자동. */
-const isSetProd = p => !!(p?.set_parent_id && Number(p.set_qty) > 0);
-const setBaseOf = (p, list) => (p?.set_parent_id ? (list || erpProducts).find(x => x.id === p.set_parent_id) : null);
-// 유효 원가: 세트는 '낱개 원가 × 구성 수량'으로 항상 자동 계산 (낱개 원가가 바뀌면 따라 바뀜)
-function effCost(p, list) {
-  if (!p) return 0;
-  const b = setBaseOf(p, list);
-  return b ? (Number(b.cost_price) || 0) * (Number(p.set_qty) || 0) : (Number(p.cost_price) || 0);
-}
-const effCostOf = pid => effCost(erpProducts.find(p => p.id === pid));
-
 function productOptions(sel, mode) {
-  // 매입은 사입 상품만 대상 (위탁은 우리가 사입하지 않음). 세트상품은 매입 대상이 아님 — 낱개로 사서 묶는 것
-  const list = mode === "buy"
-    ? erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p))
-    : erpProducts;
+  // 매입은 사입 상품만 대상 (위탁은 우리가 사입하지 않음)
+  const list = mode === "buy" ? erpProducts.filter(p => tradeTypeOf(p) === "사입") : erpProducts;
   return `<option value="">품목 선택</option>` + list.map(p => {
     const tag = mode === "buy"
       ? (p.cost_price ? `원가 ₩${fmt(p.cost_price)}` : "원가 미등록")
-      : isSetProd(p)
-        ? `세트×${p.set_qty}${tradeTypeOf(p) === "사입" ? ` · ${fmt(erpStock[p.id]?.stock || 0)}세트 가능` : ""}`
-        : (tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`);
+      : (tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`);
     return `<option value="${p.id}" ${p.id === sel ? "selected" : ""}>${esc(p.name)} (${tag})</option>`;
   }).join("");
 }
@@ -2112,8 +1961,8 @@ async function saveSales() {
     }
     qtyByPid[pid] = (qtyByPid[pid] || 0) + qty;
     recs.push({ date, channel, product_id: pid, qty, unit_price: price, amount: qty * price,
-      // 판매 시점 원가를 남겨야 나중에 원가가 바뀌어도 과거 이익이 흔들리지 않음 (세트는 낱개 원가 × 구성 수량)
-      unit_cost: effCostOf(pid) || null,
+      // 판매 시점 원가를 남겨야 나중에 원가가 바뀌어도 과거 이익이 흔들리지 않음
+      unit_cost: Number(erpProducts.find(p => p.id === pid)?.cost_price) || null,
       memo: tr.querySelector(".sr-memo").value.trim(), created_by: me.name });
   }
   if (!recs.length) return toast("품목을 1개 이상 입력해 주세요");
@@ -2359,7 +2208,7 @@ function xlsDateOf(v) {
 }
 
 function xlsMatchProduct(nameRaw, codeRaw, isSale) {
-  const list = isSale ? erpProducts : erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p));
+  const list = isSale ? erpProducts : erpProducts.filter(p => tradeTypeOf(p) === "사입");
   const code = xlsNorm(codeRaw), name = xlsNorm(nameRaw);
   let p = null;
   if (code) p = list.find(x => xlsNorm(x.code) === code);
@@ -2570,7 +2419,7 @@ async function confirmExcelImport() {
     };
     recs.push(isSale
       ? { ...base, unit_price: price, channel: party || "기타",
-          unit_cost: effCostOf(pid) || null }
+          unit_cost: Number(erpProducts.find(p => p.id === pid)?.cost_price) || null }
       : { ...base, unit_cost: price, supplier: party,
           warehouse: document.getElementById("xls-warehouse")?.value || "자사창고" });
   });
@@ -2732,7 +2581,7 @@ async function saveErpEdit(table, id) {
     patch.unit_price = price;
     patch.channel = party || "기타";
     // 품목을 바꾸면 원가 스냅샷도 새 품목 기준으로 갱신 (안 하면 이익 계산이 틀어짐)
-    patch.unit_cost = effCostOf(pid) || null;
+    patch.unit_cost = Number(erpProducts.find(p => p.id === pid)?.cost_price) || null;
   } else {
     patch.unit_cost = price; patch.supplier = party;
     // 입고처가 틀리면 자사창고/쿠팡 재고가 서로 어긋나므로 수정할 수 있어야 함
@@ -2792,13 +2641,16 @@ function exportErpCSV(table) {
 async function viewInventory() {
   const { buys, sales } = await loadErpBase();
 
-  // 재고 관리는 사입 낱개 상품만 (위탁은 공급처 재고, 세트는 낱개 재고에 포함됨)
-  const stockProducts = erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p));
+  // 재고 관리는 사입 상품만 (위탁은 공급처 재고)
+  const stockProducts = erpProducts.filter(p => tradeTypeOf(p) === "사입");
   const consignCount = erpProducts.length - stockProducts.length;
-  // 매입·판매 수량은 loadErpBase가 계산한 값을 그대로 쓴다 — 세트 판매가 낱개 수량으로 환산되어 있음
+  // 재고와 같은 기준(오늘까지)으로 세야 '총매입 − 총판매 = 총재고'가 맞음
+  const td = today();
   const inv = stockProducts.map(p => {
-    const st = erpStock[p.id] || { stock: 0, inHouse: 0, atCoupang: 0, lastCost: 0, bought: 0, sold: 0 };
-    return { p, ...st, value: st.stock * st.lastCost };
+    const bought = buys.filter(b => b.product_id === p.id && (b.date || "") <= td).reduce((s, b) => s + Number(b.qty), 0);
+    const sold = sales.filter(x => x.product_id === p.id && (x.date || "") <= td).reduce((s, x) => s + Number(x.qty), 0);
+    const st = erpStock[p.id] || { stock: 0, inHouse: 0, atCoupang: 0, lastCost: 0 };
+    return { p, bought, sold, ...st, value: st.stock * st.lastCost };
   });
   const totalValue = inv.reduce((s, r) => s + r.value, 0);
   const totalCoupang = inv.reduce((s, r) => s + r.atCoupang, 0);
@@ -2850,8 +2702,7 @@ async function viewInventory() {
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
         ※ 창고에서 쿠팡 물류센터로 보낸 수량은 <b>🚚 쿠팡 재고 이동</b>으로 기록하세요.<br>
         ※ <b>풀필먼트 채널</b>(쿠팡 로켓그로스 등) 매출은 쿠팡 재고에서, 그 외(쿠팡 판매자배송 포함) 매출은 자사창고에서 차감됩니다.<br>
-        ※ 숫자가 음수면 이동/매입 기록이 누락된 것입니다. 위탁 상품은 이 화면에 표시되지 않습니다.<br>
-        ※ <b>세트상품</b> 판매는 구성 낱개 상품의 재고에서 자동 차감되므로, 이 표에는 낱개 상품만 나옵니다.
+        ※ 숫자가 음수면 이동/매입 기록이 누락된 것입니다. 위탁 상품은 이 화면에 표시되지 않습니다.
       </p>
     </div>
 
@@ -2958,8 +2809,8 @@ function cmOfSale(r, shipCharged) {
   // 이익은 전부 공급가액(부가세 뺀 금액) 기준 — 부가세는 우리 돈이 아니라 나중에 내야 할 돈
   const revenue = saleNet(gross, p);
   const outVat = saleVat(gross, p);
-  // 판매 시점 원가 스냅샷 우선, 없으면 현재 제품 마스터 원가 (세트상품은 낱개 원가 × 구성 수량)
-  const unitCost = Number(r.unit_cost ?? effCost(p)) || 0;
+  // 판매 시점 원가 스냅샷 우선, 없으면 현재 제품 마스터 원가
+  const unitCost = Number(r.unit_cost ?? p?.cost_price) || 0;
   const cost = buyNet(unitCost * qty, p);
   const st = channelSetting(r.channel);
   // 채널 수수료는 '고객이 실제로 결제한 금액'(부가세 포함)에 붙는다
