@@ -1598,8 +1598,11 @@ function openProductModal(id) {
               <option value="">단품 (기본)</option>
               <option value="1" ${isSetProd(p) ? "selected" : ""}>세트상품 — 같은 상품 여러 개 묶음 (판매가만 다른 리스팅)</option>
             </select></div>
-          <div class="field" id="fld-set-parent"><label>구성 상품 *</label>
-            <select id="p-set-parent" onchange="calcMarginHint()">
+          <div class="field" id="fld-set-parent"><label>구성 상품 *
+            <small style="color:var(--text-sub);font-weight:400">— 제품명과 비슷한 상품만 보여줍니다</small></label>
+            <input id="p-set-search" placeholder="상품명으로 검색해 좁히기" oninput="filterSetParents()"
+              style="margin-bottom:6px" autocomplete="off">
+            <select id="p-set-parent" data-self="${id || ""}" onchange="calcMarginHint()">
               <option value="">낱개 상품을 선택하세요</option>
               ${prodCache.filter(x => !isSetProd(x) && x.id !== id).map(x =>
                 `<option value="${x.id}" ${x.id === p?.set_parent_id ? "selected" : ""}>${esc(x.name)}${x.cost_price ? ` (원가 ₩${fmt(x.cost_price)})` : ""}</option>`).join("")}
@@ -1644,6 +1647,34 @@ function toggleSetFields() {
   // 구분·부가세는 구성 상품을 그대로 따라가므로 세트에서는 잠근다
   const t = document.getElementById("p-type"); if (t) t.disabled = on;
   const tax = document.getElementById("p-tax"); if (tax) tax.disabled = on;
+  if (on) {
+    // 검색어가 비어 있으면 제품명으로 미리 채워 목록을 좁혀 준다
+    const s = document.getElementById("p-set-search");
+    if (s && !s.value.trim()) s.value = document.getElementById("p-name")?.value.trim() || "";
+    filterSetParents();
+    return; // filterSetParents가 calcMarginHint까지 호출
+  }
+  calcMarginHint();
+}
+
+// 구성 상품 목록을 검색어(보통 제품명)로 거른다 — '캐비넷락 5입'을 등록 중이면 캐비넷락만 보이게.
+// 수량 표기(5입·15개입 등)는 검색어에서 자동으로 뺀다. 못 찾으면 전체를 보여줘 직접 고르게 한다.
+function filterSetParents() {
+  const sel = document.getElementById("p-set-parent");
+  if (!sel) return;
+  const norm = s => String(s || "").toLowerCase().replace(/\s+/g, "");
+  const q = String(document.getElementById("p-set-search")?.value || "")
+    .replace(/\d+\s*(개입|입|개|세트|셋트|팩|매)/g, " ");
+  const tokens = q.split(/\s+/).map(t => t.replace(/[()\[\]]/g, "")).filter(t => t.length >= 2).map(norm);
+  const all = prodCache.filter(x => !isSetProd(x) && x.id !== (sel.dataset.self || ""));
+  let list = tokens.length ? all.filter(x => { const n = norm(x.name); return tokens.every(t => n.includes(t)); }) : all;
+  const narrowed = tokens.length && list.length && list.length < all.length;
+  if (!list.length) list = all;
+  const prev = sel.value;
+  sel.innerHTML = `<option value="">낱개 상품을 선택하세요${narrowed ? ` (${list.length}개로 좁혀짐)` : ""}</option>`
+    + list.map(x => `<option value="${x.id}">${esc(x.name)}${x.cost_price ? ` (원가 ₩${fmt(x.cost_price)})` : ""}</option>`).join("");
+  if (list.some(x => x.id === prev)) sel.value = prev;
+  else if (list.length === 1) sel.value = list[0].id;   // 후보가 딱 하나면 자동 선택
   calcMarginHint();
 }
 
