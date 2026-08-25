@@ -1568,6 +1568,8 @@ function productTable() {
         <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(p.memo)}</td>
         <td>${esc(p.updated_at)}<br><small style="color:var(--text-sub)">${esc(p.updated_by || "")}</small></td>
         <td style="white-space:nowrap">
+          ${isSetProd(p) ? "" : `<button class="btn sm secondary" title="이 제품의 묶음 리스팅 만들기"
+            onclick="openSetCreateModal('${p.id}')">＋세트</button>`}
           <button class="btn sm secondary" onclick="openProductModal('${p.id}')">수정</button>
           <button class="btn sm danger" onclick="deleteProduct('${p.id}')">삭제</button>
         </td>
@@ -1588,38 +1590,36 @@ function openProductModal(id) {
         <div class="form-grid">
           <div class="field"><label>제품코드 *</label><input id="p-code" value="${esc(p?.code || "")}" placeholder="RV-000" maxlength="20"></div>
           <div class="field"><label>구분 *</label>
-            <select id="p-type">
+            <select id="p-type" ${isSetProd(p) ? "disabled" : ""}>
               <option value="사입" ${(p?.trade_type || "사입") === "사입" ? "selected" : ""}>사입 (직접 재고 보유)</option>
               <option value="위탁" ${p?.trade_type === "위탁" ? "selected" : ""}>위탁 (공급처 직배송)</option>
             </select></div>
-          <div class="field"><label>형태</label>
+          ${isSetProd(p) ? `
+          <div class="field full" style="background:var(--brand-light);border-radius:9px;padding:10px 12px">
+            <label style="margin-bottom:4px">📦 세트상품 — 기본 제품의 배수</label>
+            <div style="font-size:13.5px;line-height:1.7">
+              기본 제품: <b>${esc(setBaseOf(p, prodCache)?.name || "?")}</b><br>
+              <span style="color:var(--text-sub)">재고는 기본 제품에서 차감되고, 원가는 기본 원가 × 배수로 자동 계산됩니다.</span>
+            </div>
+            <label style="margin-top:8px">배수 (세트 1개 = 기본 제품 몇 개?)</label>
+            <input id="p-set-qty" type="number" min="1" value="${p.set_qty}" data-self="${id}" oninput="calcMarginHint()">
+            <input type="hidden" id="p-set-on" value="1">
+          </div>` : `
+          <div class="field"><label>세트 표기 <small style="color:var(--text-sub);font-weight:400">— 표시용, 계산 무관</small></label>
             <select id="p-set-on" onchange="toggleSetFields()">
-              <option value="">단품 (기본)</option>
-              <option value="1" ${isSetProd(p) ? "selected" : ""}>세트상품 — 낱개 재고·원가와 자동 연동</option>
-              <option value="tag" ${!isSetProd(p) && p?.is_set ? "selected" : ""}>세트 표기만 (연동 없음)</option>
-            </select></div>
-          <div class="field full" id="fld-set-parent"><label>구성 상품 *
-            <small style="color:var(--text-sub);font-weight:400">— 제품명과 비슷한 상품만 보여줍니다</small></label>
-            <input id="p-set-search" placeholder="상품명으로 검색해 좁히기" oninput="this.dataset.manual='1';filterSetParents()"
-              style="margin-bottom:6px" autocomplete="off">
-            <select id="p-set-parent" data-self="${id || ""}" onchange="calcMarginHint()">
-              <option value="">낱개 상품을 선택하세요</option>
-              ${prodCache.filter(x => !isSetProd(x) && x.id !== id).map(x =>
-                `<option value="${x.id}" ${x.id === p?.set_parent_id ? "selected" : ""}>${esc(x.name)}${x.cost_price ? ` (원가 ₩${fmt(x.cost_price)})` : ""}</option>`).join("")}
-            </select>
-            <div id="set-filter-note" style="font-size:12px;color:#d9480f;margin-top:4px;line-height:1.6"></div></div>
-          <div class="field" id="fld-set-qty"><label>구성 수량 (세트 1개당 낱개 몇 개?) *</label>
-            <input id="p-set-qty" type="number" min="1" value="${p?.set_qty ?? 2}" oninput="calcMarginHint()"></div>
-          <div class="field full"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60" oninput="syncSetSearch()"></div>
+              <option value="">일반 상품</option>
+              <option value="tag" ${p?.is_set ? "selected" : ""}>세트 표기만 (묶음 리스팅)</option>
+            </select></div>`}
+          <div class="field full"><label>제품명 *</label><input id="p-name" value="${esc(p?.name || "")}" maxlength="60"></div>
           <div class="field"><label>분류</label><input id="p-cat" value="${esc(p?.category || "")}" placeholder="예) 건강식품" maxlength="30"></div>
           <div class="field"><label>부가세</label>
-            <select id="p-tax">
+            <select id="p-tax" ${isSetProd(p) ? "disabled" : ""}>
               <option value="과세" ${(p?.tax_type || "과세") === "과세" ? "selected" : ""}>과세 (대부분의 공산품)</option>
               <option value="면세" ${p?.tax_type === "면세" ? "selected" : ""}>면세 (미가공 식품·도서 등)</option>
             </select></div>
           <div class="field"><label>규격</label><input id="p-spec" value="${esc(p?.spec || "")}" placeholder="예) 30g x 10입" maxlength="40"></div>
           <div class="field"><label>단위</label><input id="p-unit" value="${esc(p?.unit || "")}" placeholder="BOX / EA / 병" maxlength="10"></div>
-          <div class="field" id="fld-cost"><label>원가(원) — 매입 단가${vatTag("buy")}</label>
+          <div class="field" id="fld-cost" ${isSetProd(p) ? 'style="display:none"' : ""}><label>원가(원) — 매입 단가${vatTag("buy")}</label>
             <input id="p-cost" type="text" inputmode="numeric" class="comma" value="${cfv(p?.cost_price)}" oninput="calcMarginHint()"></div>
           <div class="field"><label>판매가(원) — 실제 판매${vatTag("sale")}</label>
             <input id="p-price" type="text" inputmode="numeric" class="comma" value="${cfv(p?.price)}" oninput="calcMarginHint()"></div>
@@ -1639,84 +1639,120 @@ function openProductModal(id) {
   toggleSetFields();
 }
 
-// 형태(단품/연동 세트/표기만)에 따라 관련 칸을 보이고 숨긴다
+// 세트 표기 선택 시 화면 갱신 (연동 세트는 [＋세트] 버튼으로만 만들어지므로 여기선 표기만 처리)
 function toggleSetFields() {
-  const mode = document.getElementById("p-set-on")?.value || "";
-  const linked = mode === "1";
-  const show = (fid, v) => { const el = document.getElementById(fid); if (el) el.style.display = v ? "" : "none"; };
-  show("fld-set-parent", linked);
-  show("fld-set-qty", linked);
-  show("fld-cost", !linked);        // 연동 세트 원가는 '낱개 원가 × 수량' 자동 — 직접 입력하지 않음
-  // 구분·부가세는 구성 상품을 그대로 따라가므로 연동 세트에서는 잠근다
-  const t = document.getElementById("p-type"); if (t) t.disabled = linked;
-  const tax = document.getElementById("p-tax"); if (tax) tax.disabled = linked;
-  if (linked) {
-    // 검색어가 비어 있으면 제품명으로 미리 채워 목록을 좁혀 준다
-    const s = document.getElementById("p-set-search");
-    if (s && !s.value.trim()) { s.value = document.getElementById("p-name")?.value.trim() || ""; delete s.dataset.manual; }
-    filterSetParents();
-    return; // filterSetParents가 calcMarginHint까지 호출
-  }
   calcMarginHint();
 }
 
-// 제품명을 치는 대로 구성 상품 목록도 따라서 좁혀진다
-// (사용자가 검색칸을 직접 수정했다면 그 검색어를 존중하고 건드리지 않음)
-function syncSetSearch() {
-  const linked = document.getElementById("p-set-on")?.value === "1";
-  const s = document.getElementById("p-set-search");
-  if (!linked || !s || s.dataset.manual === "1") return;
-  s.value = document.getElementById("p-name")?.value.trim() || "";
-  filterSetParents();
+/* 기본 제품에서 배수만 골라 세트상품을 만든다 — A+B 번들은 없으므로 구성 상품 선택 자체가 불필요 */
+function openSetCreateModal(baseId) {
+  const b = prodCache.find(x => x.id === baseId);
+  if (!b) return;
+  if (isSetProd(b)) return toast("세트상품으로는 다시 세트를 만들 수 없습니다");
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>📦 세트상품 만들기</h3>
+        <p style="font-size:13.5px;color:var(--text-sub);margin:4px 0 12px;line-height:1.7">
+          <b>${esc(b.name)}</b>를 여러 개 묶어 파는 리스팅을 만듭니다.<br>
+          재고는 기본 제품에서 차감되고, 원가는 <b>기본 원가 × 배수</b>로 자동 계산됩니다.</p>
+        <div class="form-grid">
+          <div class="field full"><label>몇 개 묶음인가요? *</label>
+            <div id="set-mult-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
+              ${[2, 3, 4, 5, 6, 10].map(n =>
+                `<button type="button" class="btn sm secondary" onclick="pickSetMult(${n})">${n}개</button>`).join("")}
+            </div>
+            <input id="sc-qty" type="number" min="2" value="3" oninput="setCreatePreview('${baseId}')"></div>
+          <div class="field full"><label>세트 판매가(원) *${vatTag("sale")}</label>
+            <input id="sc-price" type="text" inputmode="numeric" class="comma" placeholder="쿠팡 리스팅 가격"
+              oninput="setCreatePreview('${baseId}')"></div>
+          <div class="field full" id="sc-preview" style="font-size:13px;color:var(--text-sub);line-height:1.8"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-sc-save" onclick="saveNewSet('${baseId}')">세트 만들기</button>
+        </div>
+      </div>
+    </div>`;
+  setCreatePreview(baseId);
 }
-
-// 구성 상품 목록을 검색어(보통 제품명)로 거른다 — '캐비넷락 5입'을 등록 중이면 캐비넷락만 보이게.
-// 수량 표기(5입·15개입 등)는 검색어에서 자동으로 뺀다. 못 찾으면 전체를 보여주고 이유를 알려준다.
-function filterSetParents() {
-  const sel = document.getElementById("p-set-parent");
-  if (!sel) return;
-  const norm = s => String(s || "").toLowerCase().replace(/\s+/g, "");
-  const q = String(document.getElementById("p-set-search")?.value || "")
-    .replace(/\d+\s*(개입|입|개|세트|셋트|팩|매)/g, " ");
-  const tokens = q.split(/\s+/).map(t => t.replace(/[()\[\]]/g, "")).filter(t => t.length >= 2).map(norm);
-  const all = prodCache.filter(x => !isSetProd(x) && x.id !== (sel.dataset.self || ""));
-  let list = tokens.length ? all.filter(x => { const n = norm(x.name); return tokens.every(t => n.includes(t)); }) : all;
-  const narrowed = tokens.length && list.length && list.length < all.length;
-  const noMatch = tokens.length && !list.length;
-  if (!list.length) list = all;
-  // 못 찾았으면 이유를 알려준다 — 조용히 전체 목록만 보여주면 필터가 고장난 것처럼 보임
-  const note = document.getElementById("set-filter-note");
-  if (note) note.textContent = noMatch
-    ? `⚠️ 이 이름과 비슷한 낱개 상품이 마스터에 없습니다. 용량·색상이 다른 새 상품이라면 형태를 '단품'으로 등록하세요. 묶음이 맞다면 낱개 상품부터 먼저 등록해야 합니다.`
-    : "";
-  const prev = sel.value;
-  sel.innerHTML = `<option value="">낱개 상품을 선택하세요${narrowed ? ` (${list.length}개로 좁혀짐)` : ""}</option>`
-    + list.map(x => `<option value="${x.id}">${esc(x.name)}${x.cost_price ? ` (원가 ₩${fmt(x.cost_price)})` : ""}</option>`).join("");
-  if (list.some(x => x.id === prev)) sel.value = prev;
-  else if (list.length === 1) sel.value = list[0].id;   // 후보가 딱 하나면 자동 선택
-  calcMarginHint();
+function pickSetMult(n) {
+  const el = document.getElementById("sc-qty");
+  if (el) { el.value = n; el.dispatchEvent(new Event("input", { bubbles: true })); }
+}
+function setCreatePreview(baseId) {
+  const b = prodCache.find(x => x.id === baseId);
+  const el = document.getElementById("sc-preview");
+  if (!b || !el) return;
+  const n = Number(document.getElementById("sc-qty")?.value) || 0;
+  const price = numOf(document.getElementById("sc-price")?.value);
+  if (n < 2) { el.innerHTML = "배수는 2 이상이어야 합니다."; return; }
+  const cost = (Number(b.cost_price) || 0) * n;
+  const taxable = isTaxable(b);
+  const nPrice = taxable ? netAmt(price, vatCfg.salePriceIncludesVat) : price;
+  const nCost = taxable ? netAmt(cost, vatCfg.purchaseCostIncludesVat) : cost;
+  const margin = cost && price ? nPrice - nCost : null;
+  const rate = margin !== null && nPrice ? Math.round((margin / nPrice) * 100) : null;
+  el.innerHTML = `
+    이렇게 만들어집니다 —<br>
+    · 제품명 <b>${esc(b.name)} ${n}개 세트</b><br>
+    · 제품코드 <b>${esc(setCodeFor(b, n))}</b><br>
+    · 원가 <b>₩${fmt(cost)}</b> <span style="color:var(--text-sub)">(₩${fmt(b.cost_price || 0)} × ${n})</span>
+    ${!b.cost_price ? ' <span style="color:#d9480f">⚠️ 기본 제품에 원가가 없습니다</span>' : ""}
+    ${margin !== null ? `<br>· 마진 <b>₩${fmt(margin)}</b> · 마진율 <b style="color:${rate < 20 ? "#d9480f" : "var(--brand)"}">${rate}%</b>` : ""}`;
+}
+// 세트 제품코드: 기본코드-S{배수}. 이미 있으면 뒤에 번호를 붙여 충돌을 피한다
+function setCodeFor(b, n) {
+  let code = `${b.code}-S${n}`;
+  let i = 2;
+  while (prodCache.some(x => x.code === code)) code = `${b.code}-S${n}-${i++}`;
+  return code;
+}
+async function saveNewSet(baseId) {
+  const b = prodCache.find(x => x.id === baseId);
+  if (!b) return;
+  const n = Number(document.getElementById("sc-qty").value) || 0;
+  const price = numOf(document.getElementById("sc-price").value);
+  if (n < 2) return toast("배수는 2 이상으로 입력해 주세요");
+  if (price <= 0) return toast("세트 판매가를 입력해 주세요");
+  const btn = document.getElementById("btn-sc-save");
+  if (btn) btn.disabled = true;
+  const { error } = await sb.from("products").insert({
+    code: setCodeFor(b, n),
+    name: `${b.name} ${n}개 세트`,
+    trade_type: b.trade_type || "사입",
+    tax_type: b.tax_type || "과세",
+    category: b.category,
+    spec: b.spec, unit: b.unit,
+    price,
+    cost_price: null,              // 기본 원가 × 배수로 항상 자동 계산
+    set_parent_id: b.id, set_qty: n, is_set: true,
+    memo: `${b.name} ${n}개 묶음 — 재고·원가는 기본 제품과 자동 연동`,
+    updated_at: today(), updated_by: me.name,
+  });
+  if (error) { if (btn) btn.disabled = false; return toast(error.code === "23505" ? "같은 제품코드가 이미 있습니다" : "저장에 실패했습니다"); }
+  toast(`${b.name} ${n}개 세트가 만들어졌습니다`);
+  closeModal();
+  route();
 }
 
 function calcMarginHint() {
   const el = document.getElementById("margin-hint");
   if (!el) return;
+  // 세트상품 수정 중이면 원가는 '기본 제품 원가 × 배수'
   const linked = document.getElementById("p-set-on")?.value === "1";
   let cost;
   if (linked) {
-    // 연동 세트: 구성 상품 원가 × 수량. 구분·부가세도 구성 상품을 따라간다
-    const parent = prodCache.find(x => x.id === document.getElementById("p-set-parent")?.value);
+    const self = prodCache.find(x => x.id === (document.getElementById("p-set-qty")?.dataset.self || ""));
+    const parent = setBaseOf(self, prodCache);
     const n = Number(document.getElementById("p-set-qty")?.value) || 0;
-    if (parent) {
-      const t = document.getElementById("p-type"); if (t) t.value = parent.trade_type || "사입";
-      const tx = document.getElementById("p-tax"); if (tx) tx.value = parent.tax_type || "과세";
-    }
     cost = (Number(parent?.cost_price) || 0) * n;
-    if (parent && n && !parent.cost_price) { el.innerHTML = `⚠️ 구성 상품 '${esc(parent.name)}'의 원가가 등록되어 있지 않습니다 — 먼저 낱개 상품에 원가를 넣어 주세요.`; return; }
+    if (parent && n && !parent.cost_price) { el.innerHTML = `⚠️ 기본 제품 '${esc(parent.name)}'의 원가가 등록되어 있지 않습니다 — 먼저 기본 제품에 원가를 넣어 주세요.`; return; }
   } else {
     cost = numOf(document.getElementById("p-cost")?.value) || 0;
   }
   const price = numOf(document.getElementById("p-price")?.value) || 0;
-  if (!cost || !price) { el.textContent = linked ? "구성 상품·수량·판매가를 넣으면 마진이 자동 계산됩니다." : "원가와 판매가를 넣으면 마진이 자동 계산됩니다."; return; }
+  if (!cost || !price) { el.textContent = linked ? "배수와 판매가를 넣으면 마진이 자동 계산됩니다." : "원가와 판매가를 넣으면 마진이 자동 계산됩니다."; return; }
   const taxable = (document.getElementById("p-tax")?.value || "과세") === "과세";
   // 부가세를 뺀 금액끼리 비교해야 실제 마진
   const netPrice = taxable ? netAmt(price, vatCfg.salePriceIncludesVat) : price;
@@ -1734,23 +1770,20 @@ async function saveProduct(id) {
   const name = document.getElementById("p-name").value.trim();
   if (!code || !name) return toast("제품코드와 제품명은 필수입니다");
 
-  // 형태: "" 단품 / "1" 연동 세트 / "tag" 표기만
+  // 형태: "" 일반 / "tag" 세트 표기만 / "1" 연동 세트(수정 중일 때만 — 생성은 [＋세트] 버튼으로)
   const setMode = document.getElementById("p-set-on").value;
   const linked = setMode === "1";
-  const setParentId = linked ? document.getElementById("p-set-parent").value : null;
+  const self = id ? prodCache.find(x => x.id === id) : null;
   const setQty = linked ? (Number(document.getElementById("p-set-qty").value) || 0) : null;
-  const setParent = linked ? prodCache.find(x => x.id === setParentId) : null;
-  if (linked && !setParent) return toast("세트의 구성 상품을 선택해 주세요");
-  if (linked && setQty < 1) return toast("구성 수량을 1 이상으로 입력해 주세요");
-  if (linked && setParentId === id) return toast("자기 자신을 구성 상품으로 넣을 수 없습니다");
+  if (linked && setQty < 2) return toast("배수는 2 이상으로 입력해 주세요");
 
   const data = {
     code, name,
-    set_parent_id: linked ? setParentId : null,
+    set_parent_id: linked ? (self?.set_parent_id || null) : null,
     set_qty: linked ? setQty : null,
     is_set: setMode !== "",     // 연동이든 표기만이든 '세트' 표시는 남긴다
-    trade_type: linked ? (setParent.trade_type || "사입") : document.getElementById("p-type").value,
-    tax_type: linked ? (setParent.tax_type || "과세") : document.getElementById("p-tax").value,
+    trade_type: linked ? (self?.trade_type || "사입") : document.getElementById("p-type").value,
+    tax_type: linked ? (self?.tax_type || "과세") : document.getElementById("p-tax").value,
     category: document.getElementById("p-cat").value.trim(),
     spec: document.getElementById("p-spec").value.trim(),
     unit: document.getElementById("p-unit").value.trim(),
@@ -1962,6 +1995,51 @@ function effCost(p, list) {
 }
 const effCostOf = pid => effCost(erpProducts.find(p => p.id === pid));
 
+/* ---------- 검색형 품목 선택 ----------
+   상품이 늘어나면 드롭다운 스크롤은 감당이 안 된다. 이름 몇 글자나 상품코드를 치면 후보가 좁혀지게.
+   선택된 상품 id는 input.dataset.pid에 담고, 읽을 때는 pidOf()를 쓴다. */
+function productPickList(mode) {
+  return (mode === "buy"
+    ? erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p))
+    : erpProducts);
+}
+// 후보 목록에 표시할 한 줄 (코드까지 넣어 코드로도 검색되게)
+function productPickLabel(p, mode) {
+  const tag = mode === "buy"
+    ? (p.cost_price ? `원가 ₩${fmt(p.cost_price)}` : "원가 미등록")
+    : isSetProd(p)
+      ? `세트×${p.set_qty}${tradeTypeOf(p) === "사입" ? ` · ${fmt(erpStock[p.id]?.stock || 0)}세트 가능` : ""}`
+      : (tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`) + (p.is_set ? " · 세트" : "");
+  return `${p.code ? p.code + " · " : ""}${p.name} (${tag})`;
+}
+let __pickSeq = 0;
+function productPicker(cls, sel, mode, onPick) {
+  const id = `pk${++__pickSeq}`;
+  const p = sel ? erpProducts.find(x => x.id === sel) : null;
+  return `<input class="${cls} prod-pick" list="${id}" data-pid="${p ? p.id : ""}" data-mode="${mode || ""}"
+      data-onpick="${onPick || ""}" value="${p ? esc(productPickLabel(p, mode)) : ""}"
+      placeholder="상품명·코드 입력" autocomplete="off" oninput="onProductPick(this)">
+    <datalist id="${id}">${productPickList(mode).map(x =>
+      `<option value="${esc(productPickLabel(x, mode))}"></option>`).join("")}</datalist>`;
+}
+// 입력값 → 상품 id 해석. 완전히 일치하면 확정, 아니면 후보가 딱 하나일 때만 확정
+function onProductPick(el) {
+  const mode = el.dataset.mode || "";
+  const list = productPickList(mode);
+  const v = String(el.value || "").trim().toLowerCase();
+  const norm = s => String(s || "").toLowerCase().replace(/\s+/g, "");
+  let hit = list.find(x => productPickLabel(x, mode).toLowerCase() === v);
+  if (!hit && v) {
+    const cand = list.filter(x =>
+      norm(productPickLabel(x, mode)).includes(norm(v)) || norm(x.code).includes(norm(v)));
+    if (cand.length === 1) hit = cand[0];
+  }
+  el.dataset.pid = hit ? hit.id : "";
+  el.style.borderColor = v && !hit ? "#d9480f" : "";
+  if (hit && el.dataset.onpick && typeof window[el.dataset.onpick] === "function") window[el.dataset.onpick](el);
+}
+const pidOf = el => (el ? (el.dataset ? el.dataset.pid || "" : el.value || "") : "");
+
 function productOptions(sel, mode) {
   // 매입은 사입 상품만 대상 (위탁은 우리가 사입하지 않음). 연동 세트는 매입 대상이 아님 — 낱개로 사서 묶는 것
   const list = mode === "buy"
@@ -2068,7 +2146,7 @@ function addSaleRow() {
   if (!tbody) return;
   const tr = document.createElement("tr");
   tr.innerHTML = `
-    <td><select class="sr-prod" onchange="onSaleRowProduct(this)">${productOptions()}</select></td>
+    <td>${productPicker("sr-prod", "", "", "onSaleRowProduct")}</td>
     <td><input class="sr-qty" type="number" min="1" value="1" oninput="calcSalesTotal()"></td>
     <td><input class="sr-price comma" type="text" inputmode="numeric" placeholder="0" oninput="calcSalesTotal()"></td>
     <td class="num sr-amt" style="font-weight:700">₩0</td>
@@ -2077,7 +2155,7 @@ function addSaleRow() {
   tbody.appendChild(tr);
 }
 function onSaleRowProduct(sel) {
-  const p = erpProducts.find(x => x.id === sel.value);
+  const p = erpProducts.find(x => x.id === pidOf(sel));
   if (p) sel.closest("tr").querySelector(".sr-price").value = p.price ? fmt(p.price) : "";
   calcSalesTotal();
 }
@@ -2102,7 +2180,7 @@ async function saveSales() {
   const qtyByPid = {};
   const priceWarns = [];
   for (const tr of document.querySelectorAll("#sale-rows tr")) {
-    const pid = tr.querySelector(".sr-prod").value;
+    const pid = pidOf(tr.querySelector(".sr-prod"));
     const qty = numOf(tr.querySelector(".sr-qty").value) || 0;
     const price = numOf(tr.querySelector(".sr-price").value) || 0;
     if (!pid && !price) continue; // 빈 줄은 건너뜀
@@ -2247,7 +2325,7 @@ function addBuyRow() {
   if (!tbody) return;
   const tr = document.createElement("tr");
   tr.innerHTML = `
-    <td><select class="br-prod" onchange="onBuyRowProduct(this)">${productOptions("", "buy")}</select></td>
+    <td>${productPicker("br-prod", "", "buy", "onBuyRowProduct")}</td>
     <td><input class="br-qty" type="number" min="1" value="1" oninput="calcBuysTotal()"></td>
     <td><input class="br-cost comma" type="text" inputmode="numeric" placeholder="0" oninput="calcBuysTotal()"></td>
     <td class="num br-amt" style="font-weight:700">₩0</td>
@@ -2257,7 +2335,7 @@ function addBuyRow() {
 }
 function onBuyRowProduct(sel) {
   // 해당 품목의 최근 매입단가 자동 입력
-  const st = erpStock[sel.value];
+  const st = erpStock[pidOf(sel)];
   if (st?.lastCost) sel.closest("tr").querySelector(".br-cost").value = fmt(st.lastCost);
   calcBuysTotal();
 }
@@ -2281,7 +2359,7 @@ async function savePurchases() {
   const freight = numOf(document.getElementById("b-freight").value) || 0;
   const recs = [];
   for (const tr of document.querySelectorAll("#buy-rows tr")) {
-    const pid = tr.querySelector(".br-prod").value;
+    const pid = pidOf(tr.querySelector(".br-prod"));
     const qty = numOf(tr.querySelector(".br-qty").value) || 0;
     const cost = numOf(tr.querySelector(".br-cost").value) || 0;
     if (!pid && !cost) continue;
@@ -2698,7 +2776,7 @@ function openErpEditModal(table, id) {
                   [...new Set([...erpSupplierList.filter(s => s.active !== false).map(s => s.name), ...erpSuppliers, r.supplier])]
                     .filter(Boolean)
                     .map(n => `<option ${n === r.supplier ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`}</div>
-          <div class="field full"><label>품목</label><select id="e-prod">${productOptions(r.product_id, isSale ? "" : "buy")}</select></div>
+          <div class="field full"><label>품목</label>${productPicker("e-prod", r.product_id, isSale ? "" : "buy")}</div>
           ${isSale ? "" : `<div class="field"><label>입고처</label>
             <select id="e-wh">
               <option value="자사창고" ${r.warehouse !== "쿠팡" ? "selected" : ""}>자사창고</option>
@@ -2719,7 +2797,7 @@ function openErpEditModal(table, id) {
 
 async function saveErpEdit(table, id) {
   const isSale = table === "sales";
-  const pid = document.getElementById("e-prod").value;
+  const pid = pidOf(document.querySelector(".e-prod"));
   const qty = numOf(document.getElementById("e-qty").value) || 0;
   const price = numOf(document.getElementById("e-price").value) || 0;
   if (!pid) return toast("품목을 선택해 주세요");
@@ -3757,7 +3835,7 @@ function addPORow() {
   if (!tb) return;
   const tr = document.createElement("tr");
   tr.innerHTML = `
-    <td><select class="po-prod" onchange="onPORowProduct(this)">${productOptions("", "buy")}</select></td>
+    <td>${productPicker("po-prod", "", "buy", "onPORowProduct")}</td>
     <td><input class="po-qty" type="number" min="1" value="1" oninput="calcPOTotal()"></td>
     <td><input class="po-cost comma" type="text" inputmode="numeric" placeholder="0" oninput="calcPOTotal()"></td>
     <td class="num po-amt" style="font-weight:700">₩0</td>
@@ -3765,7 +3843,7 @@ function addPORow() {
   tb.appendChild(tr);
 }
 function onPORowProduct(sel) {
-  const st = erpStock[sel.value];
+  const st = erpStock[pidOf(sel)];
   if (st?.lastCost) sel.closest("tr").querySelector(".po-cost").value = fmt(st.lastCost);
   calcPOTotal();
 }
@@ -3787,7 +3865,7 @@ async function savePO(isJeongyeol) {
   if (!supplier) return toast("거래처를 선택해 주세요");
   const items = [];
   for (const tr of document.querySelectorAll("#po-rows tr")) {
-    const pid = tr.querySelector(".po-prod").value;
+    const pid = pidOf(tr.querySelector(".po-prod"));
     const qty = numOf(tr.querySelector(".po-qty").value) || 0;
     const cost = numOf(tr.querySelector(".po-cost").value) || 0;
     if (!pid && !cost) continue;
