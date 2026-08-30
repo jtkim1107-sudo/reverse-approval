@@ -630,8 +630,10 @@ function collectHygiene(st) {
     text: `이동 기록 없이 팔린 쿠팡 재고 ${fmt(untracked.reduce((s, [, x]) => s + x.coupangUntracked, 0))}개`,
     href: "#/inventory",
   });
-  add(Object.values(erpStock).filter(s => s.stock < 0 || s.inHouse < 0).length,
-      `마이너스가 된 재고 ${Object.values(erpStock).filter(s => s.stock < 0 || s.inHouse < 0).length}종`, "#/inventory");
+  // 위탁 상품(공급처 재고)과 연동 세트(낱개에서 파생)는 재고를 갖지 않으므로 마이너스 점검에서 제외
+  const negStock = erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p)
+    && ((erpStock[p.id]?.stock ?? 0) < 0 || (erpStock[p.id]?.inHouse ?? 0) < 0)).length;
+  add(negStock, `마이너스가 된 재고 ${negStock}종`, "#/inventory");
   add(erpChannelList.filter(c => !Number(c.fee_rate)).length,
       `수수료율이 비어 있는 채널 ${erpChannelList.filter(c => !Number(c.fee_rate)).length}개`, "#/channels");
   // 연동 세트상품은 낱개 원가에서 자동 계산되므로 제외 (낱개에 원가가 없으면 낱개 쪽이 잡힌다)
