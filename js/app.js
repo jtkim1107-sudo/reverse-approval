@@ -644,6 +644,15 @@ function collectHygiene(st) {
   // 연동 세트상품은 낱개 원가에서 자동 계산되므로 제외 (낱개에 원가가 없으면 낱개 쪽이 잡힌다)
   add(erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p) && !p.cost_price).length,
       `원가가 없는 사입 상품 ${erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p) && !p.cost_price).length}종`, "#/products");
+  // 광고비율(광고비 ÷ 매출)이 기준치를 넘으면 경보 — 기준은 회사 설정, 기본 15%
+  const adLimit = Number(companyCfg.ad_ratio_limit) || 15;
+  if (st.monthGross > 0 && st.adGross > 0) {
+    const adRatio = (st.adGross / st.monthGross) * 100;
+    if (adRatio >= adLimit) items.push({
+      n: 1, text: `광고비율 ${adRatio.toFixed(1)}% — 기준 ${adLimit}% 초과 (광고비 ₩${fmt(st.adGross)} / 매출 ₩${fmt(st.monthGross)})`,
+      href: "#/profit",
+    });
+  }
   return { count: items.length, items, top: items[0] || null };
 }
 
@@ -5424,6 +5433,8 @@ async function viewSettings() {
         <div class="field"><label>연락처</label><input id="co-phone" value="${esc(companyCfg.phone)}" placeholder="02-000-0000" maxlength="20"></div>
         <div class="field full"><label>주소</label><input id="co-addr" value="${esc(companyCfg.addr)}" maxlength="100"></div>
         <div class="field full"><label>이메일</label><input id="co-email" value="${esc(companyCfg.email)}" maxlength="60"></div>
+        <div class="field"><label>광고비율 경보 기준(%) <small style="color:var(--text-sub);font-weight:400">— 매출 대비 광고비</small></label>
+          <input id="co-adlimit" type="number" step="0.5" min="0" value="${companyCfg.ad_ratio_limit ?? 15}" placeholder="15"></div>
       </div>
       <div class="modal-actions"><button class="btn" id="btn-co-save" onclick="saveCompanyCfg()">저장</button></div>
     </div>
@@ -5502,7 +5513,8 @@ async function saveCompanyCfg() {
     ceo: document.getElementById("co-ceo").value.trim(),
     phone: document.getElementById("co-phone").value.trim(),
     addr: document.getElementById("co-addr").value.trim(),
-    email: document.getElementById("co-email").value.trim() };
+    email: document.getElementById("co-email").value.trim(),
+    ad_ratio_limit: Number(document.getElementById("co-adlimit").value) || 15 };
   const { data, error } = await sb.from("settings")
     .upsert({ key: "company", value, updated_at: new Date().toISOString(), updated_by: me.name },
             { onConflict: "key" }).select("key");
