@@ -362,6 +362,7 @@ const routes = {
   podoc: { title: "발주서", render: viewPODoc },
   purchases: { title: "매입 입력", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
+  forecast: { title: "수요예측 · 발주 제안", render: viewForecast, after: () => calcFcTotal() },
   profit: { title: "공헌이익", render: viewProfit },
   vat: { title: "부가세", render: viewVat },
   report: { title: "월별 리포트", render: viewReport },
@@ -430,6 +431,10 @@ async function route() {
 // 한 달치 팀 상태를 모은다. sumCM/cmOfSale이 전역(erpProducts·erpChannelList)에 의존하므로 loadErpBase가 먼저.
 async function loadTeamMonth(month) {
   const { buys, sales } = await loadErpBase();
+  await loadIncoming();   // 발주 후 미입고 — 대시보드 신호와 발주 제안에서 함께 쓴다
+  // 발주 제안 알림이 켜져 있을 때만 계산한다 (끈 사람에게 없는 걱정을 만들지 않게)
+  await loadForecastCfg();
+  fcRows = fcCfg.auto_draft ? forecastAll(sales, buys) : [];
   const [adRes, fixRes, goalRes, cashRes] = await Promise.all([
     sb.from("ad_costs").select("*"),
     sb.from("fixed_costs").select("*"),
@@ -633,6 +638,21 @@ function collectHygiene(st) {
   if (untracked.length) items.push({
     n: untracked.length,
     text: `이동 기록 없이 팔린 쿠팡 재고 ${fmt(untracked.reduce((s, [, x]) => s + x.coupangUntracked, 0))}개`,
+    href: "#/inventory",
+  });
+  // 수요예측이 '지금 발주할 때'라고 본 품목 (발주 알림을 켠 경우에만)
+  const needPo = fcCfg.auto_draft ? fcRows.filter(r => r.need) : [];
+  if (needPo.length) items.push({
+    n: needPo.length,
+    text: `발주할 때가 된 품목 ${needPo.length}종`
+      + (needPo.some(r => r.risk) ? ` (품절 위험 ${needPo.filter(r => r.risk).length}종)` : ""),
+    href: "#/forecast",
+  });
+  // 납품희망일이 지났는데 안 들어온 발주 — 거래처가 늦은 것이거나, 받고도 입고 처리를 빠뜨린 것
+  const late = lateIncoming();
+  if (late.length) items.push({
+    n: late.length,
+    text: `납기가 지난 미입고 ${fmt(late.reduce((s, r) => s + r.remain, 0))}개 (발주 ${new Set(late.map(r => r.po_no)).size}건)`,
     href: "#/inventory",
   });
   // 위탁 상품(공급처 재고)과 연동 세트(낱개에서 파생)는 재고를 갖지 않으므로 마이너스 점검에서 제외
@@ -2947,6 +2967,7 @@ function exportErpCSV(table) {
 /* ---------- 재고 현황 ---------- */
 async function viewInventory() {
   const { buys, sales } = await loadErpBase();
+  await loadIncoming();   // 발주했지만 아직 안 들어온 수량
 
   // 재고 관리는 사입 낱개 상품만 (위탁은 공급처 재고, 연동 세트는 낱개 재고에 포함됨)
   const stockProducts = erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p));
@@ -2954,11 +2975,17 @@ async function viewInventory() {
   // 매입·판매 수량은 loadErpBase가 계산한 값을 그대로 쓴다 — 세트 판매가 낱개 수량으로 환산되어 있음
   const inv = stockProducts.map(p => {
     const st = erpStock[p.id] || { stock: 0, inHouse: 0, atCoupang: 0, lastCost: 0, bought: 0, sold: 0 };
-    return { p, ...st, value: st.stock * st.lastCost };
+    const inc = incomingOf(p.id);
+    return { p, ...st, inc, avail: st.stock + inc.qty, value: st.stock * st.lastCost };
   });
   const totalValue = inv.reduce((s, r) => s + r.value, 0);
   const totalCoupang = inv.reduce((s, r) => s + r.atCoupang, 0);
   const totalInHouse = inv.reduce((s, r) => s + r.inHouse, 0);
+  const totalIncoming = inv.reduce((s, r) => s + r.inc.qty, 0);
+  const totalPending = inv.reduce((s, r) => s + r.inc.pending, 0);
+  const incRows = incomingRows().sort((a, b) =>
+    (a.due_date || "9999") < (b.due_date || "9999") ? -1 : 1);
+  const lateQty = incRows.filter(r => r.late).reduce((s, r) => s + r.remain, 0);
   const recentTransfers = erpTransfers.slice(0, 20);
 
   return `
@@ -2969,6 +2996,11 @@ async function viewInventory() {
         <div class="stat-value">${fmt(totalInHouse)}개</div></div>
       <div class="stat"><div class="stat-label">쿠팡 사외재고</div>
         <div class="stat-value amber">${fmt(totalCoupang)}개</div></div>
+      <div class="stat" onclick="location.hash='#/po'"><div class="stat-label">입고 예정 (발주 후 미입고)</div>
+        <div class="stat-value blue">${fmt(totalIncoming)}개</div>
+        <div style="font-size:11.5px;color:var(--text-sub);margin-top:2px">${
+          lateQty ? `<b style="color:var(--red)">납기 지남 ${fmt(lateQty)}개</b> · ` : ""
+        }결재 중 ${fmt(totalPending)}개</div></div>
       <div class="stat" onclick="location.hash='#/products'"><div class="stat-label">위탁 제품 (재고 제외)</div>
         <div class="stat-value">${consignCount}종</div></div>
     </div>
@@ -2979,7 +3011,7 @@ async function viewInventory() {
           <button class="btn sm secondary" onclick="location.hash='#/purchases'">＋ 매입 입력</button>
         </div></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>제품</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">자사창고</th><th class="num">쿠팡</th><th class="num">총 재고</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
+        <thead><tr><th>제품</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">자사창고</th><th class="num">쿠팡</th><th class="num">총 재고</th><th class="num">입고 예정</th><th class="num">가용 재고</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
         <tbody>${inv.length ? inv.map(r => `
           <tr>
             <td><b>${esc(r.p.name)}</b><br><small style="color:var(--text-sub)">${esc(r.p.code)} · ${esc(r.p.spec)}</small></td>
@@ -2988,9 +3020,13 @@ async function viewInventory() {
             <td class="num" style="color:${r.inHouse < 0 ? "var(--red)" : "var(--text)"}">${fmt(r.inHouse)}</td>
             <td class="num" style="color:${r.atCoupang < 0 ? "var(--red)" : "var(--amber)"}">${fmt(r.atCoupang)}</td>
             <td class="num" style="font-weight:800;color:${r.stock < 0 ? "var(--red)" : r.stock <= 5 ? "var(--amber)" : "var(--text)"}">${fmt(r.stock)}</td>
+            <td class="num" title="${esc(r.inc.rows.map(x => `${x.po_no} ${fmt(x.remain)}개`).join(", "))}">${
+              r.inc.qty ? `<b style="color:var(--brand)">+${fmt(r.inc.qty)}</b>${r.inc.late ? ` <span style="color:var(--red)" title="납품희망일이 지났습니다">⚠</span>` : ""}` : "—"
+            }${r.inc.pending ? `<br><small style="color:var(--text-sub)">결재중 ${fmt(r.inc.pending)}</small>` : ""}</td>
+            <td class="num" style="font-weight:700;color:${r.avail <= 0 ? "var(--red)" : "var(--text)"}">${fmt(r.avail)}</td>
             <td class="num">₩${fmt(r.lastCost)}</td>
             <td class="num">₩${fmt(r.value)}</td>
-          </tr>`).join("") : `<tr><td colspan="8" class="empty">제품이 없습니다</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="10" class="empty">제품이 없습니다</td></tr>`}
         </tbody>
       </table></div>
       ${(() => {
@@ -3007,8 +3043,37 @@ async function viewInventory() {
         ※ 창고에서 쿠팡 물류센터로 보낸 수량은 <b>🚚 쿠팡 재고 이동</b>으로 기록하세요.<br>
         ※ <b>풀필먼트 채널</b>(쿠팡 로켓그로스 등) 매출은 쿠팡 재고에서, 그 외(쿠팡 판매자배송 포함) 매출은 자사창고에서 차감됩니다.<br>
         ※ 숫자가 음수면 이동/매입 기록이 누락된 것입니다. 위탁 상품은 이 화면에 표시되지 않습니다.<br>
-        ※ <b>구성이 지정된 세트상품</b>의 판매는 낱개 상품 재고에서 자동 차감되므로, 이 표에는 낱개 상품만 나옵니다.
+        ※ <b>구성이 지정된 세트상품</b>의 판매는 낱개 상품 재고에서 자동 차감되므로, 이 표에는 낱개 상품만 나옵니다.<br>
+        ※ <b>입고 예정</b>은 발주가 나갔지만 아직 입고 처리를 하지 않은 수량입니다. <b>가용 재고 = 총 재고 + 입고 예정</b>.
       </p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>🚚 입고 예정 — 발주했지만 안 들어온 것 (${fmt(totalIncoming)}개)</h2>
+        <button class="btn sm secondary" onclick="location.hash='#/po'">발주서로 →</button></div>
+      ${incRows.length ? `
+        ${lateQty ? `<div style="background:#fff5f5;border:1px solid var(--red);border-radius:9px;padding:10px 12px;margin-bottom:10px;font-size:13px">
+          <b style="color:var(--red)">납품희망일이 지난 미입고 ${fmt(lateQty)}개</b> — 거래처에 확인하거나, 이미 받았다면 <b>입고 처리</b>를 해 주세요.</div>` : ""}
+        <div class="table-wrap"><table>
+          <thead><tr><th>품목</th><th class="num">미입고</th><th>발주번호</th><th>거래처</th><th>입고처</th><th>납품희망일</th><th>상태</th><th></th></tr></thead>
+          <tbody>${incRows.map(r => `
+            <tr>
+              <td><b>${esc(prodName(r.product_id))}</b></td>
+              <td class="num"><b style="color:${r.late ? "var(--red)" : "var(--brand)"}">${fmt(r.remain)}</b></td>
+              <td>${esc(r.po_no)}<br><small style="color:var(--text-sub)">발주 ${esc(r.date)}</small></td>
+              <td>${esc(r.supplier)}</td>
+              <td>${r.deliver_to === "쿠팡" ? '<span class="chip mine">쿠팡 직송</span>' : "자사창고"}</td>
+              <td style="color:${r.late ? "var(--red)" : "var(--text)"}">${esc(r.due_date) || "협의"}${r.late ? " ⚠" : ""}</td>
+              <td>${r.stage === "pre" ? '<span class="chip waiting">발주 전</span>' : poChip(r.status)}</td>
+              <td>${r.stage === "open"
+                ? `<button class="btn sm" onclick="openReceiveModal('${r.po_id}')">입고 처리</button>`
+                : `<button class="btn sm secondary" onclick="openPODetail('${r.po_id}')">열기</button>`}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table></div>
+        <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
+          ※ 결재가 끝나지 않은 <b>발주 전</b> 수량은 가용 재고에 넣지 않습니다 — 아직 확정이 아니기 때문입니다.</p>
+      ` : `<p style="color:var(--text-sub);font-size:13.5px">발주 후 미입고인 품목이 없습니다. 모든 발주가 입고 처리되었습니다.</p>`}
     </div>
 
     <div class="card">
@@ -3805,12 +3870,56 @@ async function loadPOs() {
 const poRemain = id => (poItemCache[id] || []).reduce((s, it) => s + (Number(it.qty) - Number(it.received_qty)), 0);
 const poOrdered = id => (poItemCache[id] || []).reduce((s, it) => s + Number(it.qty), 0);
 
+/* ---------- 입고 예정 (발주했지만 아직 안 들어온 수량) ----------
+   재고표에는 '지금 있는 것'만 나온다. 그래서 이미 발주한 물건을 잊고 또 발주하는 일이 생긴다.
+   여기서 품목별 미입고 수량을 모아, 재고 옆에 '입고 예정'과 '가용 재고'로 함께 보여준다. */
+const PO_OPEN = ["ordered", "partial"];    // 거래처에 발주가 나간 것 — 들어올 일만 남음
+const PO_PRE = ["progress", "approved"];   // 결재 중 · 발주 전 (아직 거래처는 모름)
+let erpIncoming = {};   // product_id → {qty(발주완료), pending(발주전), late, rows[]}
+
+async function loadIncoming() {
+  await loadPOs();
+  erpIncoming = {};
+  const td = today();
+  for (const p of poCache) {
+    const open = PO_OPEN.includes(p.status);
+    const pre = PO_PRE.includes(p.status);
+    if (!open && !pre) continue;             // 반려·취소·입고완료는 들어올 것이 없다
+    for (const it of poItemCache[p.id] || []) {
+      const remain = Number(it.qty) - Number(it.received_qty || 0);
+      if (remain <= 0) continue;
+      const e = (erpIncoming[it.product_id] ||= { qty: 0, pending: 0, late: 0, rows: [] });
+      const late = open && p.due_date && p.due_date < td;
+      if (open) e.qty += remain; else e.pending += remain;
+      if (late) e.late += remain;
+      e.rows.push({ po_id: p.id, po_no: p.po_no, date: p.date, due_date: p.due_date || "",
+                    supplier: p.supplier, deliver_to: p.deliver_to, status: p.status,
+                    remain, stage: open ? "open" : "pre", late });
+    }
+  }
+  return erpIncoming;
+}
+
+const incomingOf = pid => erpIncoming[pid] || { qty: 0, pending: 0, late: 0, rows: [] };
+// 가용 재고 = 지금 재고 + 발주 완료분 (결재 중인 것은 확정이 아니므로 뺀다)
+const availOf = pid => (erpStock[pid]?.stock ?? 0) + incomingOf(pid).qty;
+const incomingRows = () => Object.entries(erpIncoming)
+  .flatMap(([pid, e]) => e.rows.map(r => ({ ...r, product_id: pid })));
+// 납품희망일이 지났는데 아직 안 들어온 발주 (거래처에 물어봐야 하는 것)
+const lateIncoming = () => incomingRows().filter(r => r.late);
+
 async function viewPurchaseOrders() {
   await loadErpBase();
-  await loadPOs();
+  await loadIncoming();   // loadPOs 포함 — 품목별 미입고까지 함께 계산
   const waiting = poCache.filter(p => p.status === "progress" &&
     p.approval_line?.[p.current_step]?.userId === me.id).length;
   const open = poCache.filter(p => ["ordered", "partial"].includes(p.status));
+  // 발주서가 아니라 '품목' 기준으로 본 미입고 — 무엇이 얼마나 들어올 예정인지
+  const byProd = Object.entries(erpIncoming)
+    .map(([pid, e]) => ({ pid, ...e, eta: e.rows.map(r => r.due_date).filter(Boolean).sort()[0] || "" }))
+    .sort((a, b) => (b.qty + b.pending) - (a.qty + a.pending));
+  const incTotal = byProd.reduce((s, r) => s + r.qty, 0);
+  const preTotal = byProd.reduce((s, r) => s + r.pending, 0);
 
   return `
     <div class="card">
@@ -3821,6 +3930,30 @@ async function viewPurchaseOrders() {
       ${waiting ? `<div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:9px;padding:10px 12px;margin-top:12px;font-size:13.5px">
         ⏳ 내 결재를 기다리는 발주서가 <b>${waiting}건</b> 있습니다.</div>` : ""}
     </div>
+
+    ${byProd.length ? `
+    <div class="card">
+      <div class="card-head"><h2>📥 입고 예정 품목 (${fmt(incTotal)}개)</h2>
+        <button class="btn sm secondary" onclick="location.hash='#/inventory'">재고 현황에서 보기 →</button></div>
+      <p style="font-size:13px;color:var(--text-sub)">
+        발주는 나갔지만 아직 입고 처리하지 않은 수량입니다. <b>가용 재고 = 지금 재고 + 입고 예정</b>${
+          preTotal ? ` · 결재 중 <b>${fmt(preTotal)}개</b>는 아직 확정이 아닙니다` : ""}.</p>
+      <div class="table-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>품목</th><th class="num">지금 재고</th><th class="num">입고 예정</th><th class="num">가용 재고</th><th class="num">결재 중</th><th>가장 빠른 납품희망일</th><th>발주번호</th></tr></thead>
+        <tbody>${byProd.map(r => `
+          <tr>
+            <td><b>${esc(prodName(r.pid))}</b></td>
+            <td class="num">${fmt(erpStock[r.pid]?.stock ?? 0)}</td>
+            <td class="num"><b style="color:var(--brand)">${r.qty ? "+" + fmt(r.qty) : "—"}</b></td>
+            <td class="num" style="font-weight:700">${fmt(availOf(r.pid))}</td>
+            <td class="num" style="color:var(--text-sub)">${r.pending ? fmt(r.pending) : "—"}</td>
+            <td style="color:${r.late ? "var(--red)" : "var(--text)"}">${esc(r.eta) || "협의"}${r.late ? ` ⚠ 납기 지남 ${fmt(r.late)}개` : ""}</td>
+            <td style="font-size:12.5px;color:var(--text-sub)">${r.rows.map(x =>
+              `<a onclick="openPODetail('${x.po_id}')" style="color:var(--brand);cursor:pointer">${esc(x.po_no)}</a>`).join(", ")}</td>
+          </tr>`).join("")}
+        </tbody>
+      </table></div>
+    </div>` : ""}
 
     ${open.length ? `
     <div class="card">
@@ -3914,7 +4047,8 @@ function addPORow() {
   if (!tb) return;
   const tr = document.createElement("tr");
   tr.innerHTML = `
-    <td>${productPicker("po-prod", "", "buy", "onPORowProduct")}</td>
+    <td>${productPicker("po-prod", "", "buy", "onPORowProduct")}
+      <div class="po-hint" style="font-size:12px;color:var(--text-sub);margin-top:4px"></div></td>
     <td><input class="po-qty" type="number" min="1" value="1" oninput="calcPOTotal()"></td>
     <td><input class="po-cost comma" type="text" inputmode="numeric" placeholder="0" oninput="calcPOTotal()"></td>
     <td class="num po-amt" style="font-weight:700">₩0</td>
@@ -3922,8 +4056,17 @@ function addPORow() {
   tb.appendChild(tr);
 }
 function onPORowProduct(sel) {
-  const st = erpStock[pidOf(sel)];
-  if (st?.lastCost) sel.closest("tr").querySelector(".po-cost").value = fmt(st.lastCost);
+  const pid = pidOf(sel);
+  const st = erpStock[pid];
+  const tr = sel.closest("tr");
+  if (st?.lastCost) tr.querySelector(".po-cost").value = fmt(st.lastCost);
+  // 이미 발주해 둔 물건을 모른 채 또 발주하는 일을 막는다
+  const inc = incomingOf(pid);
+  const hint = tr.querySelector(".po-hint");
+  if (hint) hint.innerHTML = pid ? `지금 재고 <b>${fmt(st?.stock ?? 0)}</b>`
+    + (inc.qty ? ` · <b style="color:var(--brand)">이미 발주 ${fmt(inc.qty)}개 미입고</b>` : "")
+    + (inc.pending ? ` · 결재 중 ${fmt(inc.pending)}개` : "")
+    + (inc.qty || inc.pending ? ` → 가용 <b>${fmt(availOf(pid))}</b>` : "") : "";
   calcPOTotal();
 }
 function calcPOTotal() {
@@ -4518,6 +4661,401 @@ async function saveReceive(id) {
   toast(`입고 ${recs.length}건이 매입으로 기록되었습니다 (${p.deliver_to})`);
   closeModal();
   route();
+}
+
+/* ==================== 수요예측 · 발주 제안 ====================
+   '언제 무엇을 얼마나 발주할지'를 감으로 정하지 않게 한다.
+     1단계(지금)  프로그램이 계산 → 사람이 확인 → 버튼 한 번으로 발주서 생성
+     2단계(다음)  제안이 맞아떨어지는 것이 쌓이면, 자동 기안까지 넘긴다
+   계산은 전부 이 화면에서 보이게 — 근거를 못 보는 숫자로는 발주를 맡길 수 없다. */
+
+let fcCfg = { lead_days: 14, safety_days: 7, cover_days: 30, deliver_to: "자사창고", auto_draft: false, per: {} };
+let fcCfgLoaded = false;
+let fcRows = [];        // 마지막 계산 결과 (대시보드 신호에서 재사용)
+let fcShowAll = false;  // 발주 필요분만 볼지, 전 품목을 볼지
+
+async function loadForecastCfg() {
+  const { data, error } = await sb.from("settings").select("value").eq("key", "forecast").maybeSingle();
+  if (!error && data?.value) fcCfg = { ...fcCfg, ...data.value, per: { ...(data.value.per || {}) } };
+  fcCfgLoaded = !error;
+  return fcCfg;
+}
+
+async function saveForecastCfg(patch, quiet) {
+  const value = { ...fcCfg, ...patch };
+  const { data, error } = await sb.from("settings")
+    .upsert({ key: "forecast", value, updated_at: new Date().toISOString(), updated_by: me.name },
+            { onConflict: "key" }).select("key");
+  if (error || !data?.length) { toast("설정 저장에 실패했습니다"); return false; }
+  fcCfg = value;
+  if (!quiet) toast("저장되었습니다");
+  return true;
+}
+
+// 품목별 기준값 — 비어 있으면 회사 기본값을 쓴다
+function fcOf(pid) {
+  const o = fcCfg.per?.[pid] || {};
+  return {
+    lead: Number(o.lead) || Number(fcCfg.lead_days) || 14,     // 발주 후 들어오기까지
+    safety: Number(o.safety ?? fcCfg.safety_days ?? 7),        // 이만큼은 늘 남겨둔다
+    cover: Number(o.cover) || Number(fcCfg.cover_days) || 30,  // 한 번 발주로 버틸 기간
+    moq: Number(o.moq) || 0,                                   // 최소 발주 수량
+    unit: Number(o.unit) || 1,                                 // 발주 단위 (박스 입수 등)
+    supplier: o.supplier || "",
+    off: !!o.off,                                              // 제안에서 제외
+  };
+}
+
+const dayDiff = (a, b) =>
+  Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
+
+/* 하루 평균 판매량 — 최근일수록 무겁게 (7일:28일:84일 = 3:2:1).
+   판매 이력이 짧은 신상품은 '없던 기간'까지 0으로 나누지 않도록 분모를 실제 취급일수로 줄인다. */
+function forecastAll(sales, buys) {
+  const td = today();
+  return erpProducts
+    .filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p))
+    .map(p => {
+      const children = erpProducts.filter(x => x.set_parent_id === p.id && Number(x.set_qty) > 0);
+      const unitQty = s => {
+        const c = children.find(x => x.id === s.product_id);
+        return c ? Number(s.qty) * Number(c.set_qty) : Number(s.qty);
+      };
+      const mine = sales.filter(s =>
+        (s.product_id === p.id || children.some(c => c.id === s.product_id)) && (s.date || "") <= td);
+      const myBuys = buys.filter(b => b.product_id === p.id && (b.date || "") <= td);
+      // 취급 시작일 = 첫 매입(없으면 첫 판매). 어제 들여온 상품을 '안 팔리는 상품'으로 오해하지 않게
+      const firstDate = [...myBuys.map(b => b.date), ...mine.map(s => s.date)].filter(Boolean).sort()[0] || td;
+      const hist = Math.max(1, dayDiff(firstDate, td) + 1);
+
+      const inWin = n => mine.filter(s => { const d = dayDiff(s.date, td); return d >= 0 && d < n; });
+      const win = n => {
+        const rows = inWin(n), d = Math.min(n, hist);
+        const sum = rows.reduce((t, s) => t + unitQty(s), 0);
+        return { d, sum, v: sum / d, days: new Set(rows.map(s => s.date)).size };
+      };
+      const w7 = win(7), w28 = win(28), w84 = win(84);
+      const parts = [[w7, 3], [w28, 2], [w84, 1]];
+      const v = parts.reduce((s, [w, k]) => s + w.v * k, 0) / parts.reduce((s, [, k]) => s + k, 0);
+      const trend = w28.v > 0 ? w7.v / w28.v : (w7.v > 0 ? 2 : 1);
+
+      const st = erpStock[p.id] || { stock: 0, lastCost: 0 };
+      const stock = st.stock;
+      const inc = incomingOf(p.id);
+      const avail = stock + inc.qty;
+      const c = fcOf(p.id);
+      const daysLeft = v > 0 ? avail / v : Infinity;          // 입고 예정까지 더해 버틸 날
+      const stockDays = v > 0 ? stock / v : Infinity;         // 지금 재고만으로 버틸 날
+      const rop = v * (c.lead + c.safety);                    // 재발주점
+      const target = v * (c.lead + c.safety + c.cover);       // 채워둘 목표 수량
+      let rec = Math.max(0, Math.ceil(target - avail));
+      if (rec > 0 && c.unit > 1) rec = Math.ceil(rec / c.unit) * c.unit;
+      if (rec > 0 && c.moq && rec < c.moq) rec = c.moq;
+
+      // 신뢰도 — 이력이 짧거나 판매일이 드문드문하면 숫자를 그대로 믿으면 안 된다
+      const conf = hist >= 56 && w84.days >= 8 ? "높음" : hist >= 21 && w84.days >= 3 ? "보통" : "낮음";
+      const cost = Number(st.lastCost) || Number(p.cost_price) || 0;
+      const lastBuy = myBuys.slice().sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+
+      return {
+        p, pid: p.id, v, trend, conf, hist, stock, inc, avail, cfg: c, rop, rec, cost,
+        stockDays, daysLeft,
+        depleteOn: Number.isFinite(daysLeft) ? addDaysStr(td, Math.floor(daysLeft)) : "",
+        need: !c.off && v > 0 && avail <= rop && rec > 0,
+        risk: v > 0 && daysLeft < c.lead,                     // 지금 발주해도 도착 전에 바닥
+        dead: v === 0 && stock > 0,                           // 90일 가까이 안 팔린 재고
+        supplier: c.supplier || lastBuy?.supplier || "",
+        w7, w28, w84,
+        next30: Math.round(v * 30),
+      };
+    })
+    .sort((a, b) => (a.need === b.need ? a.daysLeft - b.daysLeft : (a.need ? -1 : 1)));
+}
+
+async function viewForecast() {
+  const { sales, buys } = await loadErpBase();
+  await loadIncoming();
+  await loadForecastCfg();
+  fcRows = forecastAll(sales, buys);
+
+  const need = fcRows.filter(r => r.need);
+  const risk = fcRows.filter(r => r.risk && !r.cfg.off);
+  const shown = fcShowAll ? fcRows : (need.length ? need : fcRows);
+  const recAmt = need.reduce((s, r) => s + r.rec * r.cost, 0);
+  const next30Amt = fcRows.reduce((s, r) => s + r.next30 * r.cost, 0);
+  const dead = fcRows.filter(r => r.dead);
+  const supOpts = [...new Set([
+    ...erpSupplierList.filter(s => s.active !== false).map(s => s.name), ...erpSuppliers,
+  ].filter(Boolean))];
+
+  return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">지금 발주해야 할 품목</div>
+        <div class="stat-value ${need.length ? "amber" : "green"}">${need.length}종</div></div>
+      <div class="stat"><div class="stat-label">품절 위험 (도착 전에 바닥)</div>
+        <div class="stat-value ${risk.length ? "red" : "green"}">${risk.length}종</div></div>
+      <div class="stat"><div class="stat-label">제안 발주 금액</div>
+        <div class="stat-value blue">₩${fmt(recAmt)}</div></div>
+      <div class="stat"><div class="stat-label">향후 30일 예상 판매</div>
+        <div class="stat-value">₩${fmt(next30Amt)}<small style="font-size:13px;color:var(--text-sub)"> 원가기준</small></div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>📐 발주 기준</h2>
+        <button class="btn sm" id="btn-fc-cfg" onclick="saveFcBase()">기준 저장</button></div>
+      <p style="font-size:13px;color:var(--text-sub)">
+        <b>재발주점 = 하루 평균 판매 × (리드타임 + 안전재고일)</b> — 가용 재고가 여기까지 내려오면 발주할 때입니다.</p>
+      <div class="form-grid" style="margin-top:10px">
+        <div class="field"><label>리드타임(일) <small style="color:var(--text-sub);font-weight:400">— 발주 후 입고까지</small></label>
+          <input id="fc-lead" type="number" min="0" max="180" value="${fcCfg.lead_days}"></div>
+        <div class="field"><label>안전재고(일) <small style="color:var(--text-sub);font-weight:400">— 늘 남겨둘 여유</small></label>
+          <input id="fc-safety" type="number" min="0" max="180" value="${fcCfg.safety_days}"></div>
+        <div class="field"><label>발주 주기(일) <small style="color:var(--text-sub);font-weight:400">— 한 번에 채울 기간</small></label>
+          <input id="fc-cover" type="number" min="1" max="365" value="${fcCfg.cover_days}"></div>
+        <div class="field"><label>기본 입고처</label>
+          <select id="fc-deliver">
+            <option value="자사창고" ${fcCfg.deliver_to !== "쿠팡" ? "selected" : ""}>자사창고</option>
+            <option value="쿠팡" ${fcCfg.deliver_to === "쿠팡" ? "selected" : ""}>쿠팡 (로켓그로스 직송)</option>
+          </select></div>
+      </div>
+      <p style="font-size:12px;color:var(--text-sub);margin-top:8px">
+        ※ 품목마다 다르면 표의 <b>[기준]</b>에서 그 품목만 따로 정할 수 있습니다.</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>🛒 발주 제안 (${shown.length}종)</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn sm secondary" onclick="fcShowAll=${!fcShowAll};route()">
+            ${fcShowAll ? "발주 필요분만 보기" : "전 품목 보기"}</button>
+          <button class="btn" id="btn-fc-make" onclick="makePOsFromForecast()">선택 품목으로 발주서 만들기</button>
+        </div>
+      </div>
+      <p style="font-size:13px;color:var(--text-sub)">
+        수량·단가·거래처는 그대로 고쳐서 넣을 수 있습니다. 거래처가 여러 곳이면 <b>거래처별로 발주서가 나뉘어</b> 만들어집니다.</p>
+      ${!need.length ? `<div style="background:#ebfbee;border:1px solid var(--green);border-radius:9px;padding:12px;margin-top:12px;font-size:13.5px">
+        ✅ 지금 당장 발주가 필요한 품목은 없습니다. ${fcShowAll ? "" : "아래는 전 품목의 소진 예상입니다."}</div>` : ""}
+      <div class="table-wrap" style="margin-top:12px"><table>
+        <thead><tr>
+          <th style="width:34px"><input type="checkbox" id="fc-all" onchange="fcToggleAll(this)"></th>
+          <th style="min-width:170px">품목</th>
+          <th class="num">하루 평균</th><th class="num">재고</th><th class="num">입고예정</th><th class="num">가용</th>
+          <th>소진 예상</th><th class="num">재발주점</th>
+          <th style="width:96px" class="num">발주 수량</th><th style="width:110px" class="num">단가</th>
+          <th style="min-width:130px">거래처</th><th class="num">금액</th><th style="width:56px"></th>
+        </tr></thead>
+        <tbody id="fc-rows">${shown.length ? shown.map(r => `
+          <tr data-pid="${r.pid}" data-lead="${r.cfg.lead}">
+            <td><input type="checkbox" class="fc-chk" ${r.need ? "checked" : ""} onchange="calcFcTotal()"></td>
+            <td><b>${esc(r.p.name)}</b>
+              ${r.cfg.off ? ' <span class="chip waiting">제외</span>' : ""}
+              ${r.risk ? ' <span class="chip rejected">품절 위험</span>' : r.need ? ' <span class="chip progress">발주 필요</span>' : ""}
+              <br><small style="color:var(--text-sub)">${esc(r.p.code)} · 신뢰도 ${r.conf} (이력 ${r.hist}일)</small></td>
+            <td class="num">${r.v.toFixed(1)}개
+              <br><small style="color:${r.trend >= 1.2 ? "var(--green)" : r.trend <= 0.8 ? "var(--red)" : "var(--text-sub)"}">
+                ${r.trend >= 1.2 ? "▲ 느는 중" : r.trend <= 0.8 ? "▼ 주는 중" : "─ 비슷"}</small></td>
+            <td class="num">${fmt(r.stock)}</td>
+            <td class="num">${r.inc.qty ? `<b style="color:var(--brand)">+${fmt(r.inc.qty)}</b>` : "—"}</td>
+            <td class="num" style="font-weight:700">${fmt(r.avail)}</td>
+            <td style="font-size:12.5px;color:${r.risk ? "var(--red)" : r.need ? "var(--amber)" : "var(--text-sub)"}">
+              ${r.depleteOn ? `${esc(r.depleteOn)}<br><small>${Math.floor(r.daysLeft)}일 뒤</small>` : "판매 없음"}</td>
+            <td class="num" style="color:var(--text-sub)">${Math.ceil(r.rop)}</td>
+            <td><input class="fc-qty" type="number" min="0" value="${r.rec}" oninput="calcFcTotal()"></td>
+            <td><input class="fc-cost comma" type="text" inputmode="numeric" value="${cfv(r.cost || "")}" oninput="calcFcTotal()"></td>
+            <td><select class="fc-sup">
+              <option value="">거래처 선택</option>
+              ${supOpts.map(n => `<option value="${esc(n)}" ${n === r.supplier ? "selected" : ""}>${esc(n)}</option>`).join("")}
+            </select></td>
+            <td class="num fc-amt" style="font-weight:700">₩${fmt(r.rec * r.cost)}</td>
+            <td><button class="btn sm secondary" onclick="openFcProdModal('${r.pid}')">기준</button></td>
+          </tr>`).join("") : `<tr><td colspan="13" class="empty">사입 상품이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+      <div class="total-line">선택한 발주 합계 <b id="fc-total">₩0</b></div>
+      <p style="color:var(--text-sub);font-size:12px;margin-top:6px">
+        ※ 권장 수량 = 하루 평균 × (리드타임 + 안전재고일 + 발주주기) − 가용 재고. 최소발주수량·발주단위가 있으면 거기에 맞춰 올립니다.<br>
+        ※ <b>신뢰도 낮음</b>은 판매 이력이 짧다는 뜻입니다 — 숫자를 참고만 하고 수량은 직접 정해 주세요.</p>
+    </div>
+
+    ${dead.length ? `
+    <div class="card">
+      <h2>🧊 90일 가까이 안 팔린 재고 (${dead.length}종)</h2>
+      <p style="font-size:13px;color:var(--text-sub)">묶여 있는 돈입니다. 발주 대상에서 빠지고, 할인·세트 구성 후보로 봅니다.</p>
+      <div class="table-wrap" style="margin-top:10px"><table>
+        <thead><tr><th>품목</th><th class="num">재고</th><th class="num">최근 매입단가</th><th class="num">묶인 금액</th></tr></thead>
+        <tbody>${dead.map(r => `
+          <tr><td><b>${esc(r.p.name)}</b></td><td class="num">${fmt(r.stock)}</td>
+            <td class="num">₩${fmt(r.cost)}</td><td class="num">₩${fmt(r.stock * r.cost)}</td></tr>`).join("")}
+        </tbody>
+      </table></div>
+    </div>` : ""}
+
+    <div class="card">
+      <h2>🤖 발주 자동화 — 지금 어디까지 왔나</h2>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;font-size:13.5px">
+        <div style="background:#ebfbee;border-radius:9px;padding:10px 12px">
+          <b>1단계 · 계산은 프로그램이 (지금 켜짐)</b><br>
+          <span style="color:var(--text-sub)">판매 속도와 입고 예정을 보고 무엇을 얼마나 발주할지 계산합니다.</span></div>
+        <div style="background:${fcCfg.auto_draft ? "#ebfbee" : "var(--brand-light)"};border-radius:9px;padding:10px 12px">
+          <b>2단계 · 발주서 작성까지 (${fcCfg.auto_draft ? "켜짐" : "꺼짐"})</b><br>
+          <span style="color:var(--text-sub)">발주가 필요해지면 대시보드가 알리고, 버튼 한 번으로 결재까지 올라갑니다.</span><br>
+          <label style="display:inline-flex;align-items:center;gap:7px;margin-top:7px;cursor:pointer">
+            <input type="checkbox" ${fcCfg.auto_draft ? "checked" : ""}
+              onchange="saveForecastCfg({auto_draft:this.checked}).then(()=>route())">
+            발주가 필요해지면 대시보드에 알리기</label></div>
+        <div style="background:#f6f7fb;border-radius:9px;padding:10px 12px">
+          <b>3단계 · 사람 없이 자동 발주 (아직)</b><br>
+          <span style="color:var(--text-sub)">사람이 안 열어도 정해진 시각에 도는 서버 작업이 필요합니다.
+          그 전에, 여기 제안과 실제 발주가 얼마나 맞는지부터 쌓입니다 — 틀린 제안으로 자동 발주가 나가면 돈이 묶이기 때문입니다.</span></div>
+      </div>
+    </div>`;
+}
+
+function fcToggleAll(el) {
+  document.querySelectorAll("#fc-rows .fc-chk").forEach(c => { c.checked = el.checked; });
+  calcFcTotal();
+}
+
+function calcFcTotal() {
+  let total = 0;
+  document.querySelectorAll("#fc-rows tr[data-pid]").forEach(tr => {
+    const qty = numOf(tr.querySelector(".fc-qty").value) || 0;
+    const cost = numOf(tr.querySelector(".fc-cost").value) || 0;
+    tr.querySelector(".fc-amt").textContent = "₩" + fmt(qty * cost);
+    if (tr.querySelector(".fc-chk").checked) total += qty * cost;
+  });
+  const el = document.getElementById("fc-total");
+  if (el) el.textContent = "₩" + fmt(total);
+}
+
+async function saveFcBase() {
+  const btn = document.getElementById("btn-fc-cfg");
+  if (btn) btn.disabled = true;
+  const ok = await saveForecastCfg({
+    lead_days: Math.max(0, Number(document.getElementById("fc-lead").value) || 0),
+    safety_days: Math.max(0, Number(document.getElementById("fc-safety").value) || 0),
+    cover_days: Math.max(1, Number(document.getElementById("fc-cover").value) || 30),
+    deliver_to: document.getElementById("fc-deliver").value,
+  });
+  if (btn) btn.disabled = false;
+  if (ok) route();
+}
+
+function openFcProdModal(pid) {
+  const c = fcOf(pid);
+  const supOpts = [...new Set([
+    ...erpSupplierList.filter(s => s.active !== false).map(s => s.name), ...erpSuppliers,
+  ].filter(Boolean))];
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>📐 ${esc(prodName(pid))} — 발주 기준</h3>
+        <p style="font-size:13px;color:var(--text-sub);margin:4px 0 12px">
+          비워 두면 회사 기본값(리드타임 ${fcCfg.lead_days}일 · 안전 ${fcCfg.safety_days}일 · 주기 ${fcCfg.cover_days}일)을 씁니다.</p>
+        <div class="form-grid">
+          <div class="field"><label>리드타임(일)</label>
+            <input id="fp-lead" type="number" min="0" max="180" value="${fcCfg.per?.[pid]?.lead ?? ""}" placeholder="${fcCfg.lead_days}"></div>
+          <div class="field"><label>안전재고(일)</label>
+            <input id="fp-safety" type="number" min="0" max="180" value="${fcCfg.per?.[pid]?.safety ?? ""}" placeholder="${fcCfg.safety_days}"></div>
+          <div class="field"><label>발주 주기(일)</label>
+            <input id="fp-cover" type="number" min="1" max="365" value="${fcCfg.per?.[pid]?.cover ?? ""}" placeholder="${fcCfg.cover_days}"></div>
+          <div class="field"><label>최소 발주 수량(MOQ)</label>
+            <input id="fp-moq" type="number" min="0" value="${fcCfg.per?.[pid]?.moq ?? ""}" placeholder="0"></div>
+          <div class="field"><label>발주 단위 <small style="color:var(--text-sub);font-weight:400">— 박스 입수 등</small></label>
+            <input id="fp-unit" type="number" min="1" value="${fcCfg.per?.[pid]?.unit ?? ""}" placeholder="1"></div>
+          <div class="field"><label>기본 거래처</label>
+            <select id="fp-sup"><option value="">지정 안 함 (최근 매입처)</option>
+              ${supOpts.map(n => `<option value="${esc(n)}" ${n === c.supplier ? "selected" : ""}>${esc(n)}</option>`).join("")}
+            </select></div>
+          <div class="field full"><label style="display:flex;align-items:center;gap:7px;cursor:pointer">
+            <input id="fp-off" type="checkbox" ${c.off ? "checked" : ""}> 이 품목은 발주 제안에서 제외 (단종·시즌 종료 등)</label></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-fp-save" onclick="saveFcProd('${pid}')">저장</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveFcProd(pid) {
+  const num = id => {
+    const v = document.getElementById(id).value.trim();
+    return v === "" ? undefined : Number(v);
+  };
+  const o = { lead: num("fp-lead"), safety: num("fp-safety"), cover: num("fp-cover"),
+              moq: num("fp-moq"), unit: num("fp-unit"),
+              supplier: document.getElementById("fp-sup").value || undefined,
+              off: document.getElementById("fp-off").checked || undefined };
+  Object.keys(o).forEach(k => o[k] === undefined && delete o[k]);
+  const per = { ...(fcCfg.per || {}) };
+  if (Object.keys(o).length) per[pid] = o; else delete per[pid];
+  const btn = document.getElementById("btn-fp-save");
+  if (btn) btn.disabled = true;
+  if (await saveForecastCfg({ per })) { closeModal(); route(); } else if (btn) btn.disabled = false;
+}
+
+/* 제안 → 발주서. 거래처가 섞여 있으면 거래처별로 나눠 만든다 (발주서는 한 거래처에 보내는 문서이므로) */
+async function makePOsFromForecast() {
+  const rows = [...document.querySelectorAll("#fc-rows tr[data-pid]")]
+    .filter(tr => tr.querySelector(".fc-chk")?.checked);
+  if (!rows.length) return toast("발주할 품목을 선택해 주세요");
+  const groups = {};
+  let maxLead = 0;
+  for (const tr of rows) {
+    const pid = tr.dataset.pid;
+    const qty = numOf(tr.querySelector(".fc-qty").value) || 0;
+    const cost = numOf(tr.querySelector(".fc-cost").value) || 0;
+    const supplier = tr.querySelector(".fc-sup").value.trim();
+    if (qty <= 0 || !Number.isInteger(qty)) return toast(`'${prodName(pid)}'의 수량을 1 이상 정수로 입력해 주세요`);
+    if (cost <= 0) return toast(`'${prodName(pid)}'의 단가를 입력해 주세요`);
+    if (!supplier) return toast(`'${prodName(pid)}'의 거래처를 선택해 주세요`);
+    maxLead = Math.max(maxLead, Number(tr.dataset.lead) || 0);
+    (groups[supplier] ||= []).push({ product_id: pid, qty, unit_cost: cost, amount: qty * cost });
+  }
+  const names = Object.keys(groups);
+  const total = Object.values(groups).flat().reduce((s, i) => s + i.amount, 0);
+  const approvers = USERS.filter(u => u.id !== me.id && (Number(u.rank) || 0) > (Number(me.rank) || 0))
+    .sort((a, b) => (Number(a.rank) || 0) - (Number(b.rank) || 0));
+  const isJeongyeol = approvers.length === 0;   // 최상위가 기안하면 전결
+  const deliver = document.getElementById("fc-deliver").value;
+  if (!confirm(
+    `발주서 ${names.length}건을 만듭니다 (거래처: ${names.join(", ")})\n`
+    + `품목 ${rows.length}종 · 합계 ₩${fmt(total)} · 입고처 ${deliver}\n\n`
+    + (isJeongyeol ? "전결로 바로 등록됩니다." : `${approvers[0].name} ${approvers[0].role}에게 결재를 올립니다.`)
+    + "\n\n계속할까요?")) return;
+
+  const btn = document.getElementById("btn-fc-make");
+  if (btn) btn.disabled = true;
+  const made = [];
+  for (const sup of names) {
+    const items = groups[sup];
+    const { data: noData } = await sb.rpc("next_po_no");
+    const line = isJeongyeol ? [] : [{ userId: approvers[0].id, status: "pending", date: "" }];
+    const { data: po, error } = await sb.from("purchase_orders").insert({
+      po_no: noData || `리버스-발주-${today().slice(0, 4)}-${Date.now().toString().slice(-3)}`,
+      date: today(), supplier,
+      due_date: addDaysStr(today(), maxLead || Number(fcCfg.lead_days) || 14),
+      deliver_to: deliver,
+      freight_est: 0,
+      total: items.reduce((s, i) => s + i.amount, 0),
+      memo: `수요예측 제안 (리드타임 ${fcCfg.lead_days}일·안전 ${fcCfg.safety_days}일·주기 ${fcCfg.cover_days}일)`,
+      status: isJeongyeol ? "ordered" : "progress",
+      drafter_id: me.id, approval_line: line, current_step: 0,
+      ordered_at: isJeongyeol ? new Date().toISOString() : null,
+    }).select("id,po_no").single();
+    if (error || !po) { if (btn) btn.disabled = false; return toast(`'${sup}' 발주서 등록에 실패했습니다`); }
+    const { error: e2 } = await sb.from("purchase_order_items")
+      .insert(items.map(i => ({ ...i, po_id: po.id })));
+    if (e2) {
+      await sb.from("purchase_orders").delete().eq("id", po.id);
+      if (btn) btn.disabled = false;
+      return toast(`'${sup}' 품목 저장에 실패했습니다`);
+    }
+    made.push(po.po_no);
+  }
+  toast(`발주서 ${made.length}건을 만들었습니다 — ${made.join(", ")}`);
+  location.hash = "#/po";
 }
 
 /* ---------- 매입 거래처 ---------- */
