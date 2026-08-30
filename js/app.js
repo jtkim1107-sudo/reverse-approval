@@ -543,17 +543,22 @@ function teamHeadline(st, g, hy) {
 
 /* ---------- 레벨 ----------
    경험치 = 지금까지 쌓은 공헌이익(진짜 남은 돈). 달이 바뀌어도 초기화되지 않고 계속 쌓인다. */
+/* 뒤로 갈수록 배율이 커진다(×2.5→×3.3) — 레벨업이 점점 어려워야 오래 재미있다는 대표 주문 */
 const LEVELS = [
-  { need: 0,          mascot: "🌱", title: "씨앗 상인" },
-  { need: 500000,     mascot: "🌿", title: "새싹 상인" },
-  { need: 1500000,    mascot: "🪴", title: "자라는 가게" },
-  { need: 3000000,    mascot: "🌳", title: "든든한 가게" },
-  { need: 6000000,    mascot: "🌲", title: "동네 강자" },
-  { need: 10000000,   mascot: "🍎", title: "열매 맺는 가게" },
-  { need: 20000000,   mascot: "🏞️", title: "지역 강자" },
-  { need: 40000000,   mascot: "⭐", title: "커머스 고수" },
-  { need: 80000000,   mascot: "👑", title: "커머스 마스터" },
-  { need: 150000000,  mascot: "🚀", title: "전설의 셀러" },
+  { need: 0,             mascot: "🌱", title: "씨앗 상인" },
+  { need: 500000,        mascot: "🌿", title: "새싹 상인" },
+  { need: 1500000,       mascot: "🪴", title: "자라는 가게" },
+  { need: 4000000,       mascot: "🌳", title: "든든한 가게" },
+  { need: 10000000,      mascot: "🌲", title: "동네 강자" },
+  { need: 25000000,      mascot: "🍎", title: "열매 맺는 가게" },
+  { need: 60000000,      mascot: "🏞️", title: "지역 강자" },
+  { need: 150000000,     mascot: "⭐", title: "커머스 고수" },
+  { need: 400000000,     mascot: "👑", title: "커머스 마스터" },
+  { need: 1000000000,    mascot: "🚀", title: "전설의 셀러" },
+  { need: 3000000000,    mascot: "💎", title: "다이아 셀러" },
+  { need: 10000000000,   mascot: "🐉", title: "커머스 드래곤" },
+  { need: 30000000000,   mascot: "🏰", title: "유통 제국" },
+  { need: 100000000000,  mascot: "🌌", title: "신화가 된 셀러" },
 ];
 
 function levelOf(xp) {
@@ -4857,19 +4862,22 @@ async function viewTasks() {
     </div>
 
     <div class="card">
-      <div class="card-head"><h2>📥 내가 받은 지시 (${myOpen.length}건)</h2></div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>내용</th><th>지시자</th><th>기한</th><th>받은 날</th><th></th></tr></thead>
-        <tbody>${myOpen.length ? myOpen.map(t => `
-          <tr>
-            <td><b>${esc(t.title)}</b>${t.detail ? `<br><small style="color:var(--text-sub)">${esc(t.detail)}</small>` : ""}</td>
-            <td>${userName(t.creator_id)}</td>
-            <td>${t.status === "done" ? "—" : (dday(t.due_date) || "—")}</td>
-            <td>${esc(localDT(t.created_at).slice(0, 10))}</td>
-            <td><button class="btn sm green" onclick="completeTask('${t.id}')">✔ 완료</button></td>
-          </tr>`).join("") : `<tr><td colspan="5" class="empty">받은 지시가 없습니다 👍</td></tr>`}
-        </tbody>
-      </table></div>
+      <div class="card-head"><h2>🗡️ 내 퀘스트 (${myOpen.length}건)</h2></div>
+      ${myOpen.length ? `<div class="quests">${myOpen.map(t => {
+        const diff = t.due_date ? Math.round((new Date(t.due_date) - new Date(today())) / 86400000) : null;
+        const ico = t.title.startsWith("[반복업무]") ? "🔁" : t.title.startsWith("[개선요청]") ? "💬"
+          : diff != null && diff < 0 ? "🔥" : diff != null && diff <= 1 ? "⚡" : "📋";
+        return `
+        <div class="quest">
+          <div class="quest-ico">${ico}</div>
+          <div class="quest-body">
+            <div class="quest-title">${esc(t.title)}</div>
+            <div class="quest-desc">${userName(t.creator_id)}의 지시 · ${dday(t.due_date) || "기한 없음"}${
+              t.detail ? `<br>${esc(t.detail)}` : ""}</div>
+          </div>
+          <button class="btn sm green" onclick="completeTask('${t.id}')">✔ 완료</button>
+        </div>`;
+      }).join("")}</div>` : `<p class="empty" style="padding:24px 0">퀘스트를 모두 클리어했습니다 🏆</p>`}
     </div>
 
     <div class="card">
@@ -4913,7 +4921,7 @@ async function createTask() {
 async function completeTask(id) {
   const { error } = await sb.from("tasks").update({ status: "done", done_at: new Date().toISOString() }).eq("id", id);
   if (error) return toast("처리에 실패했습니다");
-  toast("완료 처리되었습니다 (지시자에게 알림)");
+  toast("🎉 퀘스트 클리어! (지시자에게 알림)");
   route();
 }
 
