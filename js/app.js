@@ -938,18 +938,15 @@ async function viewTeam() {
       </table></div>
       ${st.goalNote ? `<p style="font-size:13px;color:var(--text-sub);margin-top:10px">📝 ${esc(st.goalNote)}</p>` : ""}
       ${!st.fixTotal ? `<p style="font-size:13px;color:var(--text-sub);margin-top:10px">
-        월 고정비를 등록하면 손익분기선이 자동으로 생깁니다.
-        <a onclick="location.hash='#/profit'" style="color:var(--brand);cursor:pointer;font-weight:600">고정비 등록하러 가기 →</a></p>` : ""}
-      <p style="font-size:12.5px;color:var(--text-sub);margin-top:10px">
-        ※ 공헌이익 목표는 몇 달 지켜보면서 조정하시면 됩니다. 지금은 하루 매출을 쌓는 데 집중하세요.</p>
+        고정비를 등록하면 손익분기선이 표시됩니다.
+        <a onclick="location.hash='#/profit'" style="color:var(--brand);cursor:pointer;font-weight:600">등록하기 →</a></p>` : ""}
     </div>
 
     <div class="card">
       <div class="card-head"><h2>🔥 하루 목표 달성한 날</h2>
         <span class="chip ${st.hitDays >= st.elapsed * 0.5 ? "approved" : "waiting"}">${st.hitDays} / ${st.elapsed}일</span></div>
       <p style="font-size:13px;color:var(--text-sub)">
-        하루 매출 <b>₩${fmt(st.dailyTarget)}</b>를 채운 날은 진한 초록입니다.
-        매출은 있었지만 목표에 못 미친 날은 연한 초록, 매출이 없던 날은 회색입니다. (주말은 흐리게)</p>
+        진한 초록 = 목표(₩${fmt(st.dailyTarget)}) 달성 · 연한 초록 = 매출 있음 · 회색 = 없음</p>
       <div class="daydots">${st.cov.days.map(d =>
         `<span class="daydot ${d.hit ? "on" : d.gross > 0 ? "half" : ""} ${d.weekend ? "weekend" : ""} ${d.today ? "today" : ""}"
           title="${d.date} · ₩${fmt(d.gross)}${d.hit ? " · 목표 달성" : ""}"></span>`).join("")}</div>
@@ -1243,9 +1240,9 @@ function viewNewDocForm(approvers, isTopRank) {
       <h2>결재선</h2>
       ${isTopRank ? `
       <p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">
-        조직도상 상위 결재자가 없으므로 <b>상신 즉시 전결(자동 승인)</b> 처리됩니다.
+        상위 결재자가 없어 <b>즉시 전결</b> 처리됩니다.
       </p>` : `
-      <p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">조직도상 윗사람에게 순서대로 결재가 진행됩니다.</p>
+      <p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">순서대로 결재가 진행됩니다.</p>
       <div class="form-grid">
         <div class="field">
           <label>1차 결재자 *</label>
@@ -2576,7 +2573,7 @@ function renderExcelPreview() {
       <div class="modal" style="max-width:980px;width:96vw">
         <h3>📎 엑셀 초안 확인 — ${isSale ? "매출" : "매입"} ${d.rows.length}줄</h3>
         <p style="font-size:13px;color:var(--text-sub);margin:4px 0 10px">
-          엑셀에서 읽어온 초안입니다. 내용을 확인·수정한 뒤 <b>등록</b>을 누르면 저장됩니다.
+          엑셀 초안입니다. 확인 후 <b>등록</b>을 누르세요.
           ${unmatched ? `<br>⚠️ 품목을 못 찾은 줄이 <b>${unmatched}건</b> 있습니다 — 직접 선택하거나 체크를 해제해 주세요.` : ""}
           ${d.noDateCol ? `<br>ℹ️ 날짜 열이 없어 전부 오늘 날짜로 넣었습니다. 필요하면 줄마다 고쳐 주세요.` : ""}
           ${d.dateFailed && !d.noDateCol ? `<br>⚠️ 날짜를 읽지 못한 줄이 <b>${d.dateFailed}건</b> 있어 오늘 날짜로 채웠습니다 — 꼭 확인해 주세요.` : ""}</p>
@@ -2739,8 +2736,7 @@ function openFeedback() {
             <input type="radio" name="fb-kind" value="manual" onchange="fbKindChange()"> 반복업무 신고</label>
         </div>
         <p id="fb-desc" style="font-size:13px;color:var(--text-sub);margin:4px 0 10px">
-          시스템을 쓰다가 불편한 점, 있었으면 하는 기능을 편하게 적어 주세요.<br>
-          대표님께 바로 알림이 가고, 개발 담당이 반영합니다.</p>
+          불편한 점이나 원하는 기능을 적어 주세요. 대표에게 바로 전달됩니다.</p>
         <div id="fb-extra" class="hidden" style="display:flex;gap:10px;margin-bottom:10px">
           <div class="field" style="flex:1"><label>얼마나 자주?</label>
             <select id="fb-freq"><option>매일</option><option>매주</option><option>매월</option><option>가끔</option></select></div>
@@ -2762,10 +2758,8 @@ function fbKindChange() {
   const manual = document.querySelector('input[name="fb-kind"]:checked')?.value === "manual";
   document.getElementById("fb-extra").classList.toggle("hidden", !manual);
   document.getElementById("fb-desc").innerHTML = manual
-    ? `엑셀 정리, 숫자 옮겨적기, 자료 취합처럼 <b>손으로 반복하는 일</b>을 알려주세요.<br>
-       AI가 모아서 자동화할 방법을 찾고, 대표님 승인 후 하나씩 없애 드립니다.`
-    : `시스템을 쓰다가 불편한 점, 있었으면 하는 기능을 편하게 적어 주세요.<br>
-       대표님께 바로 알림이 가고, 개발 담당이 반영합니다.`;
+    ? `<b>손으로 반복하는 일</b>을 알려주세요. AI가 자동화 방법을 찾아 없애 드립니다.`
+    : `불편한 점이나 원하는 기능을 적어 주세요. 대표에게 바로 전달됩니다.`;
   document.getElementById("fb-text").placeholder = manual
     ? "예) 매주 월요일마다 쿠팡 정산 엑셀을 내려받아 순이익을 계산해요"
     : "예) 매출 입력할 때 어제 날짜가 기본이면 좋겠어요";
@@ -3269,8 +3263,8 @@ async function viewProfit() {
         이 매출들은 수수료·배송비가 0원으로 계산됩니다. 판매채널 화면에서 같은 이름으로 등록하거나, 매출의 채널명을 맞춰 주세요.
       </div>` : ""}
       ${noSetting.length ? `<p style="color:var(--text-sub);font-size:13px;margin-top:8px">
-        ℹ️ 수수료율 0%인 채널: ${noSetting.map(esc).join(", ")} — 자사몰처럼 수수료가 없으면 정상입니다.
-        오픈마켓이라면 판매채널 화면에서 수수료율·배송비를 넣어 주세요.</p>` : ""}
+        ℹ️ 수수료율 0%: ${noSetting.map(esc).join(", ")} — 오픈마켓이라면
+        <a onclick="location.hash='#/channels'" style="color:var(--brand);cursor:pointer">수수료율을 입력하세요</a>.</p>` : ""}
     </div>
 
     <div class="card">
@@ -3307,7 +3301,7 @@ async function viewProfit() {
           <p style="font-size:13px;color:var(--text-sub);margin-top:8px">${bepMsg}</p>
         </div>` : `
         <p style="color:var(--text-sub);font-size:13px;margin-top:12px">
-          ※ [고정비 설정]에 월 고정비(임대료·급여·통신비 등)를 넣으면 손익분기 도달 여부가 표시됩니다.</p>`}
+          ※ 고정비를 등록하면 손익분기가 표시됩니다.</p>`}
     </div>
 
     <div class="card">
@@ -3453,8 +3447,7 @@ async function viewVat() {
       <div class="card-head"><h2>${year}년 부가세</h2>${monthPicker()}</div>
       ${vatCfgWarning()}
       ${!vatCfg.enabled ? `<p style="color:var(--text-sub);font-size:13.5px">
-        부가세 계산이 <b>꺼져 있습니다</b> (간이과세자·면세사업자 설정).<br>
-        간이과세자도 업종별 부가가치율에 따라 납부 의무가 있을 수 있으니 세무대리인과 확인하세요.
+        부가세 계산이 <b>꺼져 있습니다</b>.
         일반과세자라면 <a onclick="location.hash='#/settings'" style="color:var(--brand);cursor:pointer">설정에서 켜 주세요</a>.</p>` : `
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">${isThisYear ? "이번 분기" : "마지막 분기"} (${cur.period.label}) 낼 세금</div>
@@ -3595,8 +3588,7 @@ function openFixedModal() {
       <div class="modal" style="max-width:560px">
         <h3>월 고정비 설정</h3>
         <p style="font-size:13px;color:var(--text-sub);margin:4px 0 12px">
-          매달 고정으로 나가는 비용입니다 (임대료·급여·통신비·구독료 등).<br>
-          공헌이익이 이 금액을 넘으면 그 달은 흑자입니다.</p>
+          매달 고정 지출 (임대료·급여 등). 공헌이익이 이걸 넘으면 흑자입니다.</p>
         <div class="table-wrap"><table>
           <thead><tr><th>항목</th><th class="num">월 금액</th><th></th></tr></thead>
           <tbody>${list.length ? list.map(f => `
@@ -3777,8 +3769,7 @@ async function viewPurchaseOrders() {
       <div class="card-head"><h2>📦 발주서</h2>
         <button class="btn" onclick="openPOModal()">＋ 발주서 작성</button></div>
       <p style="font-size:13px;color:var(--text-sub)">
-        발주는 <b>주문</b>이고 매입은 <b>실제 입고</b>입니다. 발주만 한 물건은 재고에 잡히지 않고,
-        <b>[입고 처리]</b>를 눌러야 매입으로 기록되어 재고가 늘어납니다.</p>
+        발주 = 주문. <b>[입고 처리]</b>를 눌러야 재고에 반영됩니다.</p>
       ${waiting ? `<div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:9px;padding:10px 12px;margin-top:12px;font-size:13.5px">
         ⏳ 내 결재를 기다리는 발주서가 <b>${waiting}건</b> 있습니다.</div>` : ""}
     </div>
@@ -4405,7 +4396,7 @@ function openReceiveModal(id) {
       <div class="modal" style="max-width:760px;width:96vw">
         <h3>🚚 입고 처리 — ${esc(p.po_no)}</h3>
         <p style="font-size:13px;color:var(--text-sub);margin:4px 0 12px">
-          실제로 들어온 수량만 입력하세요. 입력한 만큼 <b>매입으로 기록되고 재고가 늘어납니다</b>.<br>
+          실제 들어온 수량만 입력하세요 — 그만큼 재고가 늘어납니다.<br>
           입고처: <b>${p.deliver_to === "쿠팡" ? "쿠팡 (로켓그로스)" : "자사창고"}</b> · 거래처: <b>${esc(p.supplier)}</b></p>
         <div class="form-grid">
           <div class="field"><label>입고일 *</label><input id="rc-date" type="date" value="${today()}"></div>
@@ -4493,11 +4484,9 @@ async function viewSuppliers() {
       <div class="card-head"><h2>매입 거래처 (${list.length}곳)</h2>
         <button class="btn sm" onclick="openSupplierModal()">＋ 거래처 등록</button></div>
       <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
-        물건을 사오는 곳(제조사·도매처·수입사)을 등록합니다. 여기 등록한 거래처가
-        <b>매입 입력 화면의 선택 목록</b>에 나옵니다. 결제조건을 적어두면 자금 계획을 세울 때 도움이 됩니다.</p>
+        여기 등록한 거래처가 매입 입력의 선택지로 나옵니다.</p>
       ${!list.length ? `<div style="background:var(--brand-light);border-radius:9px;padding:14px;font-size:13.5px">
-        아직 등록된 거래처가 없습니다. <b>[＋ 거래처 등록]</b>을 눌러 자주 매입하는 곳부터 넣어 보세요.<br>
-        상호만 넣어도 되고, 사업자등록번호·결제조건은 나중에 채워도 됩니다.
+        아직 거래처가 없습니다. <b>[＋ 거래처 등록]</b>으로 시작하세요 (상호만 넣어도 됩니다).
       </div>` : `
       <div class="table-wrap"><table>
         <thead><tr><th>거래처명</th><th>사업자번호</th><th>대표자</th><th>연락처</th>
@@ -4639,8 +4628,7 @@ async function viewChannels() {
       <div class="card-head"><h2>판매채널 · SCM 계정 (${list.length}개)</h2>
         <button class="btn sm" onclick="openChannelModal()">＋ 채널 추가</button></div>
       <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
-        판매 채널과 각 채널 관리시스템(SCM)의 접속 정보를 관리합니다. 여기 등록한 채널이 매출 입력 시 선택지로 나옵니다.<br>
-        ⚠️ 비밀번호는 로그인한 직원이 볼 수 있으니, 이 앱의 로그인 비밀번호를 잘 관리하세요.
+        여기 등록한 채널이 매출 입력의 선택지로 나옵니다. ⚠️ SCM 비밀번호는 전 직원에게 보입니다.
       </p>
       <div class="table-wrap"><table>
         <thead><tr><th>채널명</th><th>배송</th><th class="num">수수료</th><th class="num">배송비/물류비</th><th>사이트</th><th>아이디</th><th>비밀번호</th><th>메모</th><th></th></tr></thead>
@@ -4803,8 +4791,7 @@ async function viewAiReport() {
     return `<div class="card">
       <h2>🤖 AI 리포트</h2>
       <p style="color:var(--text-sub);font-size:13.5px">
-        아직 생성된 리포트가 없습니다. <b>매일 아침 8시</b>에 어제 매출·재고·결재·업무·자금을 자동 분석해서
-        이상징후와 함께 리포트를 만들어 알림으로 보내드립니다.
+        아직 리포트가 없습니다. <b>매일 아침 8시</b>에 자동으로 올라옵니다.
       </p>
     </div>`;
   }
@@ -4975,8 +4962,7 @@ async function viewCash() {
       <div class="card">
         <h2>자금일보 시작하기</h2>
         <p style="color:var(--text-sub);font-size:13.5px;margin-bottom:14px">
-          먼저 관리할 계좌를 등록하세요. <b>기초잔액</b>은 자금일보를 시작하는 시점의 계좌 잔액입니다.<br>
-          이후 매일 입금·출금만 입력하면 잔액이 자동 계산됩니다.
+          계좌와 기초잔액을 등록하면, 이후 입출금만 입력해도 잔액이 자동 계산됩니다.
         </p>
         <button class="btn" onclick="openCashAccountModal()">＋ 계좌 등록</button>
       </div>`;
@@ -5091,9 +5077,7 @@ async function viewCash() {
             : '<span class="chip approved">30일 내 이상 없음</span>'}
         </div></div>
       <p style="font-size:13px;color:var(--text-sub);margin:-4px 0 12px">
-        아직 통장에 들어오지 않았지만 <b>들어올 예정인 돈</b>(자본금·정산금 등)과
-        <b>나갈 예정인 돈</b>(매입대금·급여 등)을 여기에 등록하세요.
-        실제 잔액과 섞이지 않고, 언제 자금이 부족해지는지 미리 알려줍니다.</p>
+        들어올 돈·나갈 돈의 <b>예정</b>을 등록하면, 자금이 언제 부족해질지 미리 보여줍니다.</p>
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">현재 잔액</div>
           <div class="stat-value blue">₩${fmt(curBal)}</div></div>
@@ -5281,9 +5265,8 @@ function openPlanModal(kind, preset) {
         <h3>${isIn ? "💵 들어올 돈 등록" : "💸 나갈 돈 등록"}</h3>
         <p style="font-size:13px;color:var(--text-sub);margin:4px 0 12px">
           ${isIn
-            ? "아직 통장에 들어오지 않았지만 들어올 예정인 돈입니다. (자본금 입금·정산금 등)"
-            : "앞으로 나갈 예정인 돈입니다. (매입대금·급여·세금 등)"}<br>
-          실제 잔액에는 더해지지 않고, 예정 잔액 흐름에만 반영됩니다.</p>
+            ? "들어올 예정인 돈 (자본금·정산금 등)"
+            : "나갈 예정인 돈 (매입대금·급여·세금 등)"} — 예정 흐름에만 반영됩니다.</p>
         <div class="form-grid">
           <div class="field"><label>${isIn ? "입금" : "출금"} 예정일 *</label>
             <input id="cp-date" type="date" value="${esc(preset?.date || addDaysStr(today(), 7))}"></div>
@@ -5368,7 +5351,7 @@ async function viewSettings() {
     <div class="card">
       <h2>비밀번호 변경</h2>
       <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
-        <b>${esc(me.name)}</b>님의 로그인 비밀번호를 변경합니다. 변경 후 다음 로그인부터 새 비밀번호를 사용하세요.
+        새 비밀번호는 다음 로그인부터 적용됩니다.
       </p>
       <div class="form-grid">
         <div class="field"><label>새 비밀번호 (6자 이상) *</label>
@@ -5382,8 +5365,8 @@ async function viewSettings() {
     <div class="card">
       <div class="card-head"><h2>결재 알림</h2>${pushStatus}</div>
       <p style="color:var(--text-sub);font-size:13.5px;margin-bottom:12px">
-        내 결재 차례가 오거나, 내가 올린 문서가 승인/반려되면 이 기기로 알림이 옵니다.<br>
-        기기마다 한 번씩 켜주세요. (아이폰은 Safari에서 <b>홈 화면에 추가</b> 후 앱을 열어 켜야 합니다)
+        결재·승인 알림을 이 기기로 받습니다. 기기마다 한 번 켜 주세요.
+        (아이폰: <b>홈 화면에 추가</b> 후)
       </p>
       <button class="btn" onclick="ensurePushSubscribed(true).then(()=>route())">🔔 이 기기에서 알림 켜기</button>
     </div>
@@ -5391,7 +5374,7 @@ async function viewSettings() {
     <div class="card">
       <h2>🏢 회사 정보</h2>
       <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
-        <b>발주서에 찍히는 정보</b>입니다. 거래처에 보내는 문서이니 정확히 입력해 주세요.</p>
+        발주서에 찍히는 회사 정보입니다.</p>
       <div class="form-grid">
         <div class="field"><label>상호 *</label><input id="co-name" value="${esc(companyCfg.name)}" maxlength="40"></div>
         <div class="field"><label>사업자등록번호</label><input id="co-biz" value="${esc(companyCfg.biz_no)}" placeholder="000-00-00000" maxlength="20"></div>
@@ -5406,8 +5389,7 @@ async function viewSettings() {
     <div class="card">
       <h2>🧾 부가세 기준</h2>
       <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
-        입력하는 금액에 부가세가 <b>들어 있는지</b>를 정해 둡니다. 이 설정에 따라 이익 계산이 달라지므로,
-        실제 입력 방식과 맞는지 꼭 확인해 주세요.</p>
+        입력 금액에 부가세가 <b>포함되는지</b> 정합니다 — 이익 계산의 기준이 됩니다.</p>
       <div class="form-grid">
         <div class="field"><label>부가세 계산</label>
           <select id="vat-enabled">
@@ -5441,10 +5423,8 @@ async function viewSettings() {
     <div class="card">
       <h2>데이터 저장 방식</h2>
       <p style="color:var(--text-sub);font-size:13.5px">
-        모든 데이터는 <b>Supabase 클라우드 데이터베이스</b>에 저장되며, 전 직원이 같은 데이터를 공유합니다.
-        PC·핸드폰 어디서 접속해도 동일합니다.<br>
-        ※ 화면은 <b>열거나 새로고침할 때</b> 최신 내용을 불러옵니다. 두 사람이 동시에 작업 중이라면,
-        상대가 방금 입력한 내용을 보려면 화면을 다시 열어 주세요.
+        모든 데이터는 클라우드에 저장되어 전 직원이 공유합니다.
+        새로고침하면 최신 내용을 불러옵니다.
       </p>
     </div>
 
@@ -5465,8 +5445,7 @@ async function viewSettings() {
     <div class="card">
       <h2>데이터 백업</h2>
       <p style="color:var(--text-sub);font-size:13px;margin-bottom:12px">
-        결재문서·제품·매출·매입·재고·자금·광고비·업무 등 <b>모든 데이터</b>를 JSON 파일 하나로 내려받습니다.
-        가끔 받아서 PC에 보관해 두세요.</p>
+        모든 데이터를 JSON 파일 하나로 내려받습니다.</p>
       <button class="btn" id="btn-export" onclick="exportJSON()">📤 전체 데이터 내보내기 (JSON)</button>
     </div>`;
 }
