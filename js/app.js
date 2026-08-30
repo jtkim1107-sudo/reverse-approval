@@ -2724,15 +2724,29 @@ function downloadXlsTemplate(mode) {
   URL.revokeObjectURL(a.href);
 }
 
-/* ---------- 개선 요청 (불편사항 → 대표에게 알림) ---------- */
+/* ---------- 개선 요청 · 반복업무 신고 (→ 대표에게 알림) ----------
+   반복업무 신고는 자동화 검토의 입력 데이터가 됩니다:
+   AI가 주기적으로 [반복업무] 태그를 모아 "자주 하고 규칙이 명확한 일"부터 자동화를 제안합니다. */
 function openFeedback() {
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal">
-        <h3>💬 개선 요청 · 불편사항</h3>
-        <p style="font-size:13px;color:var(--text-sub);margin:4px 0 10px">
+        <h3>💬 대표에게 보내기</h3>
+        <div style="display:flex;gap:14px;margin:8px 0 10px;font-size:13.5px">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+            <input type="radio" name="fb-kind" value="req" checked onchange="fbKindChange()"> 개선 요청·불편사항</label>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+            <input type="radio" name="fb-kind" value="manual" onchange="fbKindChange()"> 반복업무 신고</label>
+        </div>
+        <p id="fb-desc" style="font-size:13px;color:var(--text-sub);margin:4px 0 10px">
           시스템을 쓰다가 불편한 점, 있었으면 하는 기능을 편하게 적어 주세요.<br>
           대표님께 바로 알림이 가고, 개발 담당이 반영합니다.</p>
+        <div id="fb-extra" class="hidden" style="display:flex;gap:10px;margin-bottom:10px">
+          <div class="field" style="flex:1"><label>얼마나 자주?</label>
+            <select id="fb-freq"><option>매일</option><option>매주</option><option>매월</option><option>가끔</option></select></div>
+          <div class="field" style="flex:1"><label>1회 소요시간(분)</label>
+            <input id="fb-mins" type="number" min="1" placeholder="예: 30"></div>
+        </div>
         <textarea id="fb-text" rows="5" maxlength="500" placeholder="예) 매출 입력할 때 어제 날짜가 기본이면 좋겠어요"
           style="width:100%;border:1.5px solid var(--line);border-radius:9px;padding:10px;font:inherit;resize:vertical"></textarea>
         <div class="modal-actions">
@@ -2744,24 +2758,42 @@ function openFeedback() {
   document.getElementById("fb-text").focus();
 }
 
+function fbKindChange() {
+  const manual = document.querySelector('input[name="fb-kind"]:checked')?.value === "manual";
+  document.getElementById("fb-extra").classList.toggle("hidden", !manual);
+  document.getElementById("fb-desc").innerHTML = manual
+    ? `엑셀 정리, 숫자 옮겨적기, 자료 취합처럼 <b>손으로 반복하는 일</b>을 알려주세요.<br>
+       AI가 모아서 자동화할 방법을 찾고, 대표님 승인 후 하나씩 없애 드립니다.`
+    : `시스템을 쓰다가 불편한 점, 있었으면 하는 기능을 편하게 적어 주세요.<br>
+       대표님께 바로 알림이 가고, 개발 담당이 반영합니다.`;
+  document.getElementById("fb-text").placeholder = manual
+    ? "예) 매주 월요일마다 쿠팡 정산 엑셀을 내려받아 순이익을 계산해요"
+    : "예) 매출 입력할 때 어제 날짜가 기본이면 좋겠어요";
+}
+
 async function sendFeedback() {
   const text = document.getElementById("fb-text").value.trim();
   if (!text) return toast("내용을 입력해 주세요");
+  const manual = document.querySelector('input[name="fb-kind"]:checked')?.value === "manual";
   // 최상위 직급(대표)에게 업무 지시 형태로 전달 → 기존 푸시 알림 그대로 활용
   // rank가 비어 있으면 자기 자신에게 보내지므로, 그 경우 결재권자를 우선 찾는다
   const top = USERS.reduce((a, b) => ((Number(b.rank) || 0) > (Number(a?.rank) || 0) ? b : a), null)
     || USERS.find(u => u.approver && u.id !== me.id) || me;
   const btn = document.getElementById("btn-fb-send");
   btn.disabled = true;
+  const freq = manual ? document.getElementById("fb-freq").value : "";
+  const mins = manual ? numOf(document.getElementById("fb-mins").value) : 0;
+  const tag = manual ? "[반복업무]" : "[개선요청]";
+  const meta = manual ? `주기: ${freq}${mins ? ` · 1회 약 ${mins}분` : ""}\n` : "";
   const { error } = await sb.from("tasks").insert({
-    title: "[개선요청] " + text.slice(0, 40) + (text.length > 40 ? "…" : ""),
-    detail: text + `\n\n— ${me.name}이(가) 앱 사용 중 보낸 개선 요청입니다.`,
+    title: `${tag} ` + text.slice(0, 40) + (text.length > 40 ? "…" : ""),
+    detail: meta + text + `\n\n— ${me.name}이(가) ${manual ? "신고한 손으로 하는 반복업무입니다. 자동화 검토 대상입니다." : "앱 사용 중 보낸 개선 요청입니다."}`,
     assignee_id: top.id,
     creator_id: me.id,
     due_date: null,
   });
   if (error) { btn.disabled = false; return toast("전송에 실패했습니다"); }
-  toast("개선 요청을 보냈습니다 (알림 발송)");
+  toast(manual ? "반복업무를 신고했습니다 (자동화 검토 목록에 추가)" : "개선 요청을 보냈습니다 (알림 발송)");
   closeModal();
 }
 
