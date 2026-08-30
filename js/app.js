@@ -153,12 +153,21 @@ async function boot() {
   await showLogin();
 }
 
-async function showLogin() {
+async function showLogin(attempt = 0) {
   document.getElementById("app").classList.add("hidden");
+  document.getElementById("login-screen").classList.remove("hidden");
   const { data: profiles, error } = await sb.from("profiles").select("*").order("name");
   const box = document.getElementById("login-users");
   if (error || !profiles?.length) {
-    box.innerHTML = `<p style="color:var(--red);font-size:13px">서버 연결에 실패했습니다. 잠시 후 새로고침 해주세요.</p>`;
+    // 서버가 잠시 안 깨어 있을 수 있으므로(무료 플랜 휴면 등) 2·4·8초 간격으로 자동 재시도
+    if (attempt < 3) {
+      box.innerHTML = `<p style="color:var(--text-sub);font-size:13px">서버에 연결하는 중입니다… (${attempt + 1}/4)</p>`;
+      setTimeout(() => showLogin(attempt + 1), 2000 * 2 ** attempt);
+    } else {
+      box.innerHTML = `
+        <p style="color:var(--red);font-size:13px;margin-bottom:10px">서버 연결에 실패했습니다.</p>
+        <button class="btn" style="width:100%" onclick="showLogin()">다시 연결</button>`;
+    }
   } else {
     USERS = profiles;
     box.innerHTML = profiles.map(u => `
@@ -167,7 +176,6 @@ async function showLogin() {
         <span><b>${esc(u.name)}</b><small>${esc(u.dept)} · ${esc(u.role)}</small></span>
       </button>`).join("");
   }
-  document.getElementById("login-screen").classList.remove("hidden");
 }
 
 function pickUser(id) {
