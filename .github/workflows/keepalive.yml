@@ -6,8 +6,6 @@ on:
   schedule:
     - cron: "17 1 * * *"   # 매일 10:17 KST
   workflow_dispatch: {}
-  push:
-    branches: [claude/restore-connection-rknp31]   # 동작 확인용 임시 트리거
 
 jobs:
   ping:
