@@ -1634,6 +1634,8 @@ function openProductModal(id) {
             <input id="p-msrp" type="text" inputmode="numeric" class="comma" value="${cfv(p?.msrp)}"></div>
           <div class="field"><label>박스입수(개)</label>
             <input id="p-box" type="number" min="0" value="${p?.box_qty ?? ""}" placeholder="예) 40"></div>
+          <div class="field"><label>수수료율(%) <small style="color:var(--text-sub);font-weight:400">— 카테고리별, 비우면 채널 기본</small></label>
+            <input id="p-fee" type="number" step="0.01" min="0" max="100" value="${p?.fee_rate ?? ""}" placeholder="예) 10.8"></div>
           <div class="field full" id="margin-hint" style="font-size:13px;color:var(--text-sub)"></div>
           <div class="field full"><label>메모 (그 외 참고사항)</label><textarea id="p-memo" placeholder="원가·판매가·박스입수는 위 칸에 입력하세요">${esc(p?.memo || "")}</textarea></div>
         </div>
@@ -1799,13 +1801,21 @@ async function saveProduct(id) {
     cost_price: linked ? null : (numOf(document.getElementById("p-cost").value) || null),
     msrp: numOf(document.getElementById("p-msrp").value) || null,
     box_qty: numOf(document.getElementById("p-box").value) || null,
+    fee_rate: document.getElementById("p-fee").value === "" ? null : Number(document.getElementById("p-fee").value),
     memo: document.getElementById("p-memo").value.trim(),
     updated_at: today(),
     updated_by: me.name,
   };
-  const res = id
+  let res = id
     ? await sb.from("products").update(data).eq("id", id)
     : await sb.from("products").insert(data);
+  // DB에 fee_rate 컬럼이 아직 없으면(마이그레이션 전) 그 값만 빼고 재시도
+  if (res.error && String(res.error.message || "").includes("fee_rate")) {
+    delete data.fee_rate;
+    res = id
+      ? await sb.from("products").update(data).eq("id", id)
+      : await sb.from("products").insert(data);
+  }
   if (res.error) {
     toast(res.error.code === "23505" ? "이미 사용 중인 제품코드입니다" : "저장에 실패했습니다");
     return;
@@ -3081,8 +3091,11 @@ function cmOfSale(r, shipCharged) {
   const unitCost = Number(r.unit_cost ?? effCost(p)) || 0;
   const cost = buyNet(unitCost * qty, p);
   const st = channelSetting(r.channel);
-  // 채널 수수료는 '고객이 실제로 결제한 금액'(부가세 포함)에 붙는다
-  const feeGross = Math.round((revenue + outVat) * st.fee / 100);
+  // 수수료율은 상품별 값(카테고리마다 다름) 우선, 세트는 기본제품 값, 없으면 채널 기본값
+  const ownFee = p?.fee_rate ?? (isSetProd(p) ? setBaseOf(p)?.fee_rate : null);
+  const feePct = ownFee != null ? Number(ownFee) : st.fee;
+  // 수수료는 '고객이 실제로 결제한 금액'(부가세 포함)에 붙는다
+  const feeGross = Math.round((revenue + outVat) * feePct / 100);
   // 배송 방식에 따라 둘 중 하나만 붙는다 — 직접배송은 주문 1건당 택배비,
   // 풀필먼트(로켓그로스 등)는 개당 물류비. 채널 설정에 두 값이 모두 남아 있어도 이중으로 계산하지 않는다.
   const isFulfill = st.type === "풀필먼트";
