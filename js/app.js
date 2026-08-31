@@ -4890,7 +4890,8 @@ async function viewTasks() {
     </div>
 
     <div class="card">
-      <div class="card-head"><h2>🗡️ 내 퀘스트 (${myOpen.length}건)</h2></div>
+      <div class="card-head"><h2>🗡️ 내 퀘스트 (${myOpen.length}건)</h2>
+        <button class="btn sm secondary" onclick="exportTasksIcs()">📅 구글 캘린더에 담기</button></div>
       ${myOpen.length ? `<div class="quests">${myOpen.map(t => {
         const diff = t.due_date ? Math.round((new Date(t.due_date) - new Date(today())) / 86400000) : null;
         const ico = t.title.startsWith("[반복업무]") ? "🔁" : t.title.startsWith("[개선요청]") ? "💬"
@@ -4903,6 +4904,8 @@ async function viewTasks() {
             <div class="quest-desc">${userName(t.creator_id)}의 지시 · ${dday(t.due_date) || "기한 없음"}${
               t.detail ? `<br>${esc(t.detail)}` : ""}</div>
           </div>
+          ${gcalBtn({ date: t.due_date, title: `[업무] ${t.title}`,
+            detail: `${userName(t.creator_id)}의 지시\n리버스 전자결재 · 업무 지시` })}
           <button class="btn sm green" onclick="completeTask('${t.id}')">✔ 완료</button>
         </div>`;
       }).join("")}</div>` : `<p class="empty" style="padding:24px 0">퀘스트를 모두 클리어했습니다 🏆</p>`}
@@ -4920,7 +4923,10 @@ async function viewTasks() {
             <td>${t.status === "done"
               ? `<span class="chip approved">완료</span><br><small style="color:var(--text-sub)">${esc(localDT(t.done_at).slice(0, 10))}</small>`
               : '<span class="chip progress">진행 중</span>'}</td>
-            <td><button class="btn sm danger" onclick="deleteTask('${t.id}')">삭제</button></td>
+            <td style="white-space:nowrap">${t.status === "done" ? "" : gcalBtn({
+              date: t.due_date, title: `[확인] ${t.title} (${userName(t.assignee_id)})`,
+              detail: `담당: ${userName(t.assignee_id)}\n리버스 전자결재 · 업무 지시` })}
+              <button class="btn sm danger" onclick="deleteTask('${t.id}')">삭제</button></td>
           </tr>`).join("") : `<tr><td colspan="5" class="empty">시킨 일이 없습니다</td></tr>`}
         </tbody>
       </table></div>
@@ -4959,6 +4965,137 @@ async function deleteTask(id) {
   if (error) return toast("삭제에 실패했습니다");
   toast("삭제되었습니다");
   route();
+}
+
+/* ---------- 구글 캘린더 연동 ----------
+   이 앱은 서버 없이 도는 정적 웹앱이라 구글 로그인(OAuth) 서버를 둘 수 없습니다.
+   그래서 서버 없이도 되는 두 가지 길만 씁니다.
+   ① 한 건 담기 — 구글 캘린더 '일정 만들기' 화면을 값이 채워진 채로 연다 (📅 버튼)
+   ② 한꺼번에 담기 — .ics 파일로 내려받아 구글 캘린더 [설정 → 가져오기]에 올린다
+   ②는 일정마다 고정된 UID를 붙여 두므로, 같은 걸 다시 담아도 중복되지 않고 덮어쓰기만 됩니다. */
+
+const ICS_ALARM = "-PT15H";                       // 종일 일정(자정) 기준 15시간 전 = 전날 오전 9시
+const icsDay = d => String(d).replace(/-/g, "");  // 2026-09-01 → 20260901
+const icsEsc = s => String(s ?? "")
+  .replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+
+// 구글 캘린더 '일정 만들기' 링크. 종일 일정은 종료일이 '다음 날'이어야 하루짜리로 잡힌다
+function gcalUrl(ev) {
+  const q = new URLSearchParams({
+    action: "TEMPLATE",
+    text: ev.title,
+    dates: `${icsDay(ev.date)}/${icsDay(addDaysStr(ev.date, 1))}`,
+    details: ev.detail || "",
+    ctz: "Asia/Seoul",
+  });
+  return `https://calendar.google.com/calendar/render?${q}`;
+}
+
+// 목록·표 안에 넣는 한 건짜리 캘린더 버튼 (날짜가 없으면 아예 안 보여 준다)
+function gcalBtn(ev) {
+  if (!ev.date) return "";
+  return `<a class="btn sm secondary" target="_blank" rel="noopener"
+    title="구글 캘린더에 담기" href="${esc(gcalUrl(ev))}">📅</a>`;
+}
+
+// RFC 5545는 한 줄 75옥텟까지. 한글은 글자당 3바이트라 금방 넘으므로 접어 준다
+function icsFold(line) {
+  const enc = new TextEncoder();
+  if (enc.encode(line).length <= 75) return line;
+  const parts = [];
+  let cur = "";
+  for (const ch of Array.from(line)) {
+    if (enc.encode(cur + ch).length > (parts.length ? 74 : 75)) { parts.push(cur); cur = ""; }
+    cur += ch;
+  }
+  if (cur) parts.push(cur);
+  return parts[0] + parts.slice(1).map(s => `\r\n ${s}`).join("");
+}
+
+function buildIcs(events, calName) {
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  const out = [
+    "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//RE:VERSE//전자결재//KO",
+    "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+    `X-WR-CALNAME:${icsEsc(calName)}`, "X-WR-TIMEZONE:Asia/Seoul",
+  ];
+  for (const ev of events) {
+    out.push(
+      "BEGIN:VEVENT",
+      `UID:${ev.uid}@reverse-approval`,
+      `DTSTAMP:${stamp}`,
+      `DTSTART;VALUE=DATE:${icsDay(ev.date)}`,
+      `DTEND;VALUE=DATE:${icsDay(addDaysStr(ev.date, 1))}`,
+      `SUMMARY:${icsEsc(ev.title)}`);
+    if (ev.detail) out.push(`DESCRIPTION:${icsEsc(ev.detail)}`);
+    out.push(
+      "BEGIN:VALARM", "ACTION:DISPLAY", `TRIGGER:${ICS_ALARM}`,
+      `DESCRIPTION:${icsEsc(ev.title)}`, "END:VALARM",
+      "END:VEVENT");
+  }
+  out.push("END:VCALENDAR");
+  return out.map(icsFold).join("\r\n") + "\r\n";
+}
+
+function saveIcs(events, filename, calName) {
+  if (!events.length) { toast("캘린더에 담을 일정이 없습니다"); return false; }
+  downloadFile(buildIcs(events, calName), filename, "text/calendar");
+  toast(`${events.length}건을 캘린더 파일로 내려받았습니다`);
+  return true;
+}
+
+function gcalImportGuide() {
+  alert(
+    "내려받은 .ics 파일을 구글 캘린더에 올리면 끝입니다.\n\n"
+    + "1. PC에서 calendar.google.com 접속\n"
+    + "2. 오른쪽 위 ⚙ → [설정] → 왼쪽 메뉴 [가져오기/내보내기]\n"
+    + "3. [가져오기]에 방금 받은 .ics 파일을 넣고, 담을 캘린더를 고른 뒤 [가져오기]\n\n"
+    + "※ 일정마다 전날 오전 9시 알림이 같이 들어갑니다.\n"
+    + "※ 나중에 다시 담아도 중복되지 않고 최신 내용으로 덮어씁니다.");
+}
+
+// 업무 기한 — 내가 맡은 일 + 내가 시킨 일(진행 중, 기한 있는 것만)
+async function exportTasksIcs() {
+  const { data, error } = await sb.from("tasks").select("*").eq("status", "open").limit(500);
+  if (error) return toast("업무를 불러오지 못했습니다");
+  const evs = (data || [])
+    .filter(t => t.due_date && (t.assignee_id === me.id || t.creator_id === me.id))
+    .map(t => {
+      const mine = t.assignee_id === me.id;
+      return {
+        uid: `task-${t.id}`,
+        date: t.due_date,
+        title: mine ? `[업무] ${t.title}` : `[확인] ${t.title} (${userName(t.assignee_id)})`,
+        detail: [
+          t.detail,
+          mine ? `지시: ${userName(t.creator_id)}` : `담당: ${userName(t.assignee_id)}`,
+          "리버스 전자결재 · 업무 지시",
+        ].filter(Boolean).join("\n"),
+      };
+    })
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (saveIcs(evs, `리버스_업무기한_${today()}.ics`, "리버스 업무 기한")) gcalImportGuide();
+}
+
+// 자금 예정 한 건의 캘린더 제목 (한 건 담기·한꺼번에 담기가 같은 문구를 쓰도록)
+const cashPlanTitle = p =>
+  `${p.kind === "입금" ? "💵 들어올 돈" : "💸 나갈 돈"} ${fmt(p.amount)}원 · ${p.title}`;
+
+// 자금 예정 — 향후 90일의 들어올 돈·나갈 돈 (매월 반복분도 날짜별로 펼쳐서)
+async function exportCashPlansIcs() {
+  const { data, error } = await sb.from("cash_plans").select("*").order("date");
+  if (error) return toast("자금 예정을 불러오지 못했습니다");
+  const evs = planOccurrences(data || [], today(), 90).map(p => ({
+    uid: `plan-${p.id}-${p.occDate}`,
+    date: p.occDate,
+    title: cashPlanTitle(p),
+    detail: [
+      `${p.kind} 예정 ${fmt(p.amount)}원`,
+      p.repeat === "매월" ? "매월 반복되는 예정입니다" : "",
+      "리버스 전자결재 · 자금일보",
+    ].filter(Boolean).join("\n"),
+  }));
+  if (saveIcs(evs, `리버스_자금예정_${today()}.ics`, "리버스 자금 예정")) gcalImportGuide();
 }
 
 /* ---------- 자금일보 ---------- */
@@ -5123,6 +5260,7 @@ async function viewCash() {
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn sm" onclick="openPlanModal('입금')">＋ 들어올 돈</button>
           <button class="btn sm secondary" onclick="openPlanModal('출금')">＋ 나갈 돈</button>
+          <button class="btn sm secondary" onclick="exportCashPlansIcs()">📅 구글 캘린더에 담기</button>
           ${minRow && minRow.bal < 0
             ? `<span class="chip rejected">⚠️ ${esc(minRow.occDate.slice(5))} 자금 부족 예상</span>`
             : '<span class="chip approved">30일 내 이상 없음</span>'}
@@ -5150,7 +5288,9 @@ async function viewCash() {
               ${r.overdue ? ' <span class="chip rejected">예정일 지남</span>' : ""}</td>
             <td class="num" style="color:${r.kind === "입금" ? "var(--green)" : "var(--red)"}">${r.kind === "입금" ? "+" : "−"}₩${fmt(r.amount)}</td>
             <td class="num" style="font-weight:800;color:${r.bal < 0 ? "var(--red)" : "var(--text)"}">₩${fmt(r.bal)}</td>
-            <td><button class="btn sm danger" onclick="deleteErpRow('cash_plans','${r.id}')">삭제</button></td>
+            <td style="white-space:nowrap">${gcalBtn({ date: r.occDate, title: cashPlanTitle(r),
+              detail: `${r.kind} 예정 ${fmt(r.amount)}원\n리버스 전자결재 · 자금일보` })}
+              <button class="btn sm danger" onclick="deleteErpRow('cash_plans','${r.id}')">삭제</button></td>
           </tr>`).join("") : `<tr><td colspan="5" class="empty">향후 30일 예정된 입출금이 없습니다 — 결제 예정·정산 예정을 등록해 두세요</td></tr>`}
         </tbody>
       </table></div>
@@ -5420,6 +5560,21 @@ async function viewSettings() {
         (아이폰: <b>홈 화면에 추가</b> 후)
       </p>
       <button class="btn" onclick="ensurePushSubscribed(true).then(()=>route())">🔔 이 기기에서 알림 켜기</button>
+    </div>
+
+    <div class="card">
+      <h2>📅 구글 캘린더 연동</h2>
+      <p style="color:var(--text-sub);font-size:13.5px;margin-bottom:12px">
+        업무 기한과 자금 예정을 내 구글 캘린더로 옮깁니다. 계정마다 따로 담으면 됩니다.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+        <button class="btn secondary" onclick="exportTasksIcs()">✅ 업무 기한 담기</button>
+        <button class="btn secondary" onclick="exportCashPlansIcs()">💰 자금 예정 담기 (90일)</button>
+      </div>
+      <div style="background:var(--brand-light);border-radius:9px;padding:12px;font-size:13px;line-height:1.7">
+        <b>한 건만</b> — 업무 지시·자금일보 목록의 <b>📅</b> 버튼을 누르면 구글 캘린더 일정 만들기 창이 값이 채워진 채로 열립니다.<br>
+        <b>한꺼번에</b> — 위 버튼으로 <b>.ics</b> 파일을 받아 구글 캘린더 [설정 → 가져오기/내보내기 → 가져오기]에 올립니다.
+        일정마다 <b>전날 오전 9시 알림</b>이 함께 들어가고, 나중에 다시 담아도 중복되지 않습니다.
+      </div>
     </div>
 
     <div class="card">

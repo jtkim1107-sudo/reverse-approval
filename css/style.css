@@ -182,6 +182,8 @@ a { text-decoration: none; color: inherit; }
 .btn.green { background: var(--green); box-shadow: 0 2px 8px rgba(18, 154, 88, .25); }
 .btn.sm { padding: 6px 12px; font-size: 13px; border-radius: 8px; }
 .btn:disabled { opacity: .5; cursor: not-allowed; transform: none; filter: none; }
+/* 링크로 만든 버튼(구글 캘린더 담기 등)도 버튼처럼 보이게 */
+a.btn { display: inline-block; text-align: center; text-decoration: none; }
 
 .grid-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin-bottom: 18px; }
 .stat {
