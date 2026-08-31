@@ -367,6 +367,7 @@ const routes = {
   report: { title: "월별 리포트", render: viewReport },
   cash: { title: "자금일보", render: viewCash },
   tasks: { title: "업무 지시", render: viewTasks },
+  calendar: { title: "공용 일정", render: viewCalendar },
   aireport: { title: "AI 아침 리포트", render: viewAiReport },
   team: { title: "우리 팀 목표", render: viewTeam },
   settings: { title: "설정 · 알림", render: viewSettings },
@@ -4961,6 +4962,253 @@ async function deleteTask(id) {
   route();
 }
 
+/* ---------- 공용 일정 (회사 전체가 같이 보는 캘린더) ----------
+   누가 등록하든 모든 직원에게 똑같이 보입니다. 표는 events (sql/calendar.sql). */
+
+const CAL_CATS = {
+  "회의":      { fg: "#3a46d4", bg: "#eef0fe" },
+  "출장":      { fg: "#6d28d9", bg: "#f3ecff" },
+  "휴가":      { fg: "#0f7a46", bg: "#e6f7ef" },
+  "납품·입고": { fg: "#c2410c", bg: "#fff1e6" },
+  "행사":      { fg: "#8a5d00", bg: "#fff6e0" },
+  "기타":      { fg: "#4a5262", bg: "#eef0f6" },
+};
+const calCat = c => CAL_CATS[c] || CAL_CATS["기타"];
+
+let calMonth = today().slice(0, 7);   // 보고 있는 달 "2026-08"
+let calMonthCache = [];              // 지금 화면에 그린 일정 (하루 상세 모달이 다시 씀)
+
+function calShift(n) {
+  const [y, m] = calMonth.split("-").map(Number);
+  const d = new Date(y, m - 1 + n, 1);
+  calMonth = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+  route();
+}
+function calToday() { calMonth = today().slice(0, 7); route(); }
+
+// 그 날짜에 걸쳐 있는 일정 (여러 날 일정은 시작~종료 사이 모든 날에 보인다)
+const calOnDay = (list, ds) => list.filter(e => ds >= e.start_date && ds <= (e.end_date || e.start_date));
+const calTime = e => (e.start_time ? e.start_time.slice(0, 5) : "");
+const calSpan = e => e.end_date && e.end_date !== e.start_date;
+
+function calChip(e) {
+  const c = calCat(e.category);
+  const t = calTime(e);
+  return `<button class="cal-ev" style="color:${c.fg};background:${c.bg}"
+    onclick="event.stopPropagation();openEventModal('${e.id}')"
+    title="${esc(e.title)}${e.place ? " · " + esc(e.place) : ""}">${
+    calSpan(e) ? "▸ " : ""}${t ? `<b>${t}</b> ` : ""}${esc(e.title)}</button>`;
+}
+
+async function viewCalendar() {
+  const [y, m] = calMonth.split("-").map(Number);
+  const first = `${calMonth}-01`;
+  const lastDom = new Date(y, m, 0).getDate();
+  const firstDow = new Date(first + "T00:00:00").getDay();          // 0=일
+  const gridStart = addDaysStr(first, -firstDow);
+  const weeks = Math.ceil((firstDow + lastDom) / 7);
+  const gridEnd = addDaysStr(gridStart, weeks * 7 - 1);
+
+  // 여러 날 일정이 걸쳐 있을 수 있으므로 앞쪽을 넉넉히 잡아 불러온 뒤 겹치는 것만 남긴다
+  const [gridRes, soonRes] = await Promise.all([
+    sb.from("events").select("*")
+      .gte("start_date", addDaysStr(gridStart, -180)).lte("start_date", gridEnd)
+      .order("start_date").order("start_time"),
+    sb.from("events").select("*")
+      .gte("start_date", addDaysStr(today(), -180)).lte("start_date", addDaysStr(today(), 30))
+      .order("start_date").order("start_time"),
+  ]);
+  if (gridRes.error) return `<div class="card"><h2>공용 일정을 불러오지 못했습니다</h2>
+    <p style="color:var(--text-sub);font-size:13.5px;margin-top:8px">
+      <b>events</b> 표가 아직 없을 수 있습니다. Supabase 대시보드 → SQL Editor에서
+      저장소의 <code>sql/calendar.sql</code>을 한 번 실행해 주세요.</p>
+    <p style="color:var(--text-sub);font-size:12.5px;margin-top:8px">(${esc(gridRes.error.message)})</p></div>`;
+
+  const monthList = (gridRes.data || []).filter(e => (e.end_date || e.start_date) >= gridStart);
+  calMonthCache = monthList;
+  // 어제 시작해 오늘도 이어지는 일정(연휴·출장 등)이 목록에서 사라지지 않도록 종료일로 거른다
+  const soon = (soonRes.data || []).filter(e => (e.end_date || e.start_date) >= today());
+
+  let cells = "";
+  for (let i = 0; i < weeks * 7; i++) {
+    const ds = addDaysStr(gridStart, i);
+    const dow = i % 7;
+    const evs = calOnDay(monthList, ds);
+    cells += `
+      <div class="cal-cell${ds.slice(0, 7) === calMonth ? "" : " out"}${ds === today() ? " today" : ""}"
+        onclick="openDayModal('${ds}')" title="${ds}${evs.length ? ` — 일정 ${evs.length}건` : " — 눌러서 일정 등록"}">
+        <div class="cal-num${dow === 0 ? " sun" : dow === 6 ? " sat" : ""}">${Number(ds.slice(8))}</div>
+        ${evs.slice(0, 3).map(calChip).join("")}
+        ${evs.length > 3 ? `<div class="cal-more">+${evs.length - 3}건 더</div>` : ""}
+        ${evs.length ? `<div class="cal-dots">${evs.slice(0, 6)
+          .map(e => `<i style="background:${calCat(e.category).fg}"></i>`).join("")}</div>` : ""}
+      </div>`;
+  }
+
+  const dLabel = ds => {
+    const diff = Math.round((new Date(ds) - new Date(today())) / 86400000);
+    return diff === 0 ? "오늘" : diff === 1 ? "내일" : `D-${diff}`;
+  };
+
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h2>${y}년 ${m}월</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn sm secondary" onclick="calShift(-1)" title="지난달">‹</button>
+          <button class="btn sm secondary" onclick="calToday()">오늘</button>
+          <button class="btn sm secondary" onclick="calShift(1)" title="다음달">›</button>
+          <button class="btn sm" onclick="openEventModal('', '${today()}')">＋ 일정 등록</button>
+        </div>
+      </div>
+      <p style="font-size:13px;color:var(--text-sub);margin:-4px 0 12px">
+        날짜를 누르면 그 날에 일정을 등록합니다. 등록한 일정은 전 직원에게 똑같이 보입니다.</p>
+      <div class="cal-scroll">
+        <div class="cal-head">${["일", "월", "화", "수", "목", "금", "토"]
+          .map((d, i) => `<div class="${i === 0 ? "sun" : i === 6 ? "sat" : ""}">${d}</div>`).join("")}</div>
+        <div class="cal-grid">${cells}</div>
+      </div>
+      <div class="cal-legend">${Object.keys(CAL_CATS).map(k =>
+        `<span><i style="background:${calCat(k).fg}"></i>${k}</span>`).join("")}</div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>다가오는 일정 (30일 · ${soon.length}건)</h2></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>날짜</th><th>시각</th><th>분류</th><th>일정</th><th>장소</th><th>등록</th><th></th></tr></thead>
+        <tbody>${soon.length ? soon.map(e => `
+          <tr>
+            <td style="white-space:nowrap"><b>${esc(e.start_date.slice(5))}</b>
+              ${calSpan(e) ? `<small style="color:var(--text-sub)">~${esc(e.end_date.slice(5))}</small>` : ""}
+              <br><small style="color:${e.start_date === today() ? "var(--red)" : "var(--text-sub)"};font-weight:700">${dLabel(e.start_date)}</small></td>
+            <td style="white-space:nowrap">${calTime(e) || '<span style="color:var(--text-sub)">종일</span>'}</td>
+            <td><span class="chip" style="color:${calCat(e.category).fg};background:${calCat(e.category).bg}">${esc(e.category)}</span></td>
+            <td><b>${esc(e.title)}</b>${e.memo ? `<br><small style="color:var(--text-sub)">${esc(e.memo)}</small>` : ""}</td>
+            <td>${esc(e.place) || "—"}</td>
+            <td><small style="color:var(--text-sub)">${esc(e.created_by) || "—"}</small></td>
+            <td><button class="btn sm secondary" onclick="openEventModal('${e.id}')">보기</button></td>
+          </tr>`).join("") : `<tr><td colspan="7" class="empty">앞으로 30일 안에 등록된 일정이 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+// 날짜 칸을 눌렀을 때 — 일정이 있으면 그 날 목록을, 없으면 바로 등록 화면을 연다
+function openDayModal(ds) {
+  const evs = calOnDay(calMonthCache, ds);
+  if (!evs.length) return openEventModal("", ds);
+  const [y, m, d] = ds.split("-").map(Number);
+  const dow = ["일", "월", "화", "수", "목", "금", "토"][new Date(ds + "T00:00:00").getDay()];
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>${y}년 ${m}월 ${d}일 (${dow}) · ${evs.length}건</h3>
+        <div class="day-list">${evs.map(e => `
+          <button class="day-row" onclick="openEventModal('${e.id}')">
+            <span class="day-bar" style="background:${calCat(e.category).fg}"></span>
+            <span class="day-body">
+              <span class="day-title">${esc(e.title)}</span>
+              <span class="day-sub">${esc(e.category)} · ${calTime(e) || "종일"}${
+                calSpan(e) ? ` · ${esc(e.start_date.slice(5))}~${esc(e.end_date.slice(5))}` : ""}${
+                e.place ? ` · ${esc(e.place)}` : ""}</span>
+            </span>
+          </button>`).join("")}</div>
+        <div class="modal-actions" style="justify-content:space-between">
+          <button class="btn secondary" onclick="openEventModal('', '${ds}')">＋ 이 날에 일정 등록</button>
+          <button class="btn secondary" onclick="closeModal()">닫기</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function openEventModal(id, presetDate) {
+  let e = null;
+  if (id) {
+    const { data } = await sb.from("events").select("*").eq("id", id).maybeSingle();
+    if (!data) return toast("일정을 찾지 못했습니다 (이미 삭제되었을 수 있습니다)");
+    e = data;
+  }
+  const d = e?.start_date || presetDate || today();
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>${e ? "일정 수정" : "일정 등록"}</h3>
+        ${e ? `<p style="font-size:12.5px;color:var(--text-sub);margin:2px 0 12px">
+          ${esc(e.created_by) || "?"} 등록 · ${esc(localDT(e.created_at))}</p>` : ""}
+        <div class="form-grid">
+          <div class="field full"><label>일정 이름 *</label>
+            <input id="ev-title" value="${esc(e?.title || "")}" maxlength="60"
+              placeholder="예) 한빛유통 미팅, 김대표 출장, 창고 실사"></div>
+          <div class="field"><label>분류</label>
+            <select id="ev-cat">${Object.keys(CAL_CATS).map(k =>
+              `<option ${e?.category === k ? "selected" : ""}>${k}</option>`).join("")}</select></div>
+          <div class="field"><label>장소 (선택)</label>
+            <input id="ev-place" value="${esc(e?.place || "")}" maxlength="60" placeholder="예) 본사 회의실, 쿠팡 대구센터"></div>
+          <div class="field"><label>시작일 *</label><input id="ev-start" type="date" value="${esc(d)}"></div>
+          <div class="field"><label>종료일 <small style="color:var(--text-sub);font-weight:400">— 하루면 비워 두세요</small></label>
+            <input id="ev-end" type="date" value="${esc(e?.end_date || "")}"></div>
+          <div class="field"><label>시작 시각 <small style="color:var(--text-sub);font-weight:400">— 비우면 종일</small></label>
+            <input id="ev-stime" type="time" value="${esc(e?.start_time ? e.start_time.slice(0, 5) : "")}"></div>
+          <div class="field"><label>종료 시각 (선택)</label>
+            <input id="ev-etime" type="time" value="${esc(e?.end_time ? e.end_time.slice(0, 5) : "")}"></div>
+          <div class="field full"><label>메모 (선택)</label>
+            <textarea id="ev-memo" maxlength="300" placeholder="준비물, 참석자, 참고 링크 등">${esc(e?.memo || "")}</textarea></div>
+        </div>
+        <div class="modal-actions" style="justify-content:space-between">
+          <span>${e ? `<button class="btn danger" onclick="deleteEvent('${e.id}')">삭제</button>` : ""}</span>
+          <span style="display:flex;gap:10px">
+            <button class="btn secondary" onclick="closeModal()">취소</button>
+            <button class="btn" id="btn-ev-save" onclick="saveEvent('${id || ""}')">${e ? "저장" : "등록"}</button>
+          </span>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("ev-title").focus();
+}
+
+async function saveEvent(id) {
+  const title = document.getElementById("ev-title").value.trim();
+  if (!title) return toast("일정 이름을 입력해 주세요");
+  const start_date = document.getElementById("ev-start").value;
+  if (!start_date) return toast("시작일을 선택해 주세요");
+  const end_date = document.getElementById("ev-end").value || null;
+  if (end_date && end_date < start_date) return toast("종료일이 시작일보다 앞설 수 없습니다");
+  const start_time = document.getElementById("ev-stime").value || null;
+  const end_time = document.getElementById("ev-etime").value || null;
+  if (end_time && !start_time) return toast("종료 시각만 넣을 수는 없습니다 — 시작 시각도 넣어 주세요");
+  if (start_time && end_time && !end_date && end_time < start_time)
+    return toast("종료 시각이 시작 시각보다 앞섭니다");
+
+  const row = {
+    title, start_date, end_date, start_time, end_time,
+    category: document.getElementById("ev-cat").value,
+    place: document.getElementById("ev-place").value.trim(),
+    memo: document.getElementById("ev-memo").value.trim(),
+  };
+  const btn = document.getElementById("btn-ev-save");
+  if (btn) btn.disabled = true;   // 연타로 같은 일정이 두 번 들어가지 않도록
+  const res = id
+    ? await sb.from("events").update({ ...row, updated_at: new Date().toISOString() }).eq("id", id).select("id")
+    : await sb.from("events").insert({ ...row, creator_id: me.id, created_by: me.name }).select("id");
+  if (res.error || !res.data?.length) {
+    if (btn) btn.disabled = false;
+    return toast(res.error ? "저장에 실패했습니다" : "저장할 일정을 찾지 못했습니다");
+  }
+  toast(id ? "일정을 수정했습니다" : "일정을 등록했습니다");
+  closeModal();
+  route();
+}
+
+async function deleteEvent(id) {
+  if (!confirm("이 일정을 삭제할까요? 전 직원의 달력에서 사라집니다.")) return;
+  const { data, error } = await sb.from("events").delete().eq("id", id).select("id");
+  if (error) return toast("삭제에 실패했습니다");
+  if (!data?.length) return toast("삭제할 일정을 찾지 못했습니다 (이미 삭제되었을 수 있습니다)");
+  toast("일정을 삭제했습니다");
+  closeModal();
+  route();
+}
+
 /* ---------- 자금일보 ---------- */
 const CASH_CATS_IN = ["판매대금", "정산금", "대표 입금", "기타 입금"];
 const CASH_CATS_OUT = ["매입대금", "경비", "광고비", "급여", "세금·공과", "기타 출금"];
@@ -5545,7 +5793,7 @@ async function saveVatCfg() {
 const BACKUP_TABLES = ["documents", "products", "sales", "purchases", "purchase_costs", "settings",
   "sales_channels", "suppliers", "stock_transfers", "cash_accounts", "cash_txns", "cash_plans",
   "ad_costs", "fixed_costs", "tasks", "ai_reports", "profiles",
-  "team_goals", "team_milestones", "purchase_orders", "purchase_order_items"];
+  "team_goals", "team_milestones", "purchase_orders", "purchase_order_items", "events"];
 
 async function exportJSON() {
   const btn = document.getElementById("btn-export");
