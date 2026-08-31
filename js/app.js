@@ -220,13 +220,14 @@ async function enterApp(userId) {
   me = USERS.find(u => u.id === userId);
   if (!me) { await sb.auth.signOut(); return false; }
 
-  await Promise.all([loadVatCfg(), loadCompanyCfg()]); // 이익 계산 기준이므로 화면을 그리기 전에
+  await Promise.all([loadVatCfg(), loadCompanyCfg(), loadGcalCfg()]); // 이익 계산 기준이므로 화면을 그리기 전에
   document.getElementById("login-screen").classList.add("hidden");
   document.getElementById("app").classList.remove("hidden");
   document.getElementById("login-pw").value = "";
   renderUserBox();
   if (!location.hash || location.hash === "#/") location.hash = "#/dashboard";
   await route();
+  gcalResume(); // 구글 캘린더를 연결해 둔 기기면 백그라운드로 최신화
   // 이미 알림 권한이 있으면 이 기기 구독을 현재 사용자로 갱신
   if (typeof Notification !== "undefined" && Notification.permission === "granted") {
     ensurePushSubscribed(false);
@@ -2928,6 +2929,7 @@ async function deleteErpRow(table, id) {
   if (error) return toast("삭제에 실패했습니다");
   if (!data?.length) return toast("삭제할 내역을 찾지 못했습니다 (이미 삭제되었을 수 있습니다)");
   toast("삭제되었습니다");
+  if (table === "cash_plans") gcalAutoSync();
   route();
 }
 
@@ -4891,7 +4893,7 @@ async function viewTasks() {
 
     <div class="card">
       <div class="card-head"><h2>🗡️ 내 퀘스트 (${myOpen.length}건)</h2>
-        <button class="btn sm secondary" onclick="exportTasksIcs()">📅 구글 캘린더에 담기</button></div>
+        ${gcalBulkBtn(gcalReady() ? "gcalSync()" : "exportTasksIcs()")}</div>
       ${myOpen.length ? `<div class="quests">${myOpen.map(t => {
         const diff = t.due_date ? Math.round((new Date(t.due_date) - new Date(today())) / 86400000) : null;
         const ico = t.title.startsWith("[반복업무]") ? "🔁" : t.title.startsWith("[개선요청]") ? "💬"
@@ -4949,6 +4951,7 @@ async function createTask() {
   });
   if (error) { btn.disabled = false; return toast("지시 등록에 실패했습니다"); }
   toast("지시를 보냈습니다 (알림 발송)");
+  gcalAutoSync();
   route();
 }
 
@@ -4956,6 +4959,7 @@ async function completeTask(id) {
   const { error } = await sb.from("tasks").update({ status: "done", done_at: new Date().toISOString() }).eq("id", id);
   if (error) return toast("처리에 실패했습니다");
   toast("🎉 퀘스트 클리어! (지시자에게 알림)");
+  gcalAutoSync();
   route();
 }
 
@@ -4964,6 +4968,7 @@ async function deleteTask(id) {
   const { error } = await sb.from("tasks").delete().eq("id", id);
   if (error) return toast("삭제에 실패했습니다");
   toast("삭제되었습니다");
+  gcalAutoSync();
   route();
 }
 
@@ -5096,6 +5101,282 @@ async function exportCashPlansIcs() {
     ].filter(Boolean).join("\n"),
   }));
   if (saveIcs(evs, `리버스_자금예정_${today()}.ics`, "리버스 자금 예정")) gcalImportGuide();
+}
+
+/* ---------- 구글 캘린더 연동 (내 구글 계정에 직접 연결) ----------
+   구글 로그인(GIS 토큰 방식)으로 내 캘린더 권한을 받아, 캘린더 API로 일정을 직접 넣습니다.
+   - 우리가 만든 일정에는 표식(extendedProperties)을 달아 두고, 그 표식이 있는 것만 건드립니다.
+     → 사용자가 직접 만든 일정은 절대 지우거나 고치지 않습니다.
+   - 일정 ID를 업무·예정 ID에서 고정으로 만들어, 몇 번을 동기화해도 중복이 생기지 않습니다.
+   - 업무를 끝내거나 예정을 지우면 캘린더에서도 같이 사라집니다.
+   ※ 준비물은 구글 클라우드 콘솔에서 만든 'OAuth 클라이언트 ID' 하나뿐입니다 (설정 화면에서 입력). */
+
+const GCAL_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const GCAL_TAG = "reverseApp";        // 우리가 만든 일정을 골라내는 표식
+const GCAL_DAYS = 90;                 // 캘린더에 올려 두는 기간
+const GCAL_REMIND_MIN = 15 * 60;      // 종일 일정(자정) 기준 15시간 전 = 전날 오전 9시
+
+let gcalCfg = { client_id: "" };      // settings 테이블(key: "gcal") — 회사 공통
+let gcalToken = null;                 // { access_token, expires_at } — 메모리에만 (새로고침하면 다시 받음)
+let gcalTokenClient = null;
+let gcalSyncing = false;
+
+const gcalLinkedKey = () => `gcal_linked_${me?.id || "?"}`;
+const gcalLinked = () => { try { return localStorage.getItem(gcalLinkedKey()) === "1"; } catch (_) { return false; } };
+const gcalSetLinked = on => { try { on ? localStorage.setItem(gcalLinkedKey(), "1") : localStorage.removeItem(gcalLinkedKey()); } catch (_) { /* 무시 */ } };
+
+async function loadGcalCfg() {
+  const { data } = await sb.from("settings").select("value").eq("key", "gcal").maybeSingle();
+  if (data?.value) gcalCfg = { ...gcalCfg, ...data.value };
+  return gcalCfg;
+}
+
+async function saveGcalCfg() {
+  const client_id = document.getElementById("gcal-cid").value.trim();
+  const btn = document.getElementById("btn-gcal-cid");
+  if (btn) btn.disabled = true;
+  const { data, error } = await sb.from("settings")
+    .upsert({ key: "gcal", value: { client_id }, updated_at: new Date().toISOString(), updated_by: me.name },
+            { onConflict: "key" }).select("key");
+  if (error || !data?.length) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
+  gcalCfg = { ...gcalCfg, client_id };
+  gcalTokenClient = null;             // 클라이언트 ID가 바뀌면 토큰 발급기도 새로 만들어야 함
+  gcalToken = null;
+  toast("클라이언트 ID를 저장했습니다 — 이제 [내 구글 캘린더 연결]을 눌러 주세요");
+  route();
+}
+
+/* ----- 토큰 ----- */
+const gcalTokenValid = () => gcalToken && gcalToken.expires_at > Date.now() + 60_000;
+
+// 구글 로그인 스크립트는 async로 붙으므로 잠깐 기다려 준다
+async function gcalWaitGis(ms = 4000) {
+  const until = Date.now() + ms;
+  while (!window.google?.accounts?.oauth2) {
+    if (Date.now() > until) throw new Error("구글 로그인 스크립트를 불러오지 못했습니다 — 새로고침해 주세요");
+    await new Promise(r => setTimeout(r, 100));
+  }
+}
+
+// silent=true면 이미 허용해 둔 경우에만 조용히 토큰을 갱신 (창을 띄우지 않음)
+async function gcalRequestToken(silent) {
+  if (!gcalCfg.client_id) throw new Error("설정에서 구글 클라이언트 ID를 먼저 넣어 주세요");
+  await gcalWaitGis();
+  if (!gcalTokenClient) {
+    gcalTokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: gcalCfg.client_id, scope: GCAL_SCOPE, callback: () => { /* 아래에서 갈아끼움 */ },
+    });
+  }
+  return new Promise((resolve, reject) => {
+    gcalTokenClient.callback = resp => {
+      if (resp.error) return reject(new Error(resp.error_description || resp.error));
+      gcalToken = { access_token: resp.access_token, expires_at: Date.now() + (Number(resp.expires_in) || 3600) * 1000 };
+      gcalSetLinked(true);
+      resolve(gcalToken);
+    };
+    // 창을 못 띄웠거나 사용자가 닫은 경우 (없으면 영원히 안 끝남)
+    gcalTokenClient.error_callback = err => reject(new Error(err?.type === "popup_closed"
+      ? "구글 로그인 창이 닫혔습니다" : "구글 로그인에 실패했습니다 (팝업이 막혔는지 확인해 주세요)"));
+    gcalTokenClient.requestAccessToken(silent ? { prompt: "" } : {});
+  });
+}
+
+/* ----- 캘린더 API ----- */
+async function gcalApi(path, opts = {}) {
+  if (!gcalTokenValid()) await gcalRequestToken(true);
+  const res = await fetch(`https://www.googleapis.com/calendar/v3${path}`, {
+    ...opts,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${gcalToken.access_token}`, ...(opts.headers || {}) },
+  });
+  if (res.status === 401) { gcalToken = null; const e = new Error("구글 연결이 만료됐습니다 — [내 구글 캘린더 연결]을 다시 눌러 주세요"); e.status = 401; throw e; }
+  if (res.status === 204) return null;
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) { const e = new Error(body.error?.message || `구글 캘린더 오류 (${res.status})`); e.status = res.status; throw e; }
+  return body;
+}
+
+// 구글 일정 ID는 소문자 a~v와 숫자만 쓸 수 있다 (uuid는 16진수라 그대로 통과)
+const gcalEventId = raw => ("rv" + String(raw).toLowerCase().replace(/[^a-v0-9]/g, "")).slice(0, 500).padEnd(5, "0");
+
+// 이미 올라가 있는 일정과 내용이 같은지 (같으면 다시 안 씀)
+const gcalSameEvent = (had, want) =>
+  had.summary === want.summary
+  && (had.description || "") === want.description
+  && had.start?.date === want.start.date
+  && had.end?.date === want.end.date;
+
+function gcalEventBody(ev) {
+  return {
+    id: ev.id,
+    summary: ev.summary,
+    description: `${ev.description}\n\n— 리버스 전자결재가 넣은 일정입니다 (앱에서 지우면 여기서도 사라집니다)`,
+    start: { date: ev.date },
+    end: { date: addDaysStr(ev.date, 1) },   // 종일 일정의 종료일은 '다음 날'
+    reminders: { useDefault: false, overrides: [{ method: "popup", minutes: GCAL_REMIND_MIN }] },
+    extendedProperties: { private: { [GCAL_TAG]: "1", kind: ev.kind } },
+    ...(location.protocol.startsWith("http")
+      ? { source: { title: "리버스 전자결재", url: location.origin + location.pathname } } : {}),
+  };
+}
+
+// 지금 내 캘린더에 있어야 할 일정 목록 (업무 기한 + 자금 예정)
+async function gcalDesiredEvents() {
+  const [taskRes, planRes] = await Promise.all([
+    sb.from("tasks").select("*").eq("status", "open").limit(500),
+    sb.from("cash_plans").select("*").order("date"),
+  ]);
+  if (taskRes.error || planRes.error) throw new Error("업무·자금 자료를 불러오지 못했습니다");
+  const limit = addDaysStr(today(), GCAL_DAYS);
+  const evs = [];
+
+  for (const t of taskRes.data || []) {
+    const mine = t.assignee_id === me.id;
+    if (!t.due_date || t.due_date > limit) continue;
+    if (!mine && t.creator_id !== me.id) continue;   // 나와 상관없는 업무는 안 올림
+    evs.push({
+      id: gcalEventId(`t${t.id}`),
+      kind: "task",
+      date: t.due_date,
+      summary: mine ? `[업무] ${t.title}` : `[확인] ${t.title} (${userName(t.assignee_id)})`,
+      description: [t.detail, mine ? `지시: ${userName(t.creator_id)}` : `담당: ${userName(t.assignee_id)}`]
+        .filter(Boolean).join("\n"),
+    });
+  }
+
+  for (const p of planOccurrences(planRes.data || [], today(), GCAL_DAYS)) {
+    evs.push({
+      id: gcalEventId(`p${p.id}${p.occDate}`),
+      kind: "cash",
+      date: p.occDate,
+      summary: cashPlanTitle(p),
+      description: [`${p.kind} 예정 ${fmt(p.amount)}원`, p.repeat === "매월" ? "매월 반복되는 예정입니다" : ""]
+        .filter(Boolean).join("\n"),
+    });
+  }
+  return evs;
+}
+
+// 우리가 전에 넣어 둔 일정만 (표식으로 걸러서) 가져온다
+async function gcalExistingEvents() {
+  const iso = d => new Date(`${d}T00:00:00+09:00`).toISOString();
+  const items = [];
+  let pageToken = "";
+  do {
+    const q = new URLSearchParams({
+      privateExtendedProperty: `${GCAL_TAG}=1`,
+      timeMin: iso(today()), timeMax: iso(addDaysStr(today(), GCAL_DAYS + 1)),
+      singleEvents: "true", showDeleted: "false", maxResults: "250",
+    });
+    if (pageToken) q.set("pageToken", pageToken);
+    const page = await gcalApi(`/calendars/primary/events?${q}`);
+    items.push(...(page.items || []));
+    pageToken = page.nextPageToken || "";
+  } while (pageToken);
+  return items;
+}
+
+/* 내 캘린더를 앱 내용과 똑같이 맞춘다 — 새로 생기면 넣고, 바뀌면 고치고, 없어졌으면 지운다 */
+async function gcalSync({ quiet = false } = {}) {
+  if (gcalSyncing) return null;
+  gcalSyncing = true;
+  try {
+    const [desired, existing] = [await gcalDesiredEvents(), await gcalExistingEvents()];
+    const existingById = new Map(existing.map(e => [e.id, e]));
+    let added = 0, updated = 0, removed = 0, same = 0;
+
+    for (const ev of desired) {
+      const want = gcalEventBody(ev);
+      const body = JSON.stringify(want);
+      const had = existingById.get(ev.id);
+      if (had) {
+        if (gcalSameEvent(had, want)) { same++; continue; }  // 안 바뀐 건 그냥 둔다 (괜히 고치면 알림이 다시 감)
+        await gcalApi(`/calendars/primary/events/${ev.id}`, { method: "PUT", body });
+        updated++;
+      } else {
+        try {
+          await gcalApi("/calendars/primary/events", { method: "POST", body });
+          added++;
+        } catch (e) {
+          if (e.status !== 409) throw e;   // 409 = 예전에 넣었다 지운 일정 — 되살린다
+          await gcalApi(`/calendars/primary/events/${ev.id}`, { method: "PUT", body });
+          updated++;
+        }
+      }
+    }
+
+    const keep = new Set(desired.map(e => e.id));
+    for (const e of existing) {
+      if (keep.has(e.id)) continue;
+      await gcalApi(`/calendars/primary/events/${e.id}`, { method: "DELETE" });
+      removed++;
+    }
+
+    if (!quiet) {
+      toast(added || updated || removed
+        ? `구글 캘린더 정리 완료 — 추가 ${added} · 갱신 ${updated} · 삭제 ${removed}`
+        : `구글 캘린더가 이미 최신입니다 (일정 ${same}건)`);
+    }
+    return { added, updated, removed, same };
+  } catch (e) {
+    if (!quiet) toast(e.message || "구글 캘린더 동기화에 실패했습니다");
+    else console.warn("구글 캘린더 자동 동기화 실패:", e.message);
+    return null;
+  } finally {
+    gcalSyncing = false;
+  }
+}
+
+// [내 구글 캘린더 연결] — 구글 로그인 창을 띄우고, 성공하면 바로 한 번 맞춘다
+async function gcalConnect() {
+  const btn = document.getElementById("btn-gcal-connect");
+  if (btn) btn.disabled = true;
+  try {
+    await gcalRequestToken(false);
+    toast("구글 캘린더에 연결했습니다 — 일정을 올리는 중…");
+    const r = await gcalSync();
+    if (r) route();
+  } catch (e) {
+    toast(e.message || "연결에 실패했습니다");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// [연결 해제] — 권한을 돌려주고, 우리가 넣은 일정도 정리할지 물어본다
+async function gcalDisconnect() {
+  if (gcalTokenValid() && confirm("연결을 끊습니다.\n\n[확인] 이 앱이 넣은 일정도 캘린더에서 지웁니다\n[취소] 일정은 그대로 두고 연결만 끊습니다")) {
+    try {
+      for (const e of await gcalExistingEvents()) await gcalApi(`/calendars/primary/events/${e.id}`, { method: "DELETE" });
+    } catch (e) { toast("일정 정리 중 일부가 남았습니다 — 캘린더에서 직접 지워 주세요"); }
+  }
+  try { if (gcalToken) google.accounts.oauth2.revoke(gcalToken.access_token, () => { /* 무시 */ }); } catch (_) { /* 무시 */ }
+  gcalToken = null;
+  gcalSetLinked(false);
+  toast("구글 캘린더 연결을 끊었습니다");
+  route();
+}
+
+const gcalReady = () => gcalLinked() && !!gcalCfg.client_id;
+
+// 목록 머리에 붙는 버튼 — 연결해 뒀으면 바로 캘린더를 맞추고, 아니면 .ics로 내려받는다
+const gcalBulkBtn = fn => `<button class="btn sm secondary" onclick="${fn}">${
+  gcalReady() ? "🔄 구글 캘린더 맞추기" : "📅 구글 캘린더에 담기"}</button>`;
+
+// 업무·자금 예정이 바뀔 때마다 조용히 따라가게 (연결해 둔 사람만)
+function gcalAutoSync() {
+  if (!gcalLinked() || !gcalCfg.client_id) return;
+  gcalSync({ quiet: true });
+}
+
+// 로그인 직후, 전에 연결해 둔 기기라면 조용히 토큰을 되찾아 한 번 맞춘다
+async function gcalResume() {
+  if (!gcalLinked() || !gcalCfg.client_id) return;
+  try {
+    await gcalRequestToken(true);
+    await gcalSync({ quiet: true });
+  } catch (e) {
+    console.warn("구글 캘린더 자동 연결 실패 — 설정에서 다시 연결해 주세요:", e.message);
+  }
 }
 
 /* ---------- 자금일보 ---------- */
@@ -5260,7 +5541,7 @@ async function viewCash() {
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn sm" onclick="openPlanModal('입금')">＋ 들어올 돈</button>
           <button class="btn sm secondary" onclick="openPlanModal('출금')">＋ 나갈 돈</button>
-          <button class="btn sm secondary" onclick="exportCashPlansIcs()">📅 구글 캘린더에 담기</button>
+          ${gcalBulkBtn(gcalReady() ? "gcalSync()" : "exportCashPlansIcs()")}
           ${minRow && minRow.bal < 0
             ? `<span class="chip rejected">⚠️ ${esc(minRow.occDate.slice(5))} 자금 부족 예상</span>`
             : '<span class="chip approved">30일 내 이상 없음</span>'}
@@ -5506,6 +5787,7 @@ async function saveCashPlan(kind, fromTxnId) {
     }
   }
   toast(fromTxnId ? "예정으로 옮겼습니다" : "등록되었습니다");
+  gcalAutoSync();
   closeModal();
   route();
 }
@@ -5533,6 +5815,11 @@ async function deleteCashTxn(id) {
 async function viewSettings() {
   const pushSupported = "serviceWorker" in navigator && "PushManager" in window && typeof Notification !== "undefined";
   const perm = pushSupported ? Notification.permission : "unsupported";
+  const gcalOn = gcalTokenValid();
+  const gcalStatusChip = !gcalCfg.client_id ? '<span class="chip waiting">준비 필요</span>'
+    : gcalOn ? '<span class="chip approved">연결됨</span>'
+    : gcalLinked() ? '<span class="chip waiting">연결이 만료됨 — 다시 연결</span>'
+    : '<span class="chip waiting">연결 안 됨</span>';
   const pushStatus =
     perm === "granted" ? '<span class="chip approved">켜짐</span>' :
     perm === "denied" ? '<span class="chip rejected">차단됨 (브라우저 설정에서 허용 필요)</span>' :
@@ -5563,17 +5850,52 @@ async function viewSettings() {
     </div>
 
     <div class="card">
-      <h2>📅 구글 캘린더 연동</h2>
+      <div class="card-head"><h2>📅 구글 캘린더 연결</h2>${gcalStatusChip}</div>
       <p style="color:var(--text-sub);font-size:13.5px;margin-bottom:12px">
-        업무 기한과 자금 예정을 내 구글 캘린더로 옮깁니다. 계정마다 따로 담으면 됩니다.</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-        <button class="btn secondary" onclick="exportTasksIcs()">✅ 업무 기한 담기</button>
-        <button class="btn secondary" onclick="exportCashPlansIcs()">💰 자금 예정 담기 (90일)</button>
+        내 구글 계정에 연결하면 <b>업무 기한</b>과 <b>자금 예정(들어올 돈·나갈 돈)</b>이
+        내 캘린더에 자동으로 올라갑니다. 앱에서 업무를 끝내거나 예정을 지우면 캘린더에서도 같이 사라집니다.
+        (앞으로 ${GCAL_DAYS}일치 · 전날 오전 9시 알림 · 사람마다 각자 자기 계정으로 연결)</p>
+      ${gcalCfg.client_id ? `
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn" id="btn-gcal-connect" onclick="gcalConnect()">
+            ${gcalOn ? "🔄 지금 다시 맞추기" : "🔗 내 구글 캘린더 연결"}</button>
+          ${gcalLinked() ? '<button class="btn secondary" onclick="gcalDisconnect()">연결 해제</button>' : ""}
+        </div>` : `
+        <div style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:12px;font-size:13px">
+          아직 <b>구글 클라이언트 ID</b>가 등록되지 않았습니다. 아래 준비 단계를 한 번만 해 주세요.
+        </div>`}
+
+      <details ${gcalCfg.client_id ? "" : "open"} style="margin-top:14px">
+        <summary style="cursor:pointer;font-weight:700;font-size:13.5px">⚙️ 준비 단계 (회사에 한 번만)</summary>
+        <div style="background:var(--brand-light);border-radius:9px;padding:12px;margin-top:10px;font-size:13px;line-height:1.8">
+          구글은 아무 사이트나 캘린더에 손대지 못하게 막아 두었기 때문에, 우리 앱을 한 번 등록해야 합니다.<br><br>
+          1. <b>console.cloud.google.com</b> 접속 → 프로젝트 만들기<br>
+          2. [API 및 서비스] → [라이브러리] → <b>Google Calendar API</b> 검색 → 사용 설정<br>
+          3. [OAuth 동의 화면] → 외부(External) → 앱 이름·이메일 입력 →
+             <b>테스트 사용자</b>에 우리 직원 구글 주소를 모두 추가<br>
+          4. [사용자 인증 정보] → [사용자 인증 정보 만들기] → <b>OAuth 클라이언트 ID</b> → 웹 애플리케이션<br>
+          5. <b>승인된 자바스크립트 원본</b>에 아래 주소를 그대로 붙여넣기<br>
+          &nbsp;&nbsp;&nbsp;<code style="background:#fff;border:1px solid var(--line);border-radius:5px;padding:2px 6px">${esc(location.origin)}</code><br>
+          6. 만들어진 <b>클라이언트 ID</b>(…apps.googleusercontent.com)를 아래 칸에 넣고 저장<br><br>
+          ※ 클라이언트 ID는 공개되어도 되는 값입니다. 5번 주소가 등록된 곳에서만 쓸 수 있어서,
+          비밀번호처럼 감출 필요가 없습니다.
+        </div>
+      </details>
+
+      <div class="form-grid" style="margin-top:12px">
+        <div class="field full"><label>구글 OAuth 클라이언트 ID</label>
+          <input id="gcal-cid" value="${esc(gcalCfg.client_id)}"
+            placeholder="000000000000-xxxxxxxx.apps.googleusercontent.com" maxlength="200"></div>
       </div>
-      <div style="background:var(--brand-light);border-radius:9px;padding:12px;font-size:13px;line-height:1.7">
-        <b>한 건만</b> — 업무 지시·자금일보 목록의 <b>📅</b> 버튼을 누르면 구글 캘린더 일정 만들기 창이 값이 채워진 채로 열립니다.<br>
-        <b>한꺼번에</b> — 위 버튼으로 <b>.ics</b> 파일을 받아 구글 캘린더 [설정 → 가져오기/내보내기 → 가져오기]에 올립니다.
-        일정마다 <b>전날 오전 9시 알림</b>이 함께 들어가고, 나중에 다시 담아도 중복되지 않습니다.
+      <div class="modal-actions"><button class="btn secondary" id="btn-gcal-cid" onclick="saveGcalCfg()">클라이언트 ID 저장</button></div>
+
+      <div style="border-top:1px solid var(--line);margin-top:14px;padding-top:12px;font-size:13px;line-height:1.7">
+        <b>연결 없이 쓰는 방법</b> — 목록의 <b>📅</b> 버튼은 구글 캘린더 일정 만들기 창을 값이 채워진 채로 열어 줍니다.
+        아래 버튼으로 <b>.ics</b> 파일을 받아 캘린더 [설정 → 가져오기]에 올려도 됩니다.<br>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+          <button class="btn sm secondary" onclick="exportTasksIcs()">✅ 업무 기한 .ics</button>
+          <button class="btn sm secondary" onclick="exportCashPlansIcs()">💰 자금 예정 .ics</button>
+        </div>
       </div>
     </div>
 
