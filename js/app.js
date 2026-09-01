@@ -3871,16 +3871,21 @@ async function viewPurchaseOrders() {
    product_id가 있는 행만 씀(매핑 안 된 상품은 억지로 연결하지 않음 - status가 아니라
    product_id 유무로 판단: NO_SALES_HISTORY/NO_INVENTORY도 매핑 자체가 없으면 product_id가
    비어 있을 수 있어서, status만 보면 매핑 있는 상품을 놓치거나 없는 상품을 잘못 연결할 수 있음).
-   같은 product_id가 여러 vendor_item_id(채널)에 걸쳐 있으면 계산이 더 오래됐거나(=덜 최신)
-   먼저 온 행이 덮어써질 수 있어, calculated_at이 더 최신인 쪽을 남긴다. */
+
+   중요: 같은 product_id가 여러 vendor_item_id(채널 - rocket_growth/marketplace 등)에
+   걸쳐 있어도 calculated_at이 더 최신인 쪽 하나만 남기고 나머지를 버리면 안 된다.
+   calculated_at은 "그 채널 추천이 언제 계산됐는지"일 뿐 "어느 채널을 발주 대상으로
+   삼을지"의 근거가 아니다 - 로켓그로스(쿠팡 사외재고)와 자사창고(마켓플레이스 등)는
+   실제로 서로 다른 물리적 재고 풀이라(js/app.js의 로켓그로스/판매자배송 재고 차감
+   로직 참고 - 이름이 아니라 배송 방식으로 차감 위치를 나눔), 채널마다 추천수량이
+   달라도 전부 유효한 정보다. 그래서 product_id당 배열로 전부 보존한다. */
 async function loadErpRecommendations() {
   const { data, error } = await sb.from("purchase_recommendations").select("*");
   erpRecommendations = {};
   if (error || !data) return;
   data.forEach(r => {
     if (!r.product_id) return;
-    const prev = erpRecommendations[r.product_id];
-    if (!prev || String(r.calculated_at) > String(prev.calculated_at)) erpRecommendations[r.product_id] = r;
+    (erpRecommendations[r.product_id] ||= []).push(r);
   });
   erpRecommendationsLoaded = true;
 }
@@ -3966,42 +3971,93 @@ function onPORowProduct(sel) {
   renderPORowRecommendation(tr, pid);
 }
 
+const fmtRefN = v => (v === null || v === undefined) ? "—" : fmt(v);
+
+/* 추천 1건(rec)을 읽기전용 참고 블록 HTML로 렌더링 - 채널 1개짜리든, 여러 채널 중 하나든
+   똑같은 모양으로 보여준다(재구현 없이 한 곳에서만 만듦). */
+function renderRecommendationBlock(rec) {
+  return `
+    <div class="po-ref-grid">
+      <span>현재재고 <b>${fmtRefN(rec.current_stock)}</b></span>
+      <span>입고예정 <b>${fmtRefN(rec.incoming_qty)}</b></span>
+      <span>가용재고 <b>${fmtRefN(rec.available_stock)}</b></span>
+      <span>평균판매속도 <b>${fmtRefN(rec.avg_daily_sales)}</b></span>
+      <span>재발주점 <b>${fmtRefN(rec.reorder_point)}</b></span>
+      <span>추천 EA <b>${fmtRefN(rec.recommended_units)}</b></span>
+      <span>추천 BOX <b>${fmtRefN(rec.recommended_boxes)}</b></span>
+      <span>추천 PLT <b>${fmtRefN(rec.recommended_plts)}</b></span>
+      <span>원가 <b>${rec.purchase_cost != null ? "₩" + fmt(rec.purchase_cost) : "—"}</b></span>
+      <span>상태 <b>${esc(rec.status || "")}</b></span>
+    </div>
+    <p class="po-note">※ 참고용 수치예요(계산 시각: ${rec.calculated_at ? new Date(rec.calculated_at).toLocaleString() : "—"}). 최종 수량은 직접 입력/수정하세요 — 자동으로 채워지지 않아요.</p>`;
+}
+
+/* 실제로 tr.dataset에 스냅샷 값을 심는 곳은 여기 한 곳뿐(단일채널/다채널선택 둘 다 이 함수를 씀) -
+   savePO()가 이 dataset을 그대로 읽어 purchase_order_items에 recommended_qty/
+   recommendation_calculated_at/vendor_item_id로 저장한다(계산 없이 복사만). */
+function applyRecommendationToRow(tr, rec) {
+  tr.dataset.recQty = rec.recommended_units === null || rec.recommended_units === undefined ? "" : String(rec.recommended_units);
+  tr.dataset.recAt = rec.calculated_at || "";
+  tr.dataset.recVid = rec.vendor_item_id || "";
+}
+
+/* 다채널 상품에서 사람이 특정 채널 라디오를 고르면 그 채널의 추천값만 반영한다.
+   여러 채널 값을 프론트에서 임의로 합산/평균하지 않음 - 사람이 명시적으로 하나를 골라야
+   비로소 recommended_qty 등이 채워진다(안 고르면 계속 미확정 상태로 남음). */
+function selectPORowChannel(radioEl, pid, vendorItemId) {
+  const ref = radioEl.closest("tr");
+  const tr = ref?.previousElementSibling;
+  if (!tr) return;
+  const rec = (erpRecommendations[pid] || []).find(r => r.vendor_item_id === vendorItemId);
+  if (!rec) return;
+  applyRecommendationToRow(tr, rec);
+  const note = ref.querySelector(".po-multi-channel-note");
+  if (note) note.textContent = `✓ ${rec.channel || vendorItemId} 채널 추천값을 반영했어요(EA ${fmtRefN(rec.recommended_units)}).`;
+}
+
 /* 발주추천 참고값을 읽기전용으로만 보여줌 - qty를 자동으로 채우거나 확정하지 않는다(사람이
    직접 입력/수정하는 기존 흐름 그대로 유지). product_id가 erpRecommendations에 없으면
    (매핑 안 됐거나 그 상품에 대한 계산 자체가 없었던 경우) 억지로 값을 만들어내지 않고
-   "추천 데이터 없음"만 표시한다. tr.dataset에 recQty/recAt/recVid를 심어두는 이유는
-   savePO()가 이 값을 그대로 읽어 purchase_order_items에 스냅샷으로 저장하기 위함
-   (여기서 계산하지 않고, purchase_recommendations가 이미 계산해둔 값을 복사만 함). */
+   "추천 데이터 없음"만 표시한다.
+
+   채널이 여러 개(같은 product_id가 rocket_growth/marketplace 등 여러 vendor_item_id에
+   매핑된 경우)면 calculated_at으로 하나를 임의로 골라 합치거나 버리지 않는다 - 로켓그로스
+   (쿠팡 사외재고)와 자사창고(마켓플레이스 등) 재고는 실제로 서로 다른 물리적 재고 풀이라
+   한쪽 채널 추천값이 다른 쪽보다 "더 최신"이라는 이유만으로 우선할 근거가 없다. 이 경우
+   모든 채널을 나란히 보여주고, 사람이 라디오로 명시적으로 하나를 고른 뒤에야
+   recommended_qty 등이 채워진다(고르기 전엔 tr.dataset이 비어 있어 savePO()가 아무것도
+   안 실음 - 매핑 없는 상품과 동일하게 처리됨). */
 function renderPORowRecommendation(tr, pid) {
   const ref = tr.nextElementSibling;
   if (!ref || !ref.classList.contains("po-ref-row")) return;
   const cell = ref.querySelector(".po-ref-cell");
-  const rec = erpRecommendations[pid];
+  const recs = erpRecommendations[pid] || [];
   delete tr.dataset.recQty; delete tr.dataset.recAt; delete tr.dataset.recVid;
-  if (!rec) {
-    cell.innerHTML = `<p class="po-note">📊 발주추천 데이터 없음(매핑 안 됐거나 계산 불가한 상품) — 참고값 없이 직접 입력하세요.</p>
-      <input class="po-item-memo" placeholder="메모(선택 — 수량 조정 사유가 있으면 여기에 적어주세요)" style="width:100%;margin-top:4px">`;
+  const memoInputHtml = `<input class="po-item-memo" placeholder="메모(선택 — 수량 조정 사유가 있으면 여기에 적어주세요)" style="width:100%;margin-top:4px">`;
+
+  if (recs.length === 0) {
+    cell.innerHTML = `<p class="po-note">📊 발주추천 데이터 없음(매핑 안 됐거나 계산 불가한 상품) — 참고값 없이 직접 입력하세요.</p>${memoInputHtml}`;
     return;
   }
-  tr.dataset.recQty = rec.recommended_units === null || rec.recommended_units === undefined ? "" : String(rec.recommended_units);
-  tr.dataset.recAt = rec.calculated_at || "";
-  tr.dataset.recVid = rec.vendor_item_id || "";
-  const fmtN = v => (v === null || v === undefined) ? "—" : fmt(v);
+  if (recs.length === 1) {
+    applyRecommendationToRow(tr, recs[0]);
+    cell.innerHTML = renderRecommendationBlock(recs[0]) + memoInputHtml;
+    return;
+  }
+  // 다채널 - 자동 선택/합산 없음. 전부 나열하고 사람이 라디오로 고르게 함.
+  const pickerHtml = recs.map((r, i) => `
+    <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer">
+      <input type="radio" name="po-ch-${tr.dataset.rowSeq || (tr.dataset.rowSeq = String(++__pickSeq))}"
+        onchange="selectPORowChannel(this,'${pid}','${esc(r.vendor_item_id)}')">
+      <span><b>${esc(r.channel || r.vendor_item_id)}</b> (vendor_item_id: ${esc(r.vendor_item_id)}) — 추천 EA ${fmtRefN(r.recommended_units)}</span>
+    </label>
+    <div style="margin-left:22px">${renderRecommendationBlock(r)}</div>`).join("");
   cell.innerHTML = `
-    <div class="po-ref-grid">
-      <span>현재재고 <b>${fmtN(rec.current_stock)}</b></span>
-      <span>입고예정 <b>${fmtN(rec.incoming_qty)}</b></span>
-      <span>가용재고 <b>${fmtN(rec.available_stock)}</b></span>
-      <span>평균판매속도 <b>${fmtN(rec.avg_daily_sales)}</b></span>
-      <span>재발주점 <b>${fmtN(rec.reorder_point)}</b></span>
-      <span>추천 EA <b>${fmtN(rec.recommended_units)}</b></span>
-      <span>추천 BOX <b>${fmtN(rec.recommended_boxes)}</b></span>
-      <span>추천 PLT <b>${fmtN(rec.recommended_plts)}</b></span>
-      <span>원가 <b>${rec.purchase_cost != null ? "₩" + fmt(rec.purchase_cost) : "—"}</b></span>
-      <span>상태 <b>${esc(rec.status || "")}</b></span>
-    </div>
-    <p class="po-note">※ 참고용 수치예요(계산 시각: ${rec.calculated_at ? new Date(rec.calculated_at).toLocaleString() : "—"}). 최종 수량은 직접 입력/수정하세요 — 자동으로 채워지지 않아요.</p>
-    <input class="po-item-memo" placeholder="메모(선택 — 수량을 추천값과 다르게 입력했다면 사유를 적어주세요)" style="width:100%;margin-top:4px">`;
+    <p class="po-note">⚠️ 이 상품은 채널이 ${recs.length}개예요(같은 상품이 여러 판매채널에 매핑됨) —
+    로켓그로스/자사창고 등은 실제 재고가 분리돼 있어 자동으로 합치지 않아요. 이번 발주와 맞는 채널을 직접 골라주세요.</p>
+    ${pickerHtml}
+    <p class="po-note po-multi-channel-note">아직 채널을 선택하지 않았어요 — 선택 전까지는 추천값 없이 저장돼요.</p>
+    ${memoInputHtml}`;
 }
 function calcPOTotal() {
   let total = 0;
