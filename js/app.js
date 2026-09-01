@@ -5034,7 +5034,7 @@ async function makePOsFromForecast() {
     const line = isJeongyeol ? [] : [{ userId: approvers[0].id, status: "pending", date: "" }];
     const { data: po, error } = await sb.from("purchase_orders").insert({
       po_no: noData || `리버스-발주-${today().slice(0, 4)}-${Date.now().toString().slice(-3)}`,
-      date: today(), supplier,
+      date: today(), supplier: sup,
       due_date: addDaysStr(today(), maxLead || Number(fcCfg.lead_days) || 14),
       deliver_to: deliver,
       freight_est: 0,
