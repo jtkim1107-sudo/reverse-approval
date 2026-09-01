@@ -1916,6 +1916,8 @@ let erpTransfers = [];    // stock_transfers (쿠팡 사외재고 이동)
 let erpMonth = today().slice(0, 7);
 let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
+let erpRecommendations = {};  // product_id → purchase_recommendations 최신 1행 (PO 작성 화면 참고용, 읽기전용)
+let erpRecommendationsLoaded = false;  // PO 모달 열 때만 lazy load (다른 화면에선 안 씀)
 let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
 let erpCostsCache = []; // 부대비용(택배·운송) 캐시
 let erpSuppliers = [];      // 과거 매입에 쓰인 거래처명
@@ -3865,7 +3867,26 @@ async function viewPurchaseOrders() {
     </div>`;
 }
 
-function openPOModal() {
+/* 발주추천(purchase_recommendations) 참고값 로더 - PO 작성 화면 전용, 읽기전용.
+   product_id가 있는 행만 씀(매핑 안 된 상품은 억지로 연결하지 않음 - status가 아니라
+   product_id 유무로 판단: NO_SALES_HISTORY/NO_INVENTORY도 매핑 자체가 없으면 product_id가
+   비어 있을 수 있어서, status만 보면 매핑 있는 상품을 놓치거나 없는 상품을 잘못 연결할 수 있음).
+   같은 product_id가 여러 vendor_item_id(채널)에 걸쳐 있으면 계산이 더 오래됐거나(=덜 최신)
+   먼저 온 행이 덮어써질 수 있어, calculated_at이 더 최신인 쪽을 남긴다. */
+async function loadErpRecommendations() {
+  const { data, error } = await sb.from("purchase_recommendations").select("*");
+  erpRecommendations = {};
+  if (error || !data) return;
+  data.forEach(r => {
+    if (!r.product_id) return;
+    const prev = erpRecommendations[r.product_id];
+    if (!prev || String(r.calculated_at) > String(prev.calculated_at)) erpRecommendations[r.product_id] = r;
+  });
+  erpRecommendationsLoaded = true;
+}
+
+async function openPOModal() {
+  if (!erpRecommendationsLoaded) await loadErpRecommendations();  // 참고값이 준비된 뒤에만 모달을 띄움(경쟁상태 방지)
   const approvers = USERS.filter(u => u.id !== me.id && (Number(u.rank) || 0) > (Number(me.rank) || 0));
   const isJeongyeol = approvers.length === 0;   // 최상위가 기안하면 전결
   document.getElementById("modal-root").innerHTML = `
@@ -3914,22 +3935,77 @@ function addPORow() {
   const tb = document.getElementById("po-rows");
   if (!tb) return;
   const tr = document.createElement("tr");
+  tr.className = "po-item-row";
   tr.innerHTML = `
     <td>${productPicker("po-prod", "", "buy", "onPORowProduct")}</td>
     <td><input class="po-qty" type="number" min="1" value="1" oninput="calcPOTotal()"></td>
     <td><input class="po-cost comma" type="text" inputmode="numeric" placeholder="0" oninput="calcPOTotal()"></td>
     <td class="num po-amt" style="font-weight:700">₩0</td>
-    <td><button class="btn-row-del" title="삭제" onclick="this.closest('tr').remove();calcPOTotal()">✕</button></td>`;
+    <td><button class="btn-row-del" title="삭제" onclick="removePORow(this)">✕</button></td>`;
+  // 품목행 바로 아래에 발주추천 참고값 전용 행을 붙임(별도 tr - items-table 컬럼 구조를 안 건드림).
+  // po-item-row만 qty/단가를 가지므로, 합계 계산·저장 로직은 반드시 .po-item-row만 순회해야 함.
+  const ref = document.createElement("tr");
+  ref.className = "po-ref-row";
+  ref.innerHTML = `<td colspan="5" class="po-ref-cell"></td>`;
   tb.appendChild(tr);
+  tb.appendChild(ref);
+}
+function removePORow(btn) {
+  const tr = btn.closest("tr");
+  const ref = tr.nextElementSibling;
+  if (ref && ref.classList.contains("po-ref-row")) ref.remove();
+  tr.remove();
+  calcPOTotal();
 }
 function onPORowProduct(sel) {
-  const st = erpStock[pidOf(sel)];
-  if (st?.lastCost) sel.closest("tr").querySelector(".po-cost").value = fmt(st.lastCost);
+  const tr = sel.closest("tr");
+  const pid = pidOf(sel);
+  const st = erpStock[pid];
+  if (st?.lastCost) tr.querySelector(".po-cost").value = fmt(st.lastCost);
   calcPOTotal();
+  renderPORowRecommendation(tr, pid);
+}
+
+/* 발주추천 참고값을 읽기전용으로만 보여줌 - qty를 자동으로 채우거나 확정하지 않는다(사람이
+   직접 입력/수정하는 기존 흐름 그대로 유지). product_id가 erpRecommendations에 없으면
+   (매핑 안 됐거나 그 상품에 대한 계산 자체가 없었던 경우) 억지로 값을 만들어내지 않고
+   "추천 데이터 없음"만 표시한다. tr.dataset에 recQty/recAt/recVid를 심어두는 이유는
+   savePO()가 이 값을 그대로 읽어 purchase_order_items에 스냅샷으로 저장하기 위함
+   (여기서 계산하지 않고, purchase_recommendations가 이미 계산해둔 값을 복사만 함). */
+function renderPORowRecommendation(tr, pid) {
+  const ref = tr.nextElementSibling;
+  if (!ref || !ref.classList.contains("po-ref-row")) return;
+  const cell = ref.querySelector(".po-ref-cell");
+  const rec = erpRecommendations[pid];
+  delete tr.dataset.recQty; delete tr.dataset.recAt; delete tr.dataset.recVid;
+  if (!rec) {
+    cell.innerHTML = `<p class="po-note">📊 발주추천 데이터 없음(매핑 안 됐거나 계산 불가한 상품) — 참고값 없이 직접 입력하세요.</p>
+      <input class="po-item-memo" placeholder="메모(선택 — 수량 조정 사유가 있으면 여기에 적어주세요)" style="width:100%;margin-top:4px">`;
+    return;
+  }
+  tr.dataset.recQty = rec.recommended_units === null || rec.recommended_units === undefined ? "" : String(rec.recommended_units);
+  tr.dataset.recAt = rec.calculated_at || "";
+  tr.dataset.recVid = rec.vendor_item_id || "";
+  const fmtN = v => (v === null || v === undefined) ? "—" : fmt(v);
+  cell.innerHTML = `
+    <div class="po-ref-grid">
+      <span>현재재고 <b>${fmtN(rec.current_stock)}</b></span>
+      <span>입고예정 <b>${fmtN(rec.incoming_qty)}</b></span>
+      <span>가용재고 <b>${fmtN(rec.available_stock)}</b></span>
+      <span>평균판매속도 <b>${fmtN(rec.avg_daily_sales)}</b></span>
+      <span>재발주점 <b>${fmtN(rec.reorder_point)}</b></span>
+      <span>추천 EA <b>${fmtN(rec.recommended_units)}</b></span>
+      <span>추천 BOX <b>${fmtN(rec.recommended_boxes)}</b></span>
+      <span>추천 PLT <b>${fmtN(rec.recommended_plts)}</b></span>
+      <span>원가 <b>${rec.purchase_cost != null ? "₩" + fmt(rec.purchase_cost) : "—"}</b></span>
+      <span>상태 <b>${esc(rec.status || "")}</b></span>
+    </div>
+    <p class="po-note">※ 참고용 수치예요(계산 시각: ${rec.calculated_at ? new Date(rec.calculated_at).toLocaleString() : "—"}). 최종 수량은 직접 입력/수정하세요 — 자동으로 채워지지 않아요.</p>
+    <input class="po-item-memo" placeholder="메모(선택 — 수량을 추천값과 다르게 입력했다면 사유를 적어주세요)" style="width:100%;margin-top:4px">`;
 }
 function calcPOTotal() {
   let total = 0;
-  document.querySelectorAll("#po-rows tr").forEach(tr => {
+  document.querySelectorAll("#po-rows tr.po-item-row").forEach(tr => {
     const amt = (numOf(tr.querySelector(".po-qty").value) || 0) * (numOf(tr.querySelector(".po-cost").value) || 0);
     tr.querySelector(".po-amt").textContent = "₩" + fmt(amt);
     total += amt;
@@ -3944,7 +4020,7 @@ async function savePO(isJeongyeol) {
   if (!date) return toast("발주일을 선택해 주세요");
   if (!supplier) return toast("거래처를 선택해 주세요");
   const items = [];
-  for (const tr of document.querySelectorAll("#po-rows tr")) {
+  for (const tr of document.querySelectorAll("#po-rows tr.po-item-row")) {
     const pid = pidOf(tr.querySelector(".po-prod"));
     const qty = numOf(tr.querySelector(".po-qty").value) || 0;
     const cost = numOf(tr.querySelector(".po-cost").value) || 0;
@@ -3952,7 +4028,22 @@ async function savePO(isJeongyeol) {
     if (!pid) return toast("품목을 선택해 주세요");
     if (qty <= 0 || !Number.isInteger(qty)) return toast("수량은 1 이상 정수로 입력해 주세요");
     if (cost <= 0) return toast(`'${prodName(pid)}'의 단가를 입력해 주세요`);
-    items.push({ product_id: pid, qty, unit_cost: cost, amount: qty * cost });
+    const item = { product_id: pid, qty, unit_cost: cost, amount: qty * cost };
+    // 발주추천 참고정보 - 있을 때만 그 시점 값을 그대로 스냅샷 저장(재계산 안 함, 사람이
+    // 확정한 qty와는 완전히 별개 필드). recAt이 없으면(=선택 당시 추천 데이터가 없었음)
+    // 3개 필드 모두 생략 - NULL로 남아 "그때 추천 자체가 없었다"는 사실을 그대로 보존.
+    if (tr.dataset.recAt) {
+      item.recommended_qty = tr.dataset.recQty === "" ? null : Number(tr.dataset.recQty);
+      item.recommendation_calculated_at = tr.dataset.recAt;
+      item.vendor_item_id = tr.dataset.recVid || null;
+    }
+    // 품목 메모(기존 memo 컬럼 재사용) - 수량을 추천값과 다르게 입력한 사유도 여기 같이
+    // 적히므로, 기존 "품목 자유메모" 의미와 섞일 수 있음(설계상 트레이드오프, 알고 있는
+    // 상태로 최소 변경을 택함 - DDL 주석 참고). 향후 이 사유 데이터가 학습에 쓰일 만큼
+    // 중요해지면 별도 adjustment_reason 컬럼 분리를 고려할 것.
+    const memoEl = tr.nextElementSibling?.querySelector(".po-item-memo");
+    if (memoEl && memoEl.value.trim()) item.memo = memoEl.value.trim();
+    items.push(item);
   }
   if (!items.length) return toast("품목을 1개 이상 입력해 주세요");
   const btn = document.getElementById("btn-po-save");
