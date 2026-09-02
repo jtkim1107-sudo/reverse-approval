@@ -3144,10 +3144,16 @@ async function viewPurchaseReco() {
   if (error) {
     return `<div class="card"><p class="empty">발주추천 데이터를 불러오지 못했습니다.</p></div>`;
   }
-  const calcAt = prRecoCache[0]?.calculated_at;
-  const total = prRecoCache.length;
-  const need = prRecoCache.filter(r => r.status === "ORDER_REQUIRED").length;
-  const ok = prRecoCache.filter(r => r.status === "STOCK_SUFFICIENT").length;
+  // 2026-09-02 추가(stale-row 대응): is_active=false는 product_master에서 더 이상 ACTIVE가
+  // 아니게 된 상품(판매종료 등)의 과거 계산 이력이에요 - 기본 화면/통계에서는 제외하고,
+  // 아래 상태 필터에서 "비활성/제외 상품"을 선택했을 때만 보여줘요(물리 DELETE가 없어서
+  // 이력 조회 자체는 항상 가능 - 숨김일 뿐 삭제 아님).
+  const activeCache = prRecoCache.filter(r => r.is_active !== false);
+  const inactiveCount = prRecoCache.length - activeCache.length;
+  const calcAt = activeCache[0]?.calculated_at || prRecoCache[0]?.calculated_at;
+  const total = activeCache.length;
+  const need = activeCache.filter(r => r.status === "ORDER_REQUIRED").length;
+  const ok = activeCache.filter(r => r.status === "STOCK_SUFFICIENT").length;
   const lack = total - need - ok;
 
   return `
@@ -3163,6 +3169,7 @@ async function viewPurchaseReco() {
         GCP 서버가 쿠팡 판매속도·재고·리드타임 기준으로 계산한 결과예요(이 화면은 계산을
         새로 하지 않고 그 결과만 보여줘요). 최종 계산: <b>${calcAt ? esc(new Date(calcAt).toLocaleString("ko-KR")) : "기록 없음"}</b>
         ${calcAt ? ` <span style="color:var(--text-sub)">— 자동 갱신은 아직 꺼져있어 실시간 값이 아닐 수 있어요</span>` : ""}
+        ${inactiveCount ? ` <span style="color:var(--text-sub)">— ⚫ 비활성/제외 상품 ${inactiveCount}건은 기본 화면에서 숨겨져 있어요(아래 상태 필터에서 확인 가능)</span>` : ""}
       </p>
       <div class="searchbar" style="margin-bottom:14px">
         <input placeholder="상품명 검색" value="${esc(prRecoFilter.q)}"
@@ -3172,6 +3179,7 @@ async function viewPurchaseReco() {
           <option value="발주필요" ${prRecoFilter.group === "발주필요" ? "selected" : ""}>🔴 발주 필요</option>
           <option value="재고충분" ${prRecoFilter.group === "재고충분" ? "selected" : ""}>🟢 재고 충분</option>
           <option value="데이터부족" ${prRecoFilter.group === "데이터부족" ? "selected" : ""}>⚪ 데이터 부족</option>
+          <option value="비활성제외" ${prRecoFilter.group === "비활성제외" ? "selected" : ""}>⚫ 비활성/제외 상품(${inactiveCount})</option>
         </select>
       </div>
       <div id="pr-reco-table">${prRecoTableHtml(filteredPrReco())}</div>
@@ -3180,14 +3188,20 @@ async function viewPurchaseReco() {
         <span class="chip progress" style="padding:1px 6px">오늘 발주</span> 오늘까지 ·
         <span class="chip rejected" style="padding:1px 6px">발주 지연</span> 이미 늦음.<br>
         ※ 옵션(색상 등)이 있는 상품은 상품명 아래 작은 글씨로 옵션명이 같이 표시돼요.<br>
+        ※ ⚫ <b>비활성/제외 상품</b>은 product_master에서 더 이상 ACTIVE가 아니게 된(판매종료 등) 상품의 과거 계산 이력이에요 - 삭제되지 않고 상태 필터로 언제든 다시 볼 수 있어요.<br>
         ※ 실제 발주 실행 기능은 없어요 - 여기는 조회 전용이고, 발주는 <b>발주서</b> 메뉴에서 직접 작성하세요.
       </p>
     </div>`;
 }
 
 function filteredPrReco() {
-  let list = prRecoCache;
-  if (prRecoFilter.group) list = list.filter(r => PR_STATUS_GROUP[r.status] === prRecoFilter.group);
+  let list;
+  if (prRecoFilter.group === "비활성제외") {
+    list = prRecoCache.filter(r => r.is_active === false);
+  } else {
+    list = prRecoCache.filter(r => r.is_active !== false);
+    if (prRecoFilter.group) list = list.filter(r => PR_STATUS_GROUP[r.status] === prRecoFilter.group);
+  }
   if (prRecoFilter.q) {
     const q = prRecoFilter.q.toLowerCase();
     list = list.filter(r => (r.product_name || "").toLowerCase().includes(q));
@@ -3227,7 +3241,7 @@ function prRecoTableHtml(list) {
         const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
         return `
         <tr>
-          <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}</td>
+          <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${r.is_active === false ? `<br><span class="chip waiting" style="padding:1px 6px;margin-top:2px;display:inline-block">⚫ 비활성${r.stale_at ? "(" + new Date(r.stale_at).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" }) + "부터)" : ""}</span>` : ""}</td>
           <td>${esc(r.supplier_name || "-")}</td>
           <td class="num">${r.current_stock != null ? fmt(r.current_stock) : "-"}</td>
           <td class="num">${r.incoming_qty != null ? fmt(r.incoming_qty) : "-"}</td>
