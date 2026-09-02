@@ -4600,31 +4600,34 @@ function rgSubmitStatusHtml(p) {
 // 승인/거절이 가능한 조건 - decideRgInbound()의 CAS .eq() 조건과 반드시 동일하게 유지
 const rgCanDecide = p => p.preflight_status === "PASSED" && p.approval_status === "PENDING_APPROVAL" && p.submit_status === "NOT_SUBMITTED";
 const rgCanSubmit = p => p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
+// retry_of_plan_id로 이 plan을 가리키는 다른 plan이 있으면(=이미 새 슬롯으로
+// 재시도가 진행 중/완료됨) 이 plan은 대체(superseded)된 거예요 - 서버 gate
+// (erp_submit_gate.submit_gate_check()의 superseded_ids 로직)와 정확히 같은
+// 의미로, 여기서도 "쿠팡 제출" 버튼을 절대 보여주지 않아요. supersededIds는
+// viewRgInbound()가 이미 불러온 전체 plans에서 한 번만 계산해서 넘겨줘요(추가
+// 쿼리 없음).
+const rgIsSuperseded = (p, supersededIds) => supersededIds.has(p.id);
 // SUBMIT_ATTEMPTED + FAILED + retryable 패턴 매치 - 이 plan 자체는 CAS 트리거로
-// 영구 고정돼서 재사용 불가능하니, "재시도 준비"는 어디까지나 안내일 뿐 이 plan을
-// 다시 건드리지 않아요. 실제 새 slot 조회/새 plan 생성/PRE-FLIGHT는 이번 라운드
-// 에서는 연결하지 않고, 버튼은 다음 단계 안내 토스트만 띄워요(자동 실행 금지).
-const rgCanPrepareRetry = p => p.submit_status === "SUBMIT_ATTEMPTED" && p.internal_status === "FAILED" && rgErrorClassify(p).retryable;
+// 영구 고정돼서 재사용 불가능하니, "재시도 준비"는 새 슬롯을 골라 별도의 새
+// plan을 만드는 절차로 이어져요(이 plan 자체는 절대 안 건드림). 이미 이 plan의
+// retry가 만들어졌으면(supersededIds에 있음) 중복으로 또 만들 필요가 없어서
+// 버튼을 더 이상 보여주지 않아요(서버의 _already_has_retry() 중복 차단과 동일 의미).
+const rgCanPrepareRetry = (p, supersededIds) =>
+  p.submit_status === "SUBMIT_ATTEMPTED" && p.internal_status === "FAILED" &&
+  rgErrorClassify(p).retryable && !supersededIds.has(p.id);
 
-function rgActionsHtml(p) {
+function rgActionsHtml(p, supersededIds) {
   if (rgCanDecide(p)) {
     return `<button class="btn sm green" onclick="decideRgInbound('${p.id}','APPROVED')">승인</button>
             <button class="btn sm danger" onclick="decideRgInbound('${p.id}','REJECTED')">거절</button>`;
   }
-  if (rgCanSubmit(p)) {
+  if (rgCanSubmit(p) && !rgIsSuperseded(p, supersededIds)) {
     return `<button class="btn sm" onclick="submitRgInbound('${p.id}')">쿠팡 제출</button>`;
   }
-  if (rgCanPrepareRetry(p)) {
-    return `<button class="btn sm secondary" onclick="prepareRgRetry('${p.id}')">🔄 재시도 준비</button>`;
+  if (rgCanPrepareRetry(p, supersededIds)) {
+    return `<button class="btn sm secondary" onclick="openRgRetryModal('${p.id}')">🔄 재시도 준비</button>`;
   }
   return "";
-}
-
-// 지금은 안내만 하는 버튼이에요 - 새 슬롯 조회/새 plan 생성/PRE-FLIGHT를 자동으로
-// 실행하지 않습니다(운영 안전 정책). 실제 새 slot 확인과 새 plan 생성은 담당자가
-// 별도 절차로 진행해요.
-function prepareRgRetry(planId) {
-  toast("새 슬롯 확인 후 재시도 plan 생성 기능은 아직 연결되지 않았어요. 담당자에게 새 슬롯 확인을 요청해주세요.");
 }
 
 // WING 실제 제출 - decideRgInbound()와 동일한 원칙(더블클릭 방지 + 클릭 직전
@@ -4642,6 +4645,15 @@ async function submitRgInbound(planId) {
   const { data: fresh, error: e0 } = await sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle();
   if (e0 || !fresh || !rgCanSubmit(fresh)) {
     toast("이미 처리됐거나 제출 가능한 상태가 아닙니다");
+    return route();
+  }
+  // 렌더 시점 이후 다른 사람이 먼저 이 plan의 retry plan을 만들었을 수도 있어서
+  // (rgIsSuperseded 판정과 동일 의미) 클릭 시점에 한 번 더 확인해요 - 최종 차단은
+  // 어차피 서버 gate(erp_submit_gate.submit_gate_check())가 하지만, 여기서 먼저
+  // 걸러야 사람이 이미 무의미해진 버튼을 눌러 API 호출까지 가지 않아요.
+  const { data: supersededBy } = await sb.from("inbound_plans").select("id").eq("retry_of_plan_id", planId).limit(1);
+  if (supersededBy && supersededBy.length) {
+    toast("이미 새 슬롯으로 재시도 plan이 만들어져서 이 plan은 더 이상 제출할 수 없습니다");
     return route();
   }
 
@@ -4673,6 +4685,121 @@ async function submitRgInbound(planId) {
   route();
 }
 
+// ===== 재시도 준비: 새 슬롯 조회 -> 사람이 선택 -> 새 retry plan PRE-FLIGHT =====
+// "제출실패(슬롯 없음) -> 새 슬롯으로 재시도 필요 -> 재시도 준비 -> 슬롯 선택 ->
+// PRE-FLIGHT 진행 -> 승인대기" 흐름의 뒷부분이에요. 실제 WING WRITE(새 draft
+// 생성)는 사람이 슬롯을 고르고 "이 슬롯으로 PRE-FLIGHT 진행"을 눌러야만 실행되고,
+// 그 결과는 항상 승인대기(PENDING_APPROVAL)에서 멈춰요 - 이 흐름 어디에도 실제
+// 쿠팡 제출은 없습니다(그건 여전히 별도 승인 + "쿠팡 제출" 버튼 몫).
+let _rgRetrySelectedSlot = null;
+
+async function openRgRetryModal(planId) {
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); return; }
+
+  _rgRetrySelectedSlot = null;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>🔄 새 슬롯으로 재시도 준비</h3>
+        <p style="font-size:13.5px;color:var(--text-sub);margin:4px 0 12px;line-height:1.7">
+          이전 제출이 <b>슬롯 없음</b>으로 실패했습니다. 아래에서 실제 가용 슬롯을 확인하고 하나를 선택하면,
+          그 슬롯으로 <b>새 입고신청(PRE-FLIGHT)</b>을 진행합니다. 기존 실패 plan은 그대로 남고, 새 plan은
+          <b>승인 후에만</b> 실제 쿠팡 제출이 가능합니다 — 여기서 바로 쿠팡에 제출되지 않습니다.</p>
+        <div id="rg-retry-slots" style="font-size:13.5px;color:var(--text-sub)">슬롯 조회 중...</div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="rg-retry-confirm" disabled onclick="confirmRgRetry('${planId}')">이 슬롯으로 PRE-FLIGHT 진행</button>
+        </div>
+      </div>
+    </div>`;
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/retry-slots`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => ({}));
+    const box = document.getElementById("rg-retry-slots");
+    if (!box) return;  // 조회 도중 모달을 닫았으면(취소) 아무것도 안 함
+    if (!resp.ok) {
+      box.innerHTML = `<span class="chip rejected">조회 실패</span> ${esc(body.detail || String(resp.status))}`;
+      return;
+    }
+    renderRgRetrySlots(body);
+  } catch (e) {
+    const box = document.getElementById("rg-retry-slots");
+    if (box) box.innerHTML = `<span class="chip rejected">조회 오류</span> ${esc(e.message)}`;
+  }
+}
+
+function renderRgRetrySlots(body) {
+  const box = document.getElementById("rg-retry-slots");
+  if (!box) return;
+  const fcCode = body.own_center_fc_code;
+  const slots = (body.slots_by_center || {})[fcCode] || [];
+  if (!slots.length) {
+    box.innerHTML = `<span class="chip waiting">가용 슬롯 없음</span> 지금은 <b>${esc(fcCode || "-")}</b> 센터에
+      예약 가능한 슬롯이 없습니다(최소 2시간 이후 슬롯만 표시). 잠시 후 다시 시도해주세요.`;
+    return;
+  }
+  box.innerHTML = `
+    <div style="margin-bottom:8px"><b>${esc(fcCode || "-")}</b> 센터 · 지금부터 최소 2시간 이후 슬롯만 표시됩니다</div>
+    <div style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
+      ${slots.map((s, i) => `
+        <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer">
+          <input type="radio" name="rg-retry-slot" value="${i}" onchange="pickRgRetrySlot(${i})">
+          ${esc(s.edd)} ${esc(s.booking_time.slice(0, 2))}:${esc(s.booking_time.slice(2, 4))}
+        </label>`).join("")}
+    </div>`;
+  box.dataset.slots = JSON.stringify(slots);
+}
+
+function pickRgRetrySlot(index) {
+  const box = document.getElementById("rg-retry-slots");
+  const slots = JSON.parse(box?.dataset.slots || "[]");
+  _rgRetrySelectedSlot = slots[index] || null;
+  const btn = document.getElementById("rg-retry-confirm");
+  if (btn) btn.disabled = !_rgRetrySelectedSlot;
+}
+
+async function confirmRgRetry(planId) {
+  if (!_rgRetrySelectedSlot) return;
+  const slot = _rgRetrySelectedSlot;
+  const timeLabel = `${slot.booking_time.slice(0, 2)}:${slot.booking_time.slice(2, 4)}`;
+  if (!confirm(`선택한 슬롯(${slot.edd} ${timeLabel})으로 새 입고신청(PRE-FLIGHT)을 진행합니다.\n실제 쿠팡 제출은 아니며, 승인 대기 상태로 만들어집니다. 계속할까요?`)) return;
+
+  const btn = document.getElementById("rg-retry-confirm");
+  if (btn) btn.disabled = true;
+
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); if (btn) btn.disabled = false; return; }
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/retry`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ edd: slot.edd, booking_time: slot.booking_time }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(`재시도 준비 실패: ${body.detail || resp.status}`);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    toast(body.preflight_status === "PASSED"
+      ? "새 입고신청(PRE-FLIGHT)이 통과했습니다 - 승인 대기 상태로 등록됐어요"
+      : `PRE-FLIGHT 결과 확인이 필요합니다: ${body.preflight_status}`);
+  } catch (e) {
+    toast(`재시도 요청 중 오류: ${e.message}`);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  closeModal();
+  route();
+}
+
 async function viewRgInbound() {
   const [plansRes, itemsRes] = await Promise.all([
     sb.from("inbound_plans").select("*").order("created_at", { ascending: false }),
@@ -4684,6 +4811,16 @@ async function viewRgInbound() {
   const itemsByPlan = {};
   (itemsRes.data || []).forEach(it => { (itemsByPlan[it.inbound_plan_id] ||= []).push(it); });
 
+  // supersededIds: retry_of_plan_id로 "가리켜진" 원본 plan id 전체(서버 gate의
+  // superseded_ids와 동일 의미) - 이 plan들은 이미 새 slot으로 재시도가 진행
+  // 중/완료라서 "쿠팡 제출"도 "재시도 준비"도 더 이상 안 보여줘요.
+  // retryByOriginId: 반대 방향(원본 -> 그 원본의 retry plan) - 실패 행에서 화면
+  // 흐름(제출실패 -> 재시도 준비 -> 슬롯 선택 -> PRE-FLIGHT 진행 -> 승인대기)이
+  // 끊기지 않고 이어지는 걸 보여주려고 씀.
+  const supersededIds = new Set(plans.filter(x => x.retry_of_plan_id).map(x => x.retry_of_plan_id));
+  const retryByOriginId = {};
+  plans.forEach(x => { if (x.retry_of_plan_id) retryByOriginId[x.retry_of_plan_id] = x; });
+
   const rows = [];
   plans.forEach(p => {
     const items = itemsByPlan[p.id] || [];
@@ -4691,17 +4828,24 @@ async function viewRgInbound() {
       rows.push(`<tr><td colspan="13"><b>${esc(p.supplier)}</b> — 품목 정보 없음</td></tr>`);
       return;
     }
-    // retry_of_plan_id로 연결된 원본 plan이 있으면(슬롯 만료 등으로 새로 만든
+    // retry_of_plan_id로 연결된 원본 plan이 있으면(슬롯 없음 등으로 새로 만든
     // 재시도 plan) 감사 추적용으로 화면에도 보이게 해요 - 원본 plan은 이미
     // plans 배열에 select("*")로 같이 조회돼 있어서 추가 쿼리 없이 바로 참조 가능.
     const retryOrig = p.retry_of_plan_id ? plansById[p.retry_of_plan_id] : null;
     const retryNote = p.retry_of_plan_id
-      ? `<br><small style="color:var(--text-sub)">🔄 재시도 plan${retryOrig ? ` (원본 예정: ${esc(retryOrig.inbound_date || "-")} ${esc(retryOrig.inbound_time || "")})` : ""}</small>`
+      ? `<br><small style="color:var(--text-sub)">🔄 재시도 plan${retryOrig ? ` (원본 예정: ${esc(retryOrig.inbound_date || "-")} ${esc(retryOrig.inbound_time || "")})` : ""} · ${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)} → ${rgChip(RG_APPROVAL_CHIP, p.approval_status)}</small>`
+      : "";
+    // 이 plan이 이미 대체됐으면(자신이 다른 plan의 원본) 그 후속 plan 상태를
+    // 이어서 보여줘요 - "제출실패 -> 재시도 준비 -> 슬롯 선택 -> PRE-FLIGHT 진행
+    // -> 승인대기"가 화면에서 끊기지 않고 다음 단계로 자연스럽게 이어지도록.
+    const forwardRetry = retryByOriginId[p.id];
+    const forwardNote = forwardRetry
+      ? `<br><small style="color:var(--text-sub)">→ 새 슬롯으로 재시도 plan 생성됨: ${esc(forwardRetry.inbound_date || "-")} ${esc(forwardRetry.inbound_time || "")} · ${rgChip(RG_PREFLIGHT_CHIP, forwardRetry.preflight_status)} → ${rgChip(RG_APPROVAL_CHIP, forwardRetry.approval_status)}</small>`
       : "";
     // 승인/거절/제출 버튼은 plan 단위 액션이라, 같은 plan의 품목이 여러 줄이어도 첫 줄에만 표시
     items.forEach((it, i) => rows.push(`
       <tr data-rg-plan="${esc(p.id)}">
-        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}${retryNote}</td>
+        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}${retryNote}${forwardNote}</td>
         <td>${esc(p.supplier)}</td>
         <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
         <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
@@ -4713,7 +4857,7 @@ async function viewRgInbound() {
         <td>${rgSubmitStatusHtml(p)}</td>
         <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
         <td>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
-        <td style="white-space:nowrap">${i === 0 ? rgActionsHtml(p) : ""}</td>
+        <td style="white-space:nowrap">${i === 0 ? rgActionsHtml(p, supersededIds) : ""}</td>
       </tr>`));
   });
 
