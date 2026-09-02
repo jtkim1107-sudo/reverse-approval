@@ -11,6 +11,12 @@ const SUPA_URL = "https://lqdgoqlkfckifqyjhnon.supabase.co";
 const SUPA_KEY = "sb_publishable_MV6Ph9WOrv0nzVIvseXlLw_O5WhfQPv"; // publishable key (공개 가능)
 const sb = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 
+// 쿠팡 WING 실제 제출 backend (taltal-server, GCP Compute Engine). 이 프론트는
+// 여기로 "제출 요청"만 보내고(내 Supabase 로그인 세션 JWT를 그대로 실어서),
+// 실제 WING 세션/쿠키/제출 로직은 전부 저 서버 안에서만 처리돼요 - 이 파일에는
+// WING 관련 비밀정보가 전혀 없어요.
+const WING_SUBMIT_API_BASE = "https://34-30-248-218.sslip.io";
+
 const VAPID_PUBLIC_KEY = "BDGjrHCi-tBEuRwLkJ5HGtuB32VcQNwF69x1T0XJZy4QyUsO7D9RlWEfbVaXL-qQXI9S9JgRGJikX4DkdBFqbf4";
 
 const ACCOUNTS = ["상품매입비", "운반비", "복리후생비", "여비교통비", "접대비", "소모품비", "지급수수료", "광고선전비", "통신비", "차량유지비", "교육훈련비", "기타"];
@@ -4553,10 +4559,55 @@ function rgActionsHtml(p) {
             <button class="btn sm danger" onclick="decideRgInbound('${p.id}','REJECTED')">거절</button>`;
   }
   if (rgCanSubmit(p)) {
-    // 6단계(WING submit 연결)에서만 활성화 - 지금은 "제출 가능 상태"만 보여주고 절대 누를 수 없음
-    return `<button class="btn sm" disabled title="6단계(WING 실제 제출 연결)에서 활성화 예정">쿠팡 제출</button>`;
+    return `<button class="btn sm" onclick="submitRgInbound('${p.id}')">쿠팡 제출</button>`;
   }
   return "";
+}
+
+// WING 실제 제출 - decideRgInbound()와 동일한 원칙(더블클릭 방지 + 클릭 직전
+// fresh 재확인)에 실제 백엔드 호출 하나만 더해요. 버튼은 rgCanSubmit(승인된
+// plan)일 때만 렌더되지만, 그 사이 다른 사람이 먼저 처리했을 수 있어서 여기서
+// 한 번 더 확인해요 - 최종 권한/상태 검증은 어차피 GCP 서버(JWT+profiles.
+// can_submit_wing_inbound+DB gate)가 다시 하므로, 이건 UX용 빠른 확인이에요.
+async function submitRgInbound(planId) {
+  if (!confirm("쿠팡(WING)에 실제로 입고신청을 제출합니다.\n제출 후에는 취소할 수 없습니다. 계속할까요?")) return;
+
+  const row = event?.target?.closest("tr");
+  const rowBtns = row ? row.querySelectorAll("button") : [];
+  rowBtns.forEach(b => b.disabled = true);
+
+  const { data: fresh, error: e0 } = await sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle();
+  if (e0 || !fresh || !rgCanSubmit(fresh)) {
+    toast("이미 처리됐거나 제출 가능한 상태가 아닙니다");
+    return route();
+  }
+
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) {
+    toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요");
+    rowBtns.forEach(b => b.disabled = false);
+    return;
+  }
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/submit`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(`제출 실패: ${body.detail || resp.status}`);
+      rowBtns.forEach(b => b.disabled = false);
+      return route();
+    }
+    toast(body.ok ? "쿠팡 제출이 완료됐습니다" : `제출 결과 확인 필요: ${body.internal_status}`);
+  } catch (e) {
+    toast(`제출 요청 중 오류: ${e.message}`);
+    rowBtns.forEach(b => b.disabled = false);
+    return;
+  }
+  route();
 }
 
 async function viewRgInbound() {
