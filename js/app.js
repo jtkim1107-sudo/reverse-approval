@@ -3137,10 +3137,13 @@ const PR_STATUS_CHIP = {
 
 let prRecoCache = [];
 let prRecoFilter = { group: "", q: "" };
+let prRecoSelected = new Set();   // 선택된 vendor_item_id(발주필요만) - 발주서 초안 미리보기용
+let podDraftGroups = [];          // openPODraftModal()이 만든 공급처별 그룹(미리보기용 상태)
 
 async function viewPurchaseReco() {
   const { data, error } = await sb.from("purchase_recommendations").select("*");
   prRecoCache = data || [];
+  prRecoSelected = new Set();   // 화면을 새로 열 때마다 선택 초기화(최신 데이터 기준으로 다시 선택)
   if (error) {
     return `<div class="card"><p class="empty">발주추천 데이터를 불러오지 못했습니다.</p></div>`;
   }
@@ -3182,6 +3185,10 @@ async function viewPurchaseReco() {
           <option value="비활성제외" ${prRecoFilter.group === "비활성제외" ? "selected" : ""}>⚫ 비활성/제외 상품(${inactiveCount})</option>
         </select>
       </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+        <span style="font-size:12.5px;color:var(--text-sub)">🔴 발주 필요 상품만 체크박스로 선택할 수 있어요 - 선택 후 공급처별로 나눠서 발주서 초안을 미리보기(dry-run)할 수 있어요.</span>
+        <button class="btn sm" id="pr-draft-btn" disabled onclick="openPODraftModal()">📝 발주서 초안 만들기 (0건 선택)</button>
+      </div>
       <div id="pr-reco-table">${prRecoTableHtml(filteredPrReco())}</div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
         ※ <b>발주 예상일</b>: <span class="chip waiting" style="padding:1px 6px">n/n까지 발주</span> 여유 있음 ·
@@ -3189,7 +3196,7 @@ async function viewPurchaseReco() {
         <span class="chip rejected" style="padding:1px 6px">발주 지연</span> 이미 늦음.<br>
         ※ 옵션(색상 등)이 있는 상품은 상품명 아래 작은 글씨로 옵션명이 같이 표시돼요.<br>
         ※ ⚫ <b>비활성/제외 상품</b>은 product_master에서 더 이상 ACTIVE가 아니게 된(판매종료 등) 상품의 과거 계산 이력이에요 - 삭제되지 않고 상태 필터로 언제든 다시 볼 수 있어요.<br>
-        ※ 실제 발주 실행 기능은 없어요 - 여기는 조회 전용이고, 발주는 <b>발주서</b> 메뉴에서 직접 작성하세요.
+        ※ <b>발주서 초안 만들기</b>는 아직 미리보기(dry-run)까지만 가능해요 - 실제 발주서 생성은 검토 후 다음 단계에서 열립니다. 그 전까지 발주는 <b>발주서</b> 메뉴에서 직접 작성하세요.
       </p>
     </div>`;
 }
@@ -3226,9 +3233,12 @@ function prRecoTableHtml(list) {
     }
     return (a.product_name || "").localeCompare(b.product_name || "", "ko");
   });
+  const selectableVids = sorted.filter(r => r.status === "ORDER_REQUIRED" && r.is_active !== false).map(r => r.vendor_item_id);
+  const allSelected = selectableVids.length > 0 && selectableVids.every(v => prRecoSelected.has(v));
   return `
     <div class="table-wrap"><table>
       <thead><tr>
+        <th>${selectableVids.length ? `<input type="checkbox" id="pr-select-all" ${allSelected ? "checked" : ""} onchange="togglePrRecoSelectAll(this.checked)" title="발주필요 상품 전체 선택">` : ""}</th>
         <th>상품</th><th>공급처</th>
         <th class="num">현재재고</th><th class="num">입고예정</th><th class="num">가용재고</th>
         <th class="num">최근7일</th><th class="num">최근30일</th><th class="num">일평균판매</th>
@@ -3239,8 +3249,10 @@ function prRecoTableHtml(list) {
       </tr></thead>
       <tbody>${sorted.length ? sorted.map(r => {
         const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
+        const selectable = r.status === "ORDER_REQUIRED" && r.is_active !== false;
         return `
         <tr>
+          <td>${selectable ? `<input type="checkbox" class="pr-reco-chk" ${prRecoSelected.has(r.vendor_item_id) ? "checked" : ""} onchange="togglePrRecoSelect('${esc(r.vendor_item_id)}', this.checked)">` : ""}</td>
           <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${r.is_active === false ? `<br><span class="chip waiting" style="padding:1px 6px;margin-top:2px;display:inline-block">⚫ 비활성${r.stale_at ? "(" + new Date(r.stale_at).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" }) + "부터)" : ""}</span>` : ""}</td>
           <td>${esc(r.supplier_name || "-")}</td>
           <td class="num">${r.current_stock != null ? fmt(r.current_stock) : "-"}</td>
@@ -3258,9 +3270,167 @@ function prRecoTableHtml(list) {
           <td class="num">${r.recommended_plts != null ? fmt(r.recommended_plts) : "-"}</td>
           <td><span class="chip ${cls}">${label}</span>${r.reason ? `<br><small style="color:var(--text-sub)">${esc(r.reason)}</small>` : ""}</td>
         </tr>`;
-      }).join("") : `<tr><td colspan="16" class="empty">조건에 맞는 상품이 없습니다</td></tr>`}
+      }).join("") : `<tr><td colspan="17" class="empty">조건에 맞는 상품이 없습니다</td></tr>`}
       </tbody>
     </table></div>`;
+}
+
+/* ---------- 발주추천 -> 발주서 초안 미리보기(dry-run) ---------- */
+// 2026-09-03: 실제 발주서 row는 아직 안 만듦(p_dry_run=true 미리보기까지만).
+// 실제 생성/WING/공급처 발송은 전부 다음 단계에서 별도로 활성화 예정.
+
+function togglePrRecoSelect(vid, checked) {
+  if (checked) prRecoSelected.add(vid); else prRecoSelected.delete(vid);
+  updatePrRecoSelectionUI();
+}
+
+function togglePrRecoSelectAll(checked) {
+  filteredPrReco()
+    .filter(r => r.status === "ORDER_REQUIRED" && r.is_active !== false)
+    .forEach(r => { if (checked) prRecoSelected.add(r.vendor_item_id); else prRecoSelected.delete(r.vendor_item_id); });
+  refreshPrRecoTable();
+  updatePrRecoSelectionUI();
+}
+
+function updatePrRecoSelectionUI() {
+  const btn = document.getElementById("pr-draft-btn");
+  if (!btn) return;
+  btn.disabled = prRecoSelected.size === 0;
+  btn.textContent = `📝 발주서 초안 만들기 (${prRecoSelected.size}건 선택)`;
+}
+
+function openPODraftModal() {
+  const selected = prRecoCache.filter(r => prRecoSelected.has(r.vendor_item_id));
+  if (!selected.length) return toast("선택된 상품이 없습니다");
+  const byGroup = {};
+  selected.forEach(r => {
+    const key = r.supplier_name || "(공급처 미지정)";
+    (byGroup[key] = byGroup[key] || []).push(r);
+  });
+  podDraftGroups = Object.entries(byGroup).map(([supplier, rows]) => ({ supplier, rows }));
+  const approvers = USERS.filter(u => u.id !== me.id).sort((a, b) => (a.name || "").localeCompare(b.name || "", "ko"));
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:920px;width:96vw;max-height:88vh;overflow:auto">
+        <h3>📝 발주서 초안 미리보기</h3>
+        <p style="font-size:12.5px;color:var(--text-sub);margin-bottom:14px">
+          선택한 ${selected.length}개 상품을 공급처별로 나눴어요(${podDraftGroups.length}개 그룹) - 발주서는 공급처마다 따로 만들어져요.
+          지금은 <b>미리보기(dry-run)</b>까지만 가능합니다 - 실제 발주서 생성은 검토 후 다음 단계에서 활성화돼요.
+          수량은 추천수량이 기본값이고 직접 수정할 수 있어요.
+        </p>
+        ${podDraftGroups.map((g, gi) => poDraftGroupHtml(g, gi, approvers)).join("")}
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">닫기</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function poDraftGroupHtml(g, gi, approvers) {
+  const groupTotal = g.rows.reduce((s, r) => s + (r.purchase_cost || 0) * (r.recommended_units || 0), 0);
+  const rowsHtml = g.rows.map((r, ri) => `
+    <tr>
+      <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}</td>
+      <td class="num">${r.recommended_units != null ? fmt(r.recommended_units) : "-"}</td>
+      <td class="num"><input type="number" min="1" class="pod-qty" data-gi="${gi}" data-ri="${ri}"
+          value="${r.recommended_units != null ? r.recommended_units : 1}" style="width:80px" oninput="calcPODraftGroupTotal(${gi})"></td>
+      <td class="num">${r.purchase_cost != null ? "₩" + fmt(r.purchase_cost) : "-"}</td>
+      <td class="num pod-amt" data-gi="${gi}" data-ri="${ri}">${r.purchase_cost != null && r.recommended_units != null ? "₩" + fmt(r.purchase_cost * r.recommended_units) : "-"}</td>
+    </tr>`).join("");
+  return `
+    <div class="card" style="margin-bottom:14px;padding:14px">
+      <h4 style="margin:0 0 8px">🏭 ${esc(g.supplier)} <span style="color:var(--text-sub);font-weight:400;font-size:12.5px">(${g.rows.length}건)</span></h4>
+      <div class="table-wrap"><table>
+        <thead><tr><th>상품</th><th class="num">추천수량</th><th class="num">발주수량</th><th class="num">단가</th><th class="num">예상금액</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table></div>
+      <div class="total-line">그룹 합계 <b id="pod-total-${gi}">₩${fmt(groupTotal)}</b></div>
+      <div class="form-grid" style="margin-top:10px">
+        <div class="field"><label>입고처</label>
+          <select id="pod-deliver-${gi}">
+            <option value="쿠팡" selected>쿠팡 (로켓그로스) — 공급처에서 바로 입고</option>
+            <option value="자사창고">자사창고</option>
+          </select></div>
+        <div class="field"><label>결재자 *</label>
+          ${approvers.length ? `<select id="pod-appr-${gi}">${approvers.map(u => `<option value="${u.id}">${esc(u.name)} ${esc(u.role || "")}</option>`).join("")}</select>`
+            : `<p style="color:var(--red);font-size:12.5px;margin:0">지정 가능한 결재자가 없습니다</p>`}</div>
+        <div class="field full"><label>메모</label><input id="pod-memo-${gi}" maxlength="100" placeholder="예) 발주추천 자동 생성"></div>
+      </div>
+      <button class="btn sm" style="margin-top:10px" ${approvers.length ? "" : "disabled"} onclick="previewPODraft(${gi})">🔍 미리보기 실행 (dry-run)</button>
+      <div id="pod-result-${gi}" style="margin-top:10px"></div>
+    </div>`;
+}
+
+function calcPODraftGroupTotal(gi) {
+  const g = podDraftGroups[gi];
+  if (!g) return;
+  let total = 0;
+  document.querySelectorAll(`.pod-qty[data-gi="${gi}"]`).forEach(inp => {
+    const ri = Number(inp.dataset.ri);
+    const r = g.rows[ri];
+    const qty = numOf(inp.value) || 0;
+    const amt = qty * (r.purchase_cost || 0);
+    const amtCell = document.querySelector(`.pod-amt[data-gi="${gi}"][data-ri="${ri}"]`);
+    if (amtCell) amtCell.textContent = "₩" + fmt(amt);
+    total += amt;
+  });
+  const totalEl = document.getElementById(`pod-total-${gi}`);
+  if (totalEl) totalEl.textContent = "₩" + fmt(total);
+}
+
+async function previewPODraft(gi) {
+  const g = podDraftGroups[gi];
+  if (!g) return;
+  const apprSel = document.getElementById(`pod-appr-${gi}`);
+  if (!apprSel || !apprSel.value) return toast("결재자를 선택해 주세요");
+  const items = [];
+  for (let ri = 0; ri < g.rows.length; ri++) {
+    const inp = document.querySelector(`.pod-qty[data-gi="${gi}"][data-ri="${ri}"]`);
+    const qty = numOf(inp?.value) || 0;
+    if (qty <= 0 || !Number.isInteger(qty)) return toast(`'${g.rows[ri].product_name || g.rows[ri].vendor_item_id}'의 수량을 1 이상 정수로 입력해 주세요`);
+    items.push({
+      vendor_item_id: g.rows[ri].vendor_item_id,
+      qty,
+      client_calculated_at: g.rows[ri].calculated_at || null,
+    });
+  }
+  const resultEl = document.getElementById(`pod-result-${gi}`);
+  if (resultEl) resultEl.innerHTML = `<p style="color:var(--text-sub);font-size:13px">확인 중...</p>`;
+  const { data, error } = await sb.rpc("create_purchase_order_draft", {
+    p_supplier: g.supplier,
+    p_deliver_to: document.getElementById(`pod-deliver-${gi}`).value,
+    p_memo: document.getElementById(`pod-memo-${gi}`).value.trim(),
+    p_approver_id: apprSel.value,
+    p_items: items,
+    p_dry_run: true,
+  });
+  if (!resultEl) return;
+  if (error) {
+    resultEl.innerHTML = `<div style="background:var(--red-bg);border:1px solid var(--red);border-radius:8px;padding:10px 12px;font-size:13px;color:var(--red)">
+      ⚠️ ${esc(error.message || "미리보기에 실패했습니다")}</div>`;
+    return;
+  }
+  resultEl.innerHTML = poDraftPreviewHtml(gi, data);
+}
+
+function poDraftPreviewHtml(gi, data) {
+  const g = podDraftGroups[gi];
+  const po = data?.would_create_po || {};
+  const items = data?.would_create_items || [];
+  const nameOf = vid => { const r = g?.rows.find(x => x.vendor_item_id === vid); return r ? (r.product_name || vid) : vid; };
+  const apprName = u => { const u2 = USERS.find(x => x.id === u); return u2 ? u2.name : u; };
+  return `
+    <div style="background:var(--green-bg);border:1px solid var(--green);border-radius:8px;padding:10px 12px;font-size:13px">
+      ✅ 검증 통과 — 이대로 만들면 <b>${fmt(items.length)}개 품목</b>, 합계 <b>₩${fmt(po.total)}</b>인 발주서가 생성됩니다
+      (결재자: <b>${esc(apprName(po.approver_id))}</b> · 입고처: ${esc(po.deliver_to || "-")}) — <b>아직 실제로 생성하지 않았습니다.</b>
+      <div class="table-wrap" style="margin-top:8px"><table>
+        <thead><tr><th>상품</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th></tr></thead>
+        <tbody>${items.map(it => `
+          <tr><td><b>${esc(nameOf(it.vendor_item_id))}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}</td>
+            <td class="num">${fmt(it.qty)}</td><td class="num">₩${fmt(it.unit_cost)}</td><td class="num">₩${fmt(it.amount)}</td></tr>`).join("")}
+        </tbody>
+      </table></div>
+    </div>`;
 }
 
 /* ---------- 월별 리포트 ---------- */
