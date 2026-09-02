@@ -360,6 +360,7 @@ const routes = {
   sales: { title: "매출 입력", render: viewSales, after: () => addSaleRow() },
   po: { title: "발주서", render: viewPurchaseOrders },
   podoc: { title: "발주서", render: viewPODoc },
+  rginbound: { title: "쿠팡 입고관리", render: viewRgInbound },
   purchases: { title: "매입 입력", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
   profit: { title: "공헌이익", render: viewProfit },
@@ -4519,6 +4520,81 @@ async function saveReceive(id) {
   toast(`입고 ${recs.length}건이 매입으로 기록되었습니다 (${p.deliver_to})`);
   closeModal();
   route();
+}
+
+/* ==================== 쿠팡 로켓그로스 입고관리 (READ-only, 2026-09-02) ====================
+   쿠팡 WING 로켓그로스로의 전자 입고신청(PRE-FLIGHT → 승인 → 제출) 진행 상태를 보여줘요.
+   inbound_plans/inbound_plan_items는 위 발주서/입고 처리(openReceiveModal, 실물 입고 수량을
+   직접 세서 입력하는 기능)와는 완전히 별개의 테이블·흐름이에요 - 서로 겹치지 않습니다.
+   이번 라운드는 조회 전용이라 sb.from(...).select(...)만 쓰고, insert/update/upsert/delete는
+   이 섹션 어디에도 없습니다. */
+const RG_PREFLIGHT_CHIP = {
+  NOT_RUN: ["waiting", "미실행"], RUNNING: ["progress", "실행중"],
+  PASSED: ["approved", "통과"], FAILED: ["rejected", "실패"],
+};
+const RG_APPROVAL_CHIP = {
+  PENDING_APPROVAL: ["progress", "승인대기"], APPROVED: ["approved", "승인됨"], REJECTED: ["rejected", "거절됨"],
+};
+const RG_SUBMIT_CHIP = {
+  NOT_SUBMITTED: ["waiting", "미제출"], SUBMIT_ATTEMPTED: ["mine", "제출됨"],
+};
+const rgChip = (map, val) => {
+  const [cls, label] = map[val] || ["waiting", val || "-"];
+  return `<span class="chip ${cls}">${label}</span>`;
+};
+
+async function viewRgInbound() {
+  const [plansRes, itemsRes] = await Promise.all([
+    sb.from("inbound_plans").select("*").order("created_at", { ascending: false }),
+    sb.from("inbound_plan_items").select("*"),
+  ]);
+  const plans = plansRes.data || [];
+  const itemsByPlan = {};
+  (itemsRes.data || []).forEach(it => { (itemsByPlan[it.inbound_plan_id] ||= []).push(it); });
+
+  const rows = [];
+  plans.forEach(p => {
+    const items = itemsByPlan[p.id] || [];
+    if (!items.length) {
+      rows.push(`<tr><td colspan="12"><b>${esc(p.supplier)}</b> — 품목 정보 없음</td></tr>`);
+      return;
+    }
+    items.forEach(it => rows.push(`
+      <tr>
+        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}</td>
+        <td>${esc(p.supplier)}</td>
+        <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
+        <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
+        <td class="num">${fmt(it.pallet_count)}</td>
+        <td>${esc(p.destination_center_raw || "-")}</td>
+        <td>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}</td>
+        <td>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
+        <td>${rgChip(RG_APPROVAL_CHIP, p.approval_status)}</td>
+        <td>${rgChip(RG_SUBMIT_CHIP, p.submit_status)}</td>
+        <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
+        <td>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
+      </tr>`));
+  });
+
+  return `
+    <div class="card">
+      <div class="card-head"><h2>🚀 쿠팡 로켓그로스 입고관리</h2></div>
+      <p style="font-size:13px;color:var(--text-sub)">
+        쿠팡 WING 로켓그로스 자동 입고신청(PRE-FLIGHT) 진행 상태예요. 위 <b>발주서 → 입고 처리</b>(자사창고에
+        실제로 도착한 수량을 직접 세어 입력하는 기능)와는 별개의 흐름입니다 — 여기는 쿠팡 시스템에 전자적으로
+        입고를 신청·승인·제출하는 상태만 보여줘요(현재는 조회 전용입니다).</p>
+    </div>
+    <div class="card">
+      <h2>입고신청 내역 (${plans.length}건)</h2>
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th>상품</th><th>공급처</th><th class="num">추천수량</th><th class="num">최종 입고수량</th>
+          <th class="num">PLT</th><th>쿠팡센터</th><th>입고 예정일/시간</th>
+          <th>PRE-FLIGHT</th><th>승인</th><th>WING 제출</th><th>WING inboundPlanId</th><th>shipmentId</th>
+        </tr></thead>
+        <tbody>${rows.length ? rows.join("") : `<tr><td colspan="12" class="empty">입고신청 내역이 없습니다</td></tr>`}</tbody>
+      </table></div>
+    </div>`;
 }
 
 /* ---------- 매입 거래처 ---------- */
