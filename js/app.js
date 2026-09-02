@@ -4550,17 +4550,61 @@ const RG_PREFLIGHT_CHIP = {
 const RG_APPROVAL_CHIP = {
   PENDING_APPROVAL: ["progress", "승인대기"], APPROVED: ["approved", "승인됨"], REJECTED: ["rejected", "거절됨"],
 };
-const RG_SUBMIT_CHIP = {
-  NOT_SUBMITTED: ["waiting", "미제출"], SUBMIT_ATTEMPTED: ["mine", "제출됨"],
-};
 const rgChip = (map, val) => {
   const [cls, label] = map[val] || ["waiting", val || "-"];
   return `<span class="chip ${cls}">${label}</span>`;
 };
 
+// submit_status만으로는 "제출됨"이 성공인지 실패인지 구분이 안 돼서(2026-09-02
+// 실제 첫 submit이 WING 슬롯 거부로 실패했는데도 UI는 "제출됨"만 보여준 문제),
+// submit_status(NOT_SUBMITTED/SUBMIT_ATTEMPTED, 한 번 ATTEMPTED되면 영구 고정)와
+// internal_status(SUCCEEDED/FAILED/RECOVERY_NEEDED 등)를 함께 봐서 실제 결과를
+// 구분해요. submit_status가 SUBMIT_ATTEMPTED인데 internal_status가 아직
+// SUCCEEDED/FAILED 둘 다 아니면(SUBMITTING/PROCESSING/RECOVERY_NEEDED/UNKNOWN 등)
+// 결과가 아직 애매한 상태라 "결과확인필요"로 묶어요.
+function rgSubmitChipInfo(p) {
+  if (p.submit_status !== "SUBMIT_ATTEMPTED") return ["waiting", "미제출"];
+  if (p.internal_status === "SUCCEEDED") return ["approved", "제출완료"];
+  if (p.internal_status === "FAILED") return ["rejected", "제출실패"];
+  return ["progress", "결과확인필요"];
+}
+
+// 재시도 가능한(=새 슬롯으로 다시 시도하면 될 수 있는) 실패인지 판정. 지금은
+// 2026-09-02 실전 실패("No available truck slot")로 확인된 패턴만 알아요 -
+// 새로운 실패 유형이 나오면 여기 목록만 늘리면 돼요. 알 수 없는 실패는 보수적으로
+// retryable=false로 둬서(재고 이상, 권한 문제 등 슬롯과 무관한 실패까지 "새
+// 슬롯으로 재시도"라고 잘못 안내하지 않도록) 담당자 확인을 유도해요.
+const RG_RETRYABLE_ERROR_PATTERNS = [
+  { test: /no available truck slot/i, label: "슬롯 없음" },
+];
+function rgErrorClassify(p) {
+  const msg = p.last_error_message || "";
+  const hit = RG_RETRYABLE_ERROR_PATTERNS.find(r => r.test.test(msg));
+  return hit ? { retryable: true, label: hit.label } : { retryable: false, label: null };
+}
+
+function rgSubmitStatusHtml(p) {
+  const [cls, label] = rgSubmitChipInfo(p);
+  let html = `<span class="chip ${cls}">${label}</span>`;
+  if (p.internal_status === "FAILED" && p.last_error_message) {
+    const { retryable, label: errLabel } = rgErrorClassify(p);
+    const prefix = retryable ? `${esc(errLabel)} · ` : "";
+    html += `<br><small style="color:var(--red)">${prefix}${esc(p.last_error_message)}</small>`;
+    if (retryable) {
+      html += `<br><small style="color:var(--text-sub)">🔄 새 슬롯으로 재시도 필요</small>`;
+    }
+  }
+  return html;
+}
+
 // 승인/거절이 가능한 조건 - decideRgInbound()의 CAS .eq() 조건과 반드시 동일하게 유지
 const rgCanDecide = p => p.preflight_status === "PASSED" && p.approval_status === "PENDING_APPROVAL" && p.submit_status === "NOT_SUBMITTED";
 const rgCanSubmit = p => p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
+// SUBMIT_ATTEMPTED + FAILED + retryable 패턴 매치 - 이 plan 자체는 CAS 트리거로
+// 영구 고정돼서 재사용 불가능하니, "재시도 준비"는 어디까지나 안내일 뿐 이 plan을
+// 다시 건드리지 않아요. 실제 새 slot 조회/새 plan 생성/PRE-FLIGHT는 이번 라운드
+// 에서는 연결하지 않고, 버튼은 다음 단계 안내 토스트만 띄워요(자동 실행 금지).
+const rgCanPrepareRetry = p => p.submit_status === "SUBMIT_ATTEMPTED" && p.internal_status === "FAILED" && rgErrorClassify(p).retryable;
 
 function rgActionsHtml(p) {
   if (rgCanDecide(p)) {
@@ -4570,7 +4614,17 @@ function rgActionsHtml(p) {
   if (rgCanSubmit(p)) {
     return `<button class="btn sm" onclick="submitRgInbound('${p.id}')">쿠팡 제출</button>`;
   }
+  if (rgCanPrepareRetry(p)) {
+    return `<button class="btn sm secondary" onclick="prepareRgRetry('${p.id}')">🔄 재시도 준비</button>`;
+  }
   return "";
+}
+
+// 지금은 안내만 하는 버튼이에요 - 새 슬롯 조회/새 plan 생성/PRE-FLIGHT를 자동으로
+// 실행하지 않습니다(운영 안전 정책). 실제 새 slot 확인과 새 plan 생성은 담당자가
+// 별도 절차로 진행해요.
+function prepareRgRetry(planId) {
+  toast("새 슬롯 확인 후 재시도 plan 생성 기능은 아직 연결되지 않았어요. 담당자에게 새 슬롯 확인을 요청해주세요.");
 }
 
 // WING 실제 제출 - decideRgInbound()와 동일한 원칙(더블클릭 방지 + 클릭 직전
@@ -4656,7 +4710,7 @@ async function viewRgInbound() {
         <td>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}</td>
         <td>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
         <td>${rgChip(RG_APPROVAL_CHIP, p.approval_status)}</td>
-        <td>${rgChip(RG_SUBMIT_CHIP, p.submit_status)}</td>
+        <td>${rgSubmitStatusHtml(p)}</td>
         <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
         <td>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
         <td style="white-space:nowrap">${i === 0 ? rgActionsHtml(p) : ""}</td>
