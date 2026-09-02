@@ -4543,6 +4543,22 @@ const rgChip = (map, val) => {
   return `<span class="chip ${cls}">${label}</span>`;
 };
 
+// 승인/거절이 가능한 조건 - decideRgInbound()의 CAS .eq() 조건과 반드시 동일하게 유지
+const rgCanDecide = p => p.preflight_status === "PASSED" && p.approval_status === "PENDING_APPROVAL" && p.submit_status === "NOT_SUBMITTED";
+const rgCanSubmit = p => p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
+
+function rgActionsHtml(p) {
+  if (rgCanDecide(p)) {
+    return `<button class="btn sm green" onclick="decideRgInbound('${p.id}','APPROVED')">승인</button>
+            <button class="btn sm danger" onclick="decideRgInbound('${p.id}','REJECTED')">거절</button>`;
+  }
+  if (rgCanSubmit(p)) {
+    // 6단계(WING submit 연결)에서만 활성화 - 지금은 "제출 가능 상태"만 보여주고 절대 누를 수 없음
+    return `<button class="btn sm" disabled title="6단계(WING 실제 제출 연결)에서 활성화 예정">쿠팡 제출</button>`;
+  }
+  return "";
+}
+
 async function viewRgInbound() {
   const [plansRes, itemsRes] = await Promise.all([
     sb.from("inbound_plans").select("*").order("created_at", { ascending: false }),
@@ -4556,11 +4572,12 @@ async function viewRgInbound() {
   plans.forEach(p => {
     const items = itemsByPlan[p.id] || [];
     if (!items.length) {
-      rows.push(`<tr><td colspan="12"><b>${esc(p.supplier)}</b> — 품목 정보 없음</td></tr>`);
+      rows.push(`<tr><td colspan="13"><b>${esc(p.supplier)}</b> — 품목 정보 없음</td></tr>`);
       return;
     }
-    items.forEach(it => rows.push(`
-      <tr>
+    // 승인/거절/제출 버튼은 plan 단위 액션이라, 같은 plan의 품목이 여러 줄이어도 첫 줄에만 표시
+    items.forEach((it, i) => rows.push(`
+      <tr data-rg-plan="${esc(p.id)}">
         <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}</td>
         <td>${esc(p.supplier)}</td>
         <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
@@ -4573,6 +4590,7 @@ async function viewRgInbound() {
         <td>${rgChip(RG_SUBMIT_CHIP, p.submit_status)}</td>
         <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
         <td>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
+        <td style="white-space:nowrap">${i === 0 ? rgActionsHtml(p) : ""}</td>
       </tr>`));
   });
 
@@ -4582,7 +4600,7 @@ async function viewRgInbound() {
       <p style="font-size:13px;color:var(--text-sub)">
         쿠팡 WING 로켓그로스 자동 입고신청(PRE-FLIGHT) 진행 상태예요. 위 <b>발주서 → 입고 처리</b>(자사창고에
         실제로 도착한 수량을 직접 세어 입력하는 기능)와는 별개의 흐름입니다 — 여기는 쿠팡 시스템에 전자적으로
-        입고를 신청·승인·제출하는 상태만 보여줘요(현재는 조회 전용입니다).</p>
+        입고를 신청·승인·제출하는 상태만 보여줘요. 승인/거절만 여기서 처리하고, 실제 쿠팡 제출은 아직 연결 전입니다.</p>
     </div>
     <div class="card">
       <h2>입고신청 내역 (${plans.length}건)</h2>
@@ -4590,11 +4608,46 @@ async function viewRgInbound() {
         <thead><tr>
           <th>상품</th><th>공급처</th><th class="num">추천수량</th><th class="num">최종 입고수량</th>
           <th class="num">PLT</th><th>쿠팡센터</th><th>입고 예정일/시간</th>
-          <th>PRE-FLIGHT</th><th>승인</th><th>WING 제출</th><th>WING inboundPlanId</th><th>shipmentId</th>
+          <th>PRE-FLIGHT</th><th>승인</th><th>WING 제출</th><th>WING inboundPlanId</th><th>shipmentId</th><th></th>
         </tr></thead>
-        <tbody>${rows.length ? rows.join("") : `<tr><td colspan="12" class="empty">입고신청 내역이 없습니다</td></tr>`}</tbody>
+        <tbody>${rows.length ? rows.join("") : `<tr><td colspan="13" class="empty">입고신청 내역이 없습니다</td></tr>`}</tbody>
       </table></div>
     </div>`;
+}
+
+/* 승인/거절 - 발주서 결재(decidePO)와 동일한 CAS 패턴: 최신 상태를 다시 읽어 조건을
+   재확인하고, UPDATE 자체에도 .eq()로 같은 조건을 걸어서 두 사람이 동시에 눌러도
+   정확히 한쪽만 성공하게 만들어요. WING은 이 함수 어디에서도 호출하지 않습니다. */
+async function decideRgInbound(planId, decision) {
+  const row = event?.target?.closest("tr");
+  const rowBtns = row ? row.querySelectorAll("button") : [];
+  rowBtns.forEach(b => b.disabled = true);  // 요청 중 더블클릭 방지
+
+  const { data: fresh, error: e0 } = await sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle();
+  if (e0 || !fresh || !rgCanDecide(fresh)) {
+    toast("이미 처리됐거나 조건이 맞지 않는 입고신청입니다");
+    return route();
+  }
+
+  const { data, error } = await sb.from("inbound_plans")
+    .update({ approval_status: decision })
+    .eq("id", planId).eq("preflight_status", "PASSED")
+    .eq("approval_status", "PENDING_APPROVAL").eq("submit_status", "NOT_SUBMITTED")
+    .select("id");
+  if (error || !data?.length) {
+    toast("처리에 실패했습니다");
+    rowBtns.forEach(b => b.disabled = false);
+    return route();
+  }
+
+  await sb.from("inbound_plan_events").insert({
+    inbound_plan_id: planId,
+    event_type: decision === "REJECTED" ? "HUMAN_REJECTED" : "HUMAN_APPROVED",
+    detail: { decided_by: me.name, decided_at: nowStr() },
+  });
+
+  toast(decision === "APPROVED" ? "입고신청을 승인했습니다" : "입고신청을 거절했습니다");
+  route();
 }
 
 /* ---------- 매입 거래처 ---------- */
