@@ -3140,6 +3140,15 @@ let prRecoFilter = { group: "", q: "" };
 let prRecoSelected = new Set();   // 선택된 vendor_item_id(발주필요만) - 발주서 초안 미리보기용
 let podDraftGroups = [];          // openPODraftModal()이 만든 공급처별 그룹(미리보기용 상태)
 
+// 2026-09-03 강화: 발주서 초안 선택 가능 조건 = is_active===true AND
+// status==='ORDER_REQUIRED' AND recommended_units>0. recommended_units가
+// 0/null인 상품은(추천수량이 없는데도 화면 표시상 발주필요로 보이는 예외 케이스)
+// 체크박스 자체를 아예 못 누르게 막아요 - 서버(RPC)의 qty>0 검증과 별개로
+// 프론트에서 먼저 막는 이중 방어예요.
+function prRecoIsDraftSelectable(r) {
+  return r.is_active === true && r.status === "ORDER_REQUIRED" && Number(r.recommended_units) > 0;
+}
+
 async function viewPurchaseReco() {
   const { data, error } = await sb.from("purchase_recommendations").select("*");
   prRecoCache = data || [];
@@ -3233,7 +3242,7 @@ function prRecoTableHtml(list) {
     }
     return (a.product_name || "").localeCompare(b.product_name || "", "ko");
   });
-  const selectableVids = sorted.filter(r => r.status === "ORDER_REQUIRED" && r.is_active !== false).map(r => r.vendor_item_id);
+  const selectableVids = sorted.filter(prRecoIsDraftSelectable).map(r => r.vendor_item_id);
   const allSelected = selectableVids.length > 0 && selectableVids.every(v => prRecoSelected.has(v));
   return `
     <div class="table-wrap"><table>
@@ -3249,7 +3258,7 @@ function prRecoTableHtml(list) {
       </tr></thead>
       <tbody>${sorted.length ? sorted.map(r => {
         const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
-        const selectable = r.status === "ORDER_REQUIRED" && r.is_active !== false;
+        const selectable = prRecoIsDraftSelectable(r);
         return `
         <tr>
           <td>${selectable ? `<input type="checkbox" class="pr-reco-chk" ${prRecoSelected.has(r.vendor_item_id) ? "checked" : ""} onchange="togglePrRecoSelect('${esc(r.vendor_item_id)}', this.checked)">` : ""}</td>
@@ -3286,7 +3295,7 @@ function togglePrRecoSelect(vid, checked) {
 
 function togglePrRecoSelectAll(checked) {
   filteredPrReco()
-    .filter(r => r.status === "ORDER_REQUIRED" && r.is_active !== false)
+    .filter(prRecoIsDraftSelectable)
     .forEach(r => { if (checked) prRecoSelected.add(r.vendor_item_id); else prRecoSelected.delete(r.vendor_item_id); });
   refreshPrRecoTable();
   updatePrRecoSelectionUI();
@@ -3324,6 +3333,7 @@ function openPODraftModal() {
         </div>
       </div>
     </div>`;
+  podDraftGroups.forEach((g, gi) => calcPODraftGroupTotal(gi));   // 초기 수량 유효성도 렌더 직후 한 번 검사
 }
 
 function poDraftGroupHtml(g, gi, approvers) {
@@ -3356,7 +3366,8 @@ function poDraftGroupHtml(g, gi, approvers) {
             : `<p style="color:var(--red);font-size:12.5px;margin:0">지정 가능한 결재자가 없습니다</p>`}</div>
         <div class="field full"><label>메모</label><input id="pod-memo-${gi}" maxlength="100" placeholder="예) 발주추천 자동 생성"></div>
       </div>
-      <button class="btn sm" style="margin-top:10px" ${approvers.length ? "" : "disabled"} onclick="previewPODraft(${gi})">🔍 미리보기 실행 (dry-run)</button>
+      <p id="pod-qty-warn-${gi}" class="hidden" style="color:var(--red);font-size:12.5px;margin:6px 0 0">수량은 1 이상 정수로 입력해 주세요 - 잘못된 항목이 있으면 미리보기를 실행할 수 없어요.</p>
+      <button class="btn sm" id="pod-preview-btn-${gi}" style="margin-top:10px" ${approvers.length ? "" : "disabled"} onclick="previewPODraft(${gi})">🔍 미리보기 실행 (dry-run)</button>
       <div id="pod-result-${gi}" style="margin-top:10px"></div>
     </div>`;
 }
@@ -3365,10 +3376,17 @@ function calcPODraftGroupTotal(gi) {
   const g = podDraftGroups[gi];
   if (!g) return;
   let total = 0;
+  let allQtyValid = true;
   document.querySelectorAll(`.pod-qty[data-gi="${gi}"]`).forEach(inp => {
     const ri = Number(inp.dataset.ri);
     const r = g.rows[ri];
-    const qty = numOf(inp.value) || 0;
+    const n = Number(inp.value);
+    // 프론트 1차 방어: 0/음수/소수/NaN은 미리보기 버튼 자체를 막아요(서버 RPC의
+    // qty>0 검증은 그대로 유지 - 이중 방어).
+    const validQty = inp.value !== "" && Number.isInteger(n) && n > 0;
+    inp.style.borderColor = validQty ? "" : "var(--red)";
+    if (!validQty) allQtyValid = false;
+    const qty = validQty ? n : 0;
     const amt = qty * (r.purchase_cost || 0);
     const amtCell = document.querySelector(`.pod-amt[data-gi="${gi}"][data-ri="${ri}"]`);
     if (amtCell) amtCell.textContent = "₩" + fmt(amt);
@@ -3376,6 +3394,11 @@ function calcPODraftGroupTotal(gi) {
   });
   const totalEl = document.getElementById(`pod-total-${gi}`);
   if (totalEl) totalEl.textContent = "₩" + fmt(total);
+  const warnEl = document.getElementById(`pod-qty-warn-${gi}`);
+  if (warnEl) warnEl.classList.toggle("hidden", allQtyValid);
+  const btn = document.getElementById(`pod-preview-btn-${gi}`);
+  const hasApprover = !!document.getElementById(`pod-appr-${gi}`);
+  if (btn) btn.disabled = !allQtyValid || !hasApprover;
 }
 
 async function previewPODraft(gi) {
