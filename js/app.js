@@ -3103,7 +3103,23 @@ async function saveTransfer() {
 
    PURCHASE_RECOMMENDATION_SYNC_ENABLED가 꺼져 있어서(2026-09-02 현재) 이 테이블은
    주기적으로 자동 최신화되지 않아요 - calculated_at을 화면에 그대로 보여줘서
-   "언제 계산된 값인지" 항상 알 수 있게 해요(자동 갱신 여부는 별도 결정 필요). */
+   "언제 계산된 값인지" 항상 알 수 있게 해요(자동 갱신 여부는 별도 결정 필요).
+
+   2026-09-02 추가: option_name/sales_qty_7d/sales_qty_30d/order_by_date 4개
+   필드를 실제 DB 값으로 연결했어요(수동 sync 1회로 87개 상품에 채워짐 - 이
+   화면은 여전히 계산을 새로 하지 않고 그 값을 그대로 보여줄 뿐이에요). */
+function prOrderByDateChip(dateStr) {
+  // 발주 예상일을 기존 chip 스타일 안에서 눈에 바로 들어오게: 미래(여유)=회색,
+  // 오늘=주황(주의), 과거(이미 늦음)=빨강 - 새 CSS 없이 기존 .chip 클래스만 재사용해요.
+  if (!dateStr) return `<span style="color:var(--text-sub)">-</span>`;
+  const todayD = new Date(); todayD.setHours(0, 0, 0, 0);
+  const d = new Date(dateStr + "T00:00:00");
+  const diffDays = Math.round((d - todayD) / 86400000);
+  const label = `${d.getMonth() + 1}/${d.getDate()}`;
+  if (diffDays > 0) return `<span class="chip waiting">${label}까지 발주</span>`;
+  if (diffDays === 0) return `<span class="chip progress">오늘 발주</span>`;
+  return `<span class="chip rejected">발주 지연</span>`;
+}
 const PR_STATUS_GROUP = {
   ORDER_REQUIRED: "발주필요", STOCK_SUFFICIENT: "재고충분",
   NO_INVENTORY: "데이터부족", NO_SALES_HISTORY: "데이터부족",
@@ -3160,8 +3176,10 @@ async function viewPurchaseReco() {
       </div>
       <div id="pr-reco-table">${prRecoTableHtml(filteredPrReco())}</div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ <b>최근 7일/30일 판매량</b>과 <b>발주 예상일</b>은 아직 이 계산에 없는 값이라 "—"로 표시돼요(다음 단계 후보).<br>
-        ※ 옵션(색상 등)별 이름 대신 상품명(대표) 기준으로 묶여있어요 - 옵션 구분이 필요하면 별도 확인이 필요해요.<br>
+        ※ <b>발주 예상일</b>: <span class="chip waiting" style="padding:1px 6px">n/n까지 발주</span> 여유 있음 ·
+        <span class="chip progress" style="padding:1px 6px">오늘 발주</span> 오늘까지 ·
+        <span class="chip rejected" style="padding:1px 6px">발주 지연</span> 이미 늦음.<br>
+        ※ 옵션(색상 등)이 있는 상품은 상품명 아래 작은 글씨로 옵션명이 같이 표시돼요.<br>
         ※ 실제 발주 실행 기능은 없어요 - 여기는 조회 전용이고, 발주는 <b>발주서</b> 메뉴에서 직접 작성하세요.
       </p>
     </div>`;
@@ -3209,16 +3227,16 @@ function prRecoTableHtml(list) {
         const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
         return `
         <tr>
-          <td><b>${esc(r.product_name || r.vendor_item_id)}</b></td>
+          <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}</td>
           <td>${esc(r.supplier_name || "-")}</td>
           <td class="num">${r.current_stock != null ? fmt(r.current_stock) : "-"}</td>
           <td class="num">${r.incoming_qty != null ? fmt(r.incoming_qty) : "-"}</td>
           <td class="num">${r.available_stock != null ? fmt(r.available_stock) : "-"}</td>
-          <td class="num" style="color:var(--text-sub)">—</td>
-          <td class="num" style="color:var(--text-sub)">—</td>
+          <td class="num">${r.sales_qty_7d != null ? fmt(r.sales_qty_7d) : "-"}</td>
+          <td class="num">${r.sales_qty_30d != null ? fmt(r.sales_qty_30d) : "-"}</td>
           <td class="num">${r.avg_daily_sales != null ? Number(r.avg_daily_sales).toFixed(2) : "-"}</td>
           <td class="num">${r.stock_days != null ? fmt(r.stock_days) + "일" : "-"}</td>
-          <td style="color:var(--text-sub)">—</td>
+          <td>${prOrderByDateChip(r.order_by_date)}</td>
           <td class="num">${r.lead_time_days != null ? r.lead_time_days + "일" : "-"}</td>
           <td class="num">${r.safety_stock_days != null ? r.safety_stock_days + "일" : "-"}</td>
           <td class="num"><b>${r.recommended_units != null ? fmt(r.recommended_units) : "-"}</b></td>
