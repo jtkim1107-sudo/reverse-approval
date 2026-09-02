@@ -4616,6 +4616,8 @@ async function viewRgInbound() {
     sb.from("inbound_plan_items").select("*"),
   ]);
   const plans = plansRes.data || [];
+  const plansById = {};
+  plans.forEach(p => { plansById[p.id] = p; });
   const itemsByPlan = {};
   (itemsRes.data || []).forEach(it => { (itemsByPlan[it.inbound_plan_id] ||= []).push(it); });
 
@@ -4626,10 +4628,17 @@ async function viewRgInbound() {
       rows.push(`<tr><td colspan="13"><b>${esc(p.supplier)}</b> — 품목 정보 없음</td></tr>`);
       return;
     }
+    // retry_of_plan_id로 연결된 원본 plan이 있으면(슬롯 만료 등으로 새로 만든
+    // 재시도 plan) 감사 추적용으로 화면에도 보이게 해요 - 원본 plan은 이미
+    // plans 배열에 select("*")로 같이 조회돼 있어서 추가 쿼리 없이 바로 참조 가능.
+    const retryOrig = p.retry_of_plan_id ? plansById[p.retry_of_plan_id] : null;
+    const retryNote = p.retry_of_plan_id
+      ? `<br><small style="color:var(--text-sub)">🔄 재시도 plan${retryOrig ? ` (원본 예정: ${esc(retryOrig.inbound_date || "-")} ${esc(retryOrig.inbound_time || "")})` : ""}</small>`
+      : "";
     // 승인/거절/제출 버튼은 plan 단위 액션이라, 같은 plan의 품목이 여러 줄이어도 첫 줄에만 표시
     items.forEach((it, i) => rows.push(`
       <tr data-rg-plan="${esc(p.id)}">
-        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}</td>
+        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}${retryNote}</td>
         <td>${esc(p.supplier)}</td>
         <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
         <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
