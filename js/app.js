@@ -378,6 +378,7 @@ const routes = {
   rginbound: { title: "쿠팡 입고관리", render: viewRgInbound },
   purchases: { title: "매입 입력", render: viewPurchases, after: () => addBuyRow() },
   inventory: { title: "재고 현황", render: viewInventory },
+  purchasereco: { title: "발주 추천", render: viewPurchaseReco },
   profit: { title: "공헌이익", render: viewProfit },
   vat: { title: "부가세", render: viewVat },
   report: { title: "월별 리포트", render: viewReport },
@@ -3091,6 +3092,143 @@ async function saveTransfer() {
   toast("이동이 기록되었습니다");
   closeModal();
   route();
+}
+
+/* ==================== 발주 추천 (READ-only, 2026-09-02) ====================
+   GCP taltal-app의 purchase_recommendation_batch.get_batch_recommendations()가
+   계산해서 Supabase purchase_recommendations 테이블에 저장해둔 "마지막 계산
+   결과 스냅샷"을 그대로 읽어서 보여줘요(재고/판매속도/리드타임/재발주점/
+   추천수량/BOX·PLT 환산 전부 GCP가 이미 계산 완료한 값 - 이 화면은 그 계산을
+   프론트에서 다시 하지 않고 조회+필터/정렬만 해요).
+
+   PURCHASE_RECOMMENDATION_SYNC_ENABLED가 꺼져 있어서(2026-09-02 현재) 이 테이블은
+   주기적으로 자동 최신화되지 않아요 - calculated_at을 화면에 그대로 보여줘서
+   "언제 계산된 값인지" 항상 알 수 있게 해요(자동 갱신 여부는 별도 결정 필요). */
+const PR_STATUS_GROUP = {
+  ORDER_REQUIRED: "발주필요", STOCK_SUFFICIENT: "재고충분",
+  NO_INVENTORY: "데이터부족", NO_SALES_HISTORY: "데이터부족",
+  UNMAPPED: "데이터부족", MISSING_PROCUREMENT_DATA: "데이터부족", ERROR: "데이터부족",
+};
+const PR_STATUS_CHIP = {
+  ORDER_REQUIRED: ["rejected", "발주 필요"],
+  STOCK_SUFFICIENT: ["approved", "재고 충분"],
+  NO_INVENTORY: ["waiting", "재고데이터 없음"],
+  NO_SALES_HISTORY: ["waiting", "판매이력 부족"],
+  UNMAPPED: ["waiting", "ERP 매핑 없음"],
+  MISSING_PROCUREMENT_DATA: ["waiting", "발주정보 없음"],
+  ERROR: ["rejected", "계산 오류"],
+};
+
+let prRecoCache = [];
+let prRecoFilter = { group: "", q: "" };
+
+async function viewPurchaseReco() {
+  const { data, error } = await sb.from("purchase_recommendations").select("*");
+  prRecoCache = data || [];
+  if (error) {
+    return `<div class="card"><p class="empty">발주추천 데이터를 불러오지 못했습니다.</p></div>`;
+  }
+  const calcAt = prRecoCache[0]?.calculated_at;
+  const total = prRecoCache.length;
+  const need = prRecoCache.filter(r => r.status === "ORDER_REQUIRED").length;
+  const ok = prRecoCache.filter(r => r.status === "STOCK_SUFFICIENT").length;
+  const lack = total - need - ok;
+
+  return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">전체 상품</div><div class="stat-value">${total}종</div></div>
+      <div class="stat"><div class="stat-label">🔴 발주 필요</div><div class="stat-value" style="color:var(--red)">${need}종</div></div>
+      <div class="stat"><div class="stat-label">🟢 재고 충분</div><div class="stat-value" style="color:var(--green)">${ok}종</div></div>
+      <div class="stat"><div class="stat-label">⚪ 데이터 부족</div><div class="stat-value" style="color:var(--text-sub)">${lack}종</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>제품별 발주 추천</h2></div>
+      <p style="font-size:12.5px;color:var(--text-sub);margin-bottom:12px">
+        GCP 서버가 쿠팡 판매속도·재고·리드타임 기준으로 계산한 결과예요(이 화면은 계산을
+        새로 하지 않고 그 결과만 보여줘요). 최종 계산: <b>${calcAt ? esc(new Date(calcAt).toLocaleString("ko-KR")) : "기록 없음"}</b>
+        ${calcAt ? ` <span style="color:var(--text-sub)">— 자동 갱신은 아직 꺼져있어 실시간 값이 아닐 수 있어요</span>` : ""}
+      </p>
+      <div class="searchbar" style="margin-bottom:14px">
+        <input placeholder="상품명 검색" value="${esc(prRecoFilter.q)}"
+          oninput="prRecoFilter.q=this.value;refreshPrRecoTable()">
+        <select onchange="prRecoFilter.group=this.value;refreshPrRecoTable()">
+          <option value="">전체 상태</option>
+          <option value="발주필요" ${prRecoFilter.group === "발주필요" ? "selected" : ""}>🔴 발주 필요</option>
+          <option value="재고충분" ${prRecoFilter.group === "재고충분" ? "selected" : ""}>🟢 재고 충분</option>
+          <option value="데이터부족" ${prRecoFilter.group === "데이터부족" ? "selected" : ""}>⚪ 데이터 부족</option>
+        </select>
+      </div>
+      <div id="pr-reco-table">${prRecoTableHtml(filteredPrReco())}</div>
+      <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
+        ※ <b>최근 7일/30일 판매량</b>과 <b>발주 예상일</b>은 아직 이 계산에 없는 값이라 "—"로 표시돼요(다음 단계 후보).<br>
+        ※ 옵션(색상 등)별 이름 대신 상품명(대표) 기준으로 묶여있어요 - 옵션 구분이 필요하면 별도 확인이 필요해요.<br>
+        ※ 실제 발주 실행 기능은 없어요 - 여기는 조회 전용이고, 발주는 <b>발주서</b> 메뉴에서 직접 작성하세요.
+      </p>
+    </div>`;
+}
+
+function filteredPrReco() {
+  let list = prRecoCache;
+  if (prRecoFilter.group) list = list.filter(r => PR_STATUS_GROUP[r.status] === prRecoFilter.group);
+  if (prRecoFilter.q) {
+    const q = prRecoFilter.q.toLowerCase();
+    list = list.filter(r => (r.product_name || "").toLowerCase().includes(q));
+  }
+  return list;
+}
+
+function refreshPrRecoTable() {
+  document.getElementById("pr-reco-table").innerHTML = prRecoTableHtml(filteredPrReco());
+}
+
+function prRecoTableHtml(list) {
+  // 발주필요를 예상소진일 오름차순(급한 순)으로 먼저, 그 다음 재고충분, 그 다음 데이터부족
+  const groupOrder = { "발주필요": 0, "재고충분": 1, "데이터부족": 2 };
+  const sorted = [...list].sort((a, b) => {
+    const ga = groupOrder[PR_STATUS_GROUP[a.status]] ?? 3;
+    const gb = groupOrder[PR_STATUS_GROUP[b.status]] ?? 3;
+    if (ga !== gb) return ga - gb;
+    if (ga === 0) {
+      const da = a.stock_days ?? Infinity, db = b.stock_days ?? Infinity;
+      if (da !== db) return da - db;
+    }
+    return (a.product_name || "").localeCompare(b.product_name || "", "ko");
+  });
+  return `
+    <div class="table-wrap"><table>
+      <thead><tr>
+        <th>상품</th><th>공급처</th>
+        <th class="num">현재재고</th><th class="num">입고예정</th><th class="num">가용재고</th>
+        <th class="num">최근7일</th><th class="num">최근30일</th><th class="num">일평균판매</th>
+        <th class="num">예상소진일</th><th>발주예상일</th>
+        <th class="num">리드타임</th><th class="num">안전재고일</th>
+        <th class="num">추천수량</th><th class="num">BOX</th><th class="num">PLT</th>
+        <th>상태</th>
+      </tr></thead>
+      <tbody>${sorted.length ? sorted.map(r => {
+        const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
+        return `
+        <tr>
+          <td><b>${esc(r.product_name || r.vendor_item_id)}</b></td>
+          <td>${esc(r.supplier_name || "-")}</td>
+          <td class="num">${r.current_stock != null ? fmt(r.current_stock) : "-"}</td>
+          <td class="num">${r.incoming_qty != null ? fmt(r.incoming_qty) : "-"}</td>
+          <td class="num">${r.available_stock != null ? fmt(r.available_stock) : "-"}</td>
+          <td class="num" style="color:var(--text-sub)">—</td>
+          <td class="num" style="color:var(--text-sub)">—</td>
+          <td class="num">${r.avg_daily_sales != null ? Number(r.avg_daily_sales).toFixed(2) : "-"}</td>
+          <td class="num">${r.stock_days != null ? fmt(r.stock_days) + "일" : "-"}</td>
+          <td style="color:var(--text-sub)">—</td>
+          <td class="num">${r.lead_time_days != null ? r.lead_time_days + "일" : "-"}</td>
+          <td class="num">${r.safety_stock_days != null ? r.safety_stock_days + "일" : "-"}</td>
+          <td class="num"><b>${r.recommended_units != null ? fmt(r.recommended_units) : "-"}</b></td>
+          <td class="num">${r.recommended_boxes != null ? fmt(r.recommended_boxes) : "-"}</td>
+          <td class="num">${r.recommended_plts != null ? fmt(r.recommended_plts) : "-"}</td>
+          <td><span class="chip ${cls}">${label}</span>${r.reason ? `<br><small style="color:var(--text-sub)">${esc(r.reason)}</small>` : ""}</td>
+        </tr>`;
+      }).join("") : `<tr><td colspan="16" class="empty">조건에 맞는 상품이 없습니다</td></tr>`}
+      </tbody>
+    </table></div>`;
 }
 
 /* ---------- 월별 리포트 ---------- */
