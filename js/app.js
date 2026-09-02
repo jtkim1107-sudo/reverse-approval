@@ -351,6 +351,15 @@ async function updateBadge() {
     pb.textContent = n2;
     pb.classList.toggle("hidden", !n2);
   }
+  // 쿠팡 입고관리: 처리 대기(rgCanDecide()와 동일 조건 - PRE-FLIGHT 통과 +
+  // 승인대기 + 미제출) 건수
+  const rb = document.getElementById("badge-rginbound");
+  if (rb) {
+    const { count: rgCount } = await sb.from("inbound_plans").select("id", { count: "exact", head: true })
+      .eq("preflight_status", "PASSED").eq("approval_status", "PENDING_APPROVAL").eq("submit_status", "NOT_SUBMITTED");
+    rb.textContent = rgCount || 0;
+    rb.classList.toggle("hidden", !rgCount);
+  }
 }
 
 /* ---------- 라우터 ---------- */
