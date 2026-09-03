@@ -389,6 +389,7 @@ const routes = {
   team: { title: "우리 팀 목표", render: viewTeam },
   settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
+  shipmentplans: { title: "입고 물류 최적화", render: viewShipmentPlans },
 };
 
 // 날짜가 바뀌면 화면 기본 날짜도 따라 옮김 (PWA는 며칠씩 안 닫고 쓰기 때문)
@@ -3147,6 +3148,128 @@ let podDraftGroups = [];          // openPODraftModal()이 만든 공급처별 �
 // 프론트에서 먼저 막는 이중 방어예요.
 function prRecoIsDraftSelectable(r) {
   return r.is_active === true && r.status === "ORDER_REQUIRED" && Number(r.recommended_units) > 0;
+}
+
+// ==================== 입고 물류 최적화(shipment_plans, READ-only 연결) ====================
+// 2026-09-04: migrations/20260904_shipment_optimization_draft.sql이 실제 운영
+// DB에 적용됨(MIGRATION VERIFIED 확인 완료). 이 화면은 이제 그 3개 테이블
+// (shipment_optimization_runs/shipment_plans/shipment_plan_items)을 실제로
+// 조회해서 보여줘요 - 하드코딩 mock 데이터는 전부 제거했습니다.
+//
+// 아직 안 하는 것(승인/거절/재계산/실행 버튼은 여전히 DB WRITE 없이 toast만):
+// shipment row를 실제로 만드는 건 shipment_execution_planner.py가 poll
+// 루프에 연결된 뒤의 별도 단계라서, 지금은 순수 조회 화면입니다 - 지금
+// row가 0건인 게 정상이고(그래서 빈 상태 UI를 명시적으로 다뤄요).
+function shipmentPlansWriteNotConnected(label) {
+  toast(`${label} - 아직 실제 DB WRITE에 연결되지 않았습니다(조회 전용 단계)`);
+}
+
+const RUN_STATUS_CHIP = {
+  PENDING_REVIEW: "progress", APPROVED: "approved", REJECTED: "rejected", BLOCKED: "rejected",
+};
+const EXECUTION_STATUS_CHIP = {
+  PENDING: "waiting", EXECUTING: "progress", PLAN_CREATED: "approved",
+  REPLAN_REQUIRED: "rejected", FAILED: "rejected",
+};
+
+async function viewShipmentPlans() {
+  const [runsRes, plansRes, itemsRes, poRes, poItemsRes, centersRes, productsRes] = await Promise.all([
+    sb.from("shipment_optimization_runs").select("*").order("created_at", { ascending: false }),
+    sb.from("shipment_plans").select("*"),
+    sb.from("shipment_plan_items").select("*"),
+    sb.from("purchase_orders").select("id,po_no"),
+    sb.from("purchase_order_items").select("id,product_id"),
+    sb.from("coupang_centers").select("id,center_name"),
+    sb.from("products").select("id,name"),
+  ]);
+
+  // === 2. 조회 에러 처리 - 하나라도 실패하면 원인을 그대로 보여주고 재시도 버튼만 제공 ===
+  const firstError = [runsRes, plansRes, itemsRes, poRes, poItemsRes, centersRes, productsRes].find(r => r.error);
+  if (firstError) {
+    return `
+      <div class="card" style="border:2px solid var(--red)">
+        <h2 style="color:var(--red)">입고 물류 최적화 데이터를 불러오지 못했습니다</h2>
+        <p style="font-size:13px;color:var(--text-sub);margin:8px 0 14px">${esc(firstError.error.message)}</p>
+        <button class="btn" onclick="route()">다시 시도</button>
+      </div>`;
+  }
+
+  const runs = runsRes.data || [];
+  const plans = plansRes.data || [];
+  const items = itemsRes.data || [];
+  const poById = Object.fromEntries((poRes.data || []).map(p => [p.id, p]));
+  const poItemById = Object.fromEntries((poItemsRes.data || []).map(p => [p.id, p]));
+  const centerById = Object.fromEntries((centersRes.data || []).map(c => [c.id, c]));
+  const productById = Object.fromEntries((productsRes.data || []).map(p => [p.id, p]));
+
+  // === 1. 빈 상태 화면 - 지금 실제로 이 상태(row 0건)라 반드시 필요 ===
+  if (runs.length === 0) {
+    return `
+      <div class="card">
+        <h2>아직 계산된 입고 물류 최적화 결과가 없습니다</h2>
+        <p style="font-size:13px;color:var(--text-sub);margin-top:8px;line-height:1.6">
+          shipment_optimization_runs 테이블은 준비돼 있지만(migration 적용 완료),
+          아직 PO 승인 → 물류 최적화 자동 실행이 연결되지 않아서 실제 계산 결과가
+          없습니다. 이 화면은 그 계산 결과가 생기면 자동으로 표시됩니다.
+        </p>
+      </div>`;
+  }
+
+  // === 4. run -> plan -> item 계층 표시 ===
+  return runs.map(run => {
+    const runPlans = plans.filter(p => p.optimization_run_id === run.id);
+    const po = poById[run.purchase_order_id];
+    const runChip = RUN_STATUS_CHIP[run.run_status] || "waiting";
+    return `
+      <div class="card">
+        <div class="card-head">
+          <h2>PO 입고 추천안 - ${esc(po ? po.po_no : run.purchase_order_id)}</h2>
+          <span class="chip ${runChip}">${esc(run.run_status)}</span>
+        </div>
+        <p style="font-size:13px;color:var(--text-sub);margin-bottom:10px">
+          공급처: ${esc(run.supplier_name)} · min_edd: ${esc(run.min_edd)}
+          ${run.blocking_reason ? `<br><span style="color:var(--red)">차단 사유: ${esc(run.blocking_reason)}</span>` : ""}
+        </p>
+        <div class="grid-stats" style="margin-bottom:14px">
+          <div class="stat"><div class="stat-label">총 PLT</div><div class="stat-value">${run.total_pallet_count}</div></div>
+          <div class="stat"><div class="stat-label">차량 대수</div><div class="stat-value">${run.vehicle_count}대</div></div>
+          <div class="stat"><div class="stat-label">총 예상운임</div><div class="stat-value">${fmt(run.total_transport_cost)}원</div></div>
+        </div>
+        ${runPlans.map((p, i) => {
+          const planItems = items.filter(it => it.shipment_plan_id === p.id);
+          const center = centerById[p.destination_center_id];
+          const execChip = EXECUTION_STATUS_CHIP[p.execution_status] || "waiting";
+          return `
+            <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px">
+              <div style="display:flex;justify-content:space-between;font-weight:600">
+                <span>차량 ${i + 1} — ${p.total_pallet_count}PLT / ${esc(center ? center.center_name : p.destination_center_id)} / ${fmt(p.total_transport_cost)}원</span>
+                <span class="chip ${execChip}">${esc(p.execution_status)}</span>
+              </div>
+              <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
+                입고 예정: ${esc(p.slot_date)} ${esc(p.slot_time)} · 차종: ${esc(p.vehicle_type)}
+                ${p.selection_reason ? `<br>${esc(p.selection_reason)}` : ""}
+              </div>
+              <ul style="margin:8px 0 0 18px;font-size:13px">
+                ${planItems.map(it => {
+                  const poItem = poItemById[it.purchase_order_item_id];
+                  const product = poItem ? productById[poItem.product_id] : null;
+                  const name = product ? product.name : `PO item ${it.purchase_order_item_id}`;
+                  return `<li>${esc(name)} ${fmt(it.qty)}개(${it.pallet_count}PLT)</li>`;
+                }).join("") || `<li style="color:var(--text-sub)">SKU 정보 없음</li>`}
+              </ul>
+            </div>`;
+        }).join("")}
+        <details style="margin-top:8px">
+          <summary style="cursor:pointer;font-size:13px;color:var(--brand)">계산 근거 보기(evaluation_snapshot)</summary>
+          <pre style="font-size:11.5px;background:#f7f7f7;padding:10px;border-radius:6px;overflow-x:auto;margin-top:8px">${esc(JSON.stringify(run.evaluation_snapshot, null, 2))}</pre>
+        </details>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn" onclick="shipmentPlansWriteNotConnected('전체 승인')">전체 승인</button>
+          <button class="btn secondary" onclick="shipmentPlansWriteNotConnected('거절')">거절</button>
+          <button class="btn secondary" onclick="shipmentPlansWriteNotConnected('재계산')">재계산</button>
+        </div>
+      </div>`;
+  }).join("");
 }
 
 async function viewPurchaseReco() {
