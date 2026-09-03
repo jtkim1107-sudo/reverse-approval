@@ -390,6 +390,7 @@ const routes = {
   settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
   shipmentplans: { title: "입고 물류 최적화", render: viewShipmentPlans },
+  stockflow: { title: "재고 · 발주 · 입고", render: viewStockFlow },
 };
 
 // 날짜가 바뀌면 화면 기본 날짜도 따라 옮김 (PWA는 며칠씩 안 닫고 쓰기 때문)
@@ -2963,9 +2964,132 @@ function exportErpCSV(table) {
   downloadFile(csv, `리버스_${isSale ? "매출" : "매입"}_${erpMonth}.csv`, "text/csv");
 }
 
-/* ---------- 재고 현황 ---------- */
-async function viewInventory() {
-  const { buys, sales } = await loadErpBase();
+/* ---------- 재고 · 발주 · 입고 통합 화면(#/stockflow) ---------- */
+// 2026-09-04: 기존 4개 화면(재고현황/발주추천/입고계획/쿠팡입고)을 상위
+// 메뉴 하나로 묶었어요. 각 탭은 #/stockflow/<tab>으로 기존 라우터가 그대로
+// 처리(hash를 '/'로 split해서 param을 넘겨주는 기존 route() 로직 재사용 -
+// 새 라우팅 코드를 만들지 않음). 옛 라우트(#/inventory, #/purchasereco,
+// #/shipmentplans, #/rginbound)는 전혀 손대지 않아서 그대로 계속 동작해요.
+//
+// stockFlowCache: purchase_recommendations는 1번(재고현황)과 2번(발주추천)
+// 탭이 같은 데이터를 쓰므로, 탭을 오갈 때마다 다시 조회하지 않도록 세션 내
+// 한 번만 조회해서 재사용해요("새로고침" 버튼을 누르면 캐시를 비우고 다시
+// 조회). 3번(입고계획)/4번(쿠팡입고) 탭은 서로 다른 테이블을 조회하므로
+// 공유 캐시 대상이 아니지만, 마찬가지로 한 번 조회한 뒤 탭을 오가도 재조회하지
+// 않도록 탭별로 결과를 캐시해요.
+let stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null };
+
+async function getStockFlowPurchaseReco() {
+  if (!stockFlowCache.purchaseReco) {
+    stockFlowCache.purchaseReco = await sb.from("purchase_recommendations").select("*");
+  }
+  return stockFlowCache.purchaseReco;
+}
+async function getStockFlowErpBase() {
+  if (!stockFlowCache.erpBase) {
+    stockFlowCache.erpBase = await loadErpBase();
+  }
+  return stockFlowCache.erpBase;
+}
+async function getStockFlowRgData() {
+  if (!stockFlowCache.rgData) {
+    stockFlowCache.rgData = await Promise.all([
+      sb.from("inbound_plans").select("*").order("created_at", { ascending: false }),
+      sb.from("inbound_plan_items").select("*"),
+    ]);
+  }
+  return stockFlowCache.rgData;
+}
+function stockFlowRefresh() {
+  stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null };
+  route();
+}
+
+const STOCKFLOW_TABS = [
+  ["stock", "📦 재고현황"],
+  ["reco", "📈 발주추천"],
+  ["plan", "🚚 입고계획"],
+  ["rginbound", "🚀 쿠팡입고"],
+];
+
+async function viewStockFlow(tab) {
+  tab = STOCKFLOW_TABS.some(t => t[0] === tab) ? tab : "stock";
+  let body;
+  if (tab === "stock") {
+    body = await viewInventory(await getStockFlowErpBase(), await getStockFlowPurchaseReco());
+  } else if (tab === "reco") {
+    body = await viewPurchaseReco(await getStockFlowPurchaseReco());
+  } else if (tab === "plan") {
+    body = await viewShipmentPlans();
+  } else {
+    body = await viewRgInbound(await getStockFlowRgData());
+  }
+  return `
+    <div class="card" style="padding:8px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      ${STOCKFLOW_TABS.map(([key, label]) => `
+        <button class="btn sm ${tab === key ? "" : "secondary"}" onclick="location.hash='#/stockflow/${key}'">${label}</button>
+      `).join("")}
+      <span style="flex:1"></span>
+      <button class="btn sm secondary" onclick="stockFlowRefresh()" title="탭 캐시를 비우고 새로 조회">🔄 새로고침</button>
+    </div>
+    ${body}`;
+}
+
+/* 판매속도·발주예상 표 - purchase_recommendations를 그대로 재사용(계산은
+   GCP가 이미 끝냄, 여기서는 조회+표시만). preloaded를 안 주면 직접 조회. */
+async function renderStockVelocityTable(preloaded) {
+  const { data, error } = preloaded || await sb.from("purchase_recommendations").select("*");
+  if (error) {
+    return `<div class="card"><p class="empty">판매속도·발주예상 데이터를 불러오지 못했습니다.</p></div>`;
+  }
+  const rows = (data || []).filter(r => r.is_active !== false);
+  const sorted = [...rows].sort((a, b) => {
+    const da = a.stock_days ?? Infinity, db = b.stock_days ?? Infinity;
+    if (da !== db) return da - db;
+    return (a.product_name || "").localeCompare(b.product_name || "", "ko");
+  });
+  return `
+    <div class="card">
+      <div class="card-head"><h2>판매속도 · 발주 예상</h2>
+        <span style="font-size:12px;color:var(--text-sub)">"무엇이 언제 부족해지는가" — 발주 의사결정(추천수량 등)은 <a onclick="location.hash='#/stockflow/reco'" style="color:var(--brand);cursor:pointer">발주 추천 탭</a>에서</span></div>
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th>상품</th><th class="num">최근7일</th><th class="num">최근30일</th><th class="num">일평균</th>
+          <th class="num">예상소진일</th><th>발주예상일</th><th class="num">안전재고일</th><th>재고상태</th>
+        </tr></thead>
+        <tbody>${sorted.length ? sorted.map(r => {
+          const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
+          return `
+          <tr>
+            <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}</td>
+            <td class="num">${r.sales_qty_7d != null ? fmt(r.sales_qty_7d) : "-"}</td>
+            <td class="num">${r.sales_qty_30d != null ? fmt(r.sales_qty_30d) : "-"}</td>
+            <td class="num">${r.avg_daily_sales != null ? Number(r.avg_daily_sales).toFixed(2) : "-"}</td>
+            <td class="num">${r.stock_days != null ? fmt(r.stock_days) + "일" : "-"}</td>
+            <td>${prOrderByDateChip(r.order_by_date)}</td>
+            <td class="num">${r.safety_stock_days != null ? r.safety_stock_days + "일" : "-"}</td>
+            <td><span class="chip ${cls}">${label}</span></td>
+          </tr>`;
+        }).join("") : `<tr><td colspan="8" class="empty">데이터가 없습니다</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>`;
+}
+
+/* ---------- 재고 현황 ----------
+   2026-09-04: "재고 · 발주 · 입고" 통합 화면(#/stockflow)의 1번 탭으로도
+   재사용돼요. preloadedErpBase/preloadedPurchaseReco를 주면(스택플로우
+   컨테이너가 미리 불러온 데이터) 그걸 그대로 쓰고, 안 주면(기존 #/inventory
+   단독 라우트) 예전과 완전히 동일하게 직접 조회해요 - 기존 동작 변경 없음.
+
+   판매속도·발주예상 표(purchase_recommendations 기반)는 여기로 새로 옮겨온
+   부분이에요(예전엔 발주추천 화면에 있었음) - "무엇이 언제 부족해지는가"는
+   재고현황 몫, "얼마나 발주할까"는 발주추천 몫으로 역할을 나눴어요(사용자
+   요청). 두 표를 억지로 한 행으로 합치지 않았어요(현재재고 계산 방식이
+   서로 다른 두 소스라 - 로컬 실시간 계산 vs GCP 배치 스냅샷 - 임의로 하나로
+   합치지 말라는 지시를 그대로 반영). */
+async function viewInventory(preloadedErpBase, preloadedPurchaseReco) {
+  const { buys, sales } = preloadedErpBase || await loadErpBase();
 
   // 재고 관리는 사입 낱개 상품만 (위탁은 공급처 재고, 연동 세트는 낱개 재고에 포함됨)
   const stockProducts = erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p));
@@ -3029,7 +3153,7 @@ async function viewInventory() {
         ※ <b>구성이 지정된 세트상품</b>의 판매는 낱개 상품 재고에서 자동 차감되므로, 이 표에는 낱개 상품만 나옵니다.
       </p>
     </div>
-
+    ${await renderStockVelocityTable(preloadedPurchaseReco)}
     <div class="card">
       <h2>쿠팡 재고 이동 내역 (최근 20건)</h2>
       <div class="table-wrap"><table>
@@ -3140,6 +3264,9 @@ let prRecoCache = [];
 let prRecoFilter = { group: "", q: "" };
 let prRecoSelected = new Set();   // 선택된 vendor_item_id(발주필요만) - 발주서 초안 미리보기용
 let podDraftGroups = [];          // openPODraftModal()이 만든 공급처별 그룹(미리보기용 상태)
+// vendor_item_id -> {po_no, status} - 이 추천과 관련된 가장 최근 발주서(있으면).
+// purchase_order_items.vendor_item_id를 그대로 재사용한 조회라 새 컬럼/스키마 변경 없음.
+let prRecoPoStatusByVid = {};
 
 // 2026-09-03 강화: 발주서 초안 선택 가능 조건 = is_active===true AND
 // status==='ORDER_REQUIRED' AND recommended_units>0. recommended_units가
@@ -3231,7 +3358,7 @@ async function viewShipmentPlans() {
           ${run.blocking_reason ? `<br><span style="color:var(--red)">차단 사유: ${esc(run.blocking_reason)}</span>` : ""}
         </p>
         <div class="grid-stats" style="margin-bottom:14px">
-          <div class="stat"><div class="stat-label">총 PLT</div><div class="stat-value">${run.total_pallet_count}</div></div>
+          <div class="stat"><div class="stat-label">확정 계획 PLT</div><div class="stat-value">${run.total_pallet_count}</div></div>
           <div class="stat"><div class="stat-label">차량 대수</div><div class="stat-value">${run.vehicle_count}대</div></div>
           <div class="stat"><div class="stat-label">총 예상운임</div><div class="stat-value">${fmt(run.total_transport_cost)}원</div></div>
         </div>
@@ -3242,7 +3369,7 @@ async function viewShipmentPlans() {
           return `
             <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px">
               <div style="display:flex;justify-content:space-between;font-weight:600">
-                <span>차량 ${i + 1} — ${p.total_pallet_count}PLT / ${esc(center ? center.center_name : p.destination_center_id)} / ${fmt(p.total_transport_cost)}원</span>
+                <span>차량 ${i + 1} — ${p.total_pallet_count}PLT(확정 계획 PLT) / ${esc(center ? center.center_name : p.destination_center_id)} / ${fmt(p.total_transport_cost)}원</span>
                 <span class="chip ${execChip}">${esc(p.execution_status)}</span>
               </div>
               <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
@@ -3272,12 +3399,41 @@ async function viewShipmentPlans() {
   }).join("");
 }
 
-async function viewPurchaseReco() {
-  const { data, error } = await sb.from("purchase_recommendations").select("*");
+// 2026-09-04: "재고 · 발주 · 입고" 통합 화면의 2번 탭으로도 재사용돼요.
+// preloaded를 주면(스톡플로우 컨테이너가 재고현황 탭과 공유하는 동일한
+// purchase_recommendations 조회 결과) 재조회 없이 그대로 쓰고, 안 주면
+// (기존 #/purchasereco 단독 라우트) 예전과 동일하게 직접 조회해요.
+//
+// 표 컬럼은 "발주 의사결정"에 필요한 것만 남겼어요(공급처/추천수량/BOX/
+// 예상PLT/발주근거/PO상태) - 최근7일·30일판매/일평균/예상소진일/안전재고
+// 같은 "언제 부족해지는가" 컬럼은 재고현황 탭(renderStockVelocityTable)으로
+// 옮겼어요(중복 제거, 사용자 지시 반영). "발주예상일"도 재고현황 쪽 몫으로
+// 옮겼습니다.
+async function viewPurchaseReco(preloaded) {
+  const { data, error } = preloaded || await sb.from("purchase_recommendations").select("*");
   prRecoCache = data || [];
   prRecoSelected = new Set();   // 화면을 새로 열 때마다 선택 초기화(최신 데이터 기준으로 다시 선택)
   if (error) {
     return `<div class="card"><p class="empty">발주추천 데이터를 불러오지 못했습니다.</p></div>`;
+  }
+
+  // "PO 상태" 컬럼용 best-effort 조회 - 새 컬럼/스키마 없이 기존
+  // purchase_order_items.vendor_item_id로 그대로 조인해요. 여러 PO가 같은
+  // vendor_item_id를 가질 수 있어서, 가장 최근(created_at) PO 1건만 대표로 씀.
+  {
+    const [poItemsRes, poRes] = await Promise.all([
+      sb.from("purchase_order_items").select("po_id,vendor_item_id"),
+      sb.from("purchase_orders").select("id,po_no,status,created_at").order("created_at", { ascending: false }),
+    ]);
+    const poById = Object.fromEntries((poRes.data || []).map(p => [p.id, p]));
+    const byVid = {};
+    (poItemsRes.data || []).forEach(it => {
+      const po = poById[it.po_id];
+      if (!po || !it.vendor_item_id) return;
+      const existing = byVid[it.vendor_item_id];
+      if (!existing || (po.created_at || "") > (existing.created_at || "")) byVid[it.vendor_item_id] = po;
+    });
+    prRecoPoStatusByVid = byVid;
   }
   // 2026-09-02 추가(stale-row 대응): is_active=false는 product_master에서 더 이상 ACTIVE가
   // 아니게 된 상품(판매종료 등)의 과거 계산 이력이에요 - 기본 화면/통계에서는 제외하고,
@@ -3323,11 +3479,11 @@ async function viewPurchaseReco() {
       </div>
       <div id="pr-reco-table">${prRecoTableHtml(filteredPrReco())}</div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ <b>발주 예상일</b>: <span class="chip waiting" style="padding:1px 6px">n/n까지 발주</span> 여유 있음 ·
-        <span class="chip progress" style="padding:1px 6px">오늘 발주</span> 오늘까지 ·
-        <span class="chip rejected" style="padding:1px 6px">발주 지연</span> 이미 늦음.<br>
+        ※ 최근7일·30일 판매량/일평균/예상소진일/발주예상일 같은 "재고 상태" 정보는
+        <a onclick="location.hash='#/stockflow/stock'" style="color:var(--brand);cursor:pointer">재고 현황 탭</a>에서 볼 수 있어요.<br>
         ※ 옵션(색상 등)이 있는 상품은 상품명 아래 작은 글씨로 옵션명이 같이 표시돼요.<br>
         ※ ⚫ <b>비활성/제외 상품</b>은 product_master에서 더 이상 ACTIVE가 아니게 된(판매종료 등) 상품의 과거 계산 이력이에요 - 삭제되지 않고 상태 필터로 언제든 다시 볼 수 있어요.<br>
+        ※ <b>PO 상태</b>는 이 상품의 vendor_item_id로 만들어진 가장 최근 발주서 상태예요(있으면) - 여러 건이 있어도 최신 1건만 표시돼요.<br>
         ※ <b>발주서 초안 만들기</b>는 아직 미리보기(dry-run)까지만 가능해요 - 실제 발주서 생성은 검토 후 다음 단계에서 열립니다. 그 전까지 발주는 <b>발주서</b> 메뉴에서 직접 작성하세요.
       </p>
     </div>`;
@@ -3367,42 +3523,34 @@ function prRecoTableHtml(list) {
   });
   const selectableVids = sorted.filter(prRecoIsDraftSelectable).map(r => r.vendor_item_id);
   const allSelected = selectableVids.length > 0 && selectableVids.every(v => prRecoSelected.has(v));
+  // 2026-09-04: 컬럼을 "발주 의사결정"에 필요한 것만 남겼어요(중복 정리 -
+  // 재고/판매속도 컬럼은 renderStockVelocityTable로 이동). PLT는 아직 확정이
+  // 아니라 "예상 PLT"로 라벨을 명확히 구분했어요(입고계획의 "확정 계획 PLT",
+  // 쿠팡입고의 "WING 실행 PLT"와 혼동 방지).
   return `
     <div class="table-wrap"><table>
       <thead><tr>
         <th>${selectableVids.length ? `<input type="checkbox" id="pr-select-all" ${allSelected ? "checked" : ""} onchange="togglePrRecoSelectAll(this.checked)" title="발주필요 상품 전체 선택">` : ""}</th>
         <th>상품</th><th>공급처</th>
-        <th class="num">현재재고</th><th class="num">입고예정</th><th class="num">가용재고</th>
-        <th class="num">최근7일</th><th class="num">최근30일</th><th class="num">일평균판매</th>
-        <th class="num">예상소진일</th><th>발주예상일</th>
-        <th class="num">리드타임</th><th class="num">안전재고일</th>
-        <th class="num">추천수량</th><th class="num">BOX</th><th class="num">PLT</th>
-        <th>상태</th>
+        <th class="num">추천수량</th><th class="num">BOX</th><th class="num">예상 PLT</th>
+        <th>발주 근거 · 상태</th><th>PO 상태</th>
       </tr></thead>
       <tbody>${sorted.length ? sorted.map(r => {
         const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
         const selectable = prRecoIsDraftSelectable(r);
+        const po = prRecoPoStatusByVid[r.vendor_item_id];
         return `
         <tr>
           <td>${selectable ? `<input type="checkbox" class="pr-reco-chk" ${prRecoSelected.has(r.vendor_item_id) ? "checked" : ""} onchange="togglePrRecoSelect('${esc(r.vendor_item_id)}', this.checked)">` : ""}</td>
           <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${r.is_active === false ? `<br><span class="chip waiting" style="padding:1px 6px;margin-top:2px;display:inline-block">⚫ 비활성${r.stale_at ? "(" + new Date(r.stale_at).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" }) + "부터)" : ""}</span>` : ""}</td>
           <td>${esc(r.supplier_name || "-")}</td>
-          <td class="num">${r.current_stock != null ? fmt(r.current_stock) : "-"}</td>
-          <td class="num">${r.incoming_qty != null ? fmt(r.incoming_qty) : "-"}</td>
-          <td class="num">${r.available_stock != null ? fmt(r.available_stock) : "-"}</td>
-          <td class="num">${r.sales_qty_7d != null ? fmt(r.sales_qty_7d) : "-"}</td>
-          <td class="num">${r.sales_qty_30d != null ? fmt(r.sales_qty_30d) : "-"}</td>
-          <td class="num">${r.avg_daily_sales != null ? Number(r.avg_daily_sales).toFixed(2) : "-"}</td>
-          <td class="num">${r.stock_days != null ? fmt(r.stock_days) + "일" : "-"}</td>
-          <td>${prOrderByDateChip(r.order_by_date)}</td>
-          <td class="num">${r.lead_time_days != null ? r.lead_time_days + "일" : "-"}</td>
-          <td class="num">${r.safety_stock_days != null ? r.safety_stock_days + "일" : "-"}</td>
           <td class="num"><b>${r.recommended_units != null ? fmt(r.recommended_units) : "-"}</b></td>
           <td class="num">${r.recommended_boxes != null ? fmt(r.recommended_boxes) : "-"}</td>
           <td class="num">${r.recommended_plts != null ? fmt(r.recommended_plts) : "-"}</td>
           <td><span class="chip ${cls}">${label}</span>${r.reason ? `<br><small style="color:var(--text-sub)">${esc(r.reason)}</small>` : ""}</td>
+          <td>${po ? `<a onclick="location.hash='#/podoc/${esc(po.id)}'" style="color:var(--brand);cursor:pointer">${esc(po.po_no)}</a><br><small style="color:var(--text-sub)">${esc(po.status)}</small>` : `<span style="color:var(--text-sub)">-</span>`}</td>
         </tr>`;
-      }).join("") : `<tr><td colspan="17" class="empty">조건에 맞는 상품이 없습니다</td></tr>`}
+      }).join("") : `<tr><td colspan="8" class="empty">조건에 맞는 상품이 없습니다</td></tr>`}
       </tbody>
     </table></div>`;
 }
@@ -5286,8 +5434,8 @@ async function confirmRgRetry(planId) {
   route();
 }
 
-async function viewRgInbound() {
-  const [plansRes, itemsRes] = await Promise.all([
+async function viewRgInbound(preloaded) {
+  const [plansRes, itemsRes] = preloaded || await Promise.all([
     sb.from("inbound_plans").select("*").order("created_at", { ascending: false }),
     sb.from("inbound_plan_items").select("*"),
   ]);
@@ -5360,7 +5508,7 @@ async function viewRgInbound() {
       <div class="table-wrap"><table>
         <thead><tr>
           <th>상품</th><th>공급처</th><th class="num">추천수량</th><th class="num">최종 입고수량</th>
-          <th class="num">PLT</th><th>쿠팡센터</th><th>입고 예정일/시간</th>
+          <th class="num">WING 실행 PLT</th><th>쿠팡센터</th><th>입고 예정일/시간</th>
           <th>PRE-FLIGHT</th><th>승인</th><th>WING 제출</th><th>WING inboundPlanId</th><th>shipmentId</th><th></th>
         </tr></thead>
         <tbody>${rows.length ? rows.join("") : `<tr><td colspan="13" class="empty">입고신청 내역이 없습니다</td></tr>`}</tbody>
