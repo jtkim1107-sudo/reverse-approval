@@ -3059,16 +3059,27 @@ async function renderStockVelocityTable(preloaded) {
         </tr></thead>
         <tbody>${sorted.length ? sorted.map(r => {
           const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
-          return `
-          <tr>
-            <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}</td>
-            <td class="num">${r.sales_qty_7d != null ? fmt(r.sales_qty_7d) : "-"}</td>
-            <td class="num">${r.sales_qty_30d != null ? fmt(r.sales_qty_30d) : "-"}</td>
-            <td class="num">${r.avg_daily_sales != null ? Number(r.avg_daily_sales).toFixed(2) : "-"}</td>
+          const isChild = r.shared_inventory?.role === "child";
+          // 세트상품(child)은 물리재고가 없고 base와 공유하므로(SSOT는
+          // products.set_parent_id/set_qty), current_stock=0 기준으로 계산된
+          // 예상소진일/발주예상일/안전재고일/재고상태를 그대로 보여주면 "진짜
+          // 재고 0"처럼 오인시킬 수 있어요 - 이 4칸을 공유재고 안내 1칸으로
+          // 합쳐요(최근7일/최근30일/일평균은 이 SKU 자신의 실제 판매 사실이라
+          // 그대로 유지, colspan=4로 헤더 8칸과 정확히 맞춤: 1+3+4=8).
+          const tailCells = isChild
+            ? `<td colspan="4">${sharedInventoryBadgeHtml(r.shared_inventory)}</td>`
+            : `
             <td class="num">${r.stock_days != null ? fmt(r.stock_days) + "일" : "-"}</td>
             <td>${prOrderByDateChip(r.order_by_date)}</td>
             <td class="num">${r.safety_stock_days != null ? r.safety_stock_days + "일" : "-"}</td>
-            <td><span class="chip ${cls}">${label}</span></td>
+            <td><span class="chip ${cls}">${label}</span></td>`;
+          return `
+          <tr>
+            <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${!isChild ? sharedInventoryBadgeHtml(r.shared_inventory) : ""}</td>
+            <td class="num">${r.sales_qty_7d != null ? fmt(r.sales_qty_7d) : "-"}</td>
+            <td class="num">${r.sales_qty_30d != null ? fmt(r.sales_qty_30d) : "-"}</td>
+            <td class="num">${r.avg_daily_sales != null ? Number(r.avg_daily_sales).toFixed(2) : "-"}</td>
+            ${tailCells}
           </tr>`;
         }).join("") : `<tr><td colspan="8" class="empty">데이터가 없습니다</td></tr>`}
         </tbody>
@@ -3259,6 +3270,36 @@ const PR_STATUS_CHIP = {
   MISSING_PROCUREMENT_DATA: ["waiting", "발주정보 없음"],
   ERROR: ["rejected", "계산 오류"],
 };
+
+/* 공유재고(세트상품) 표시 - 2026-09-04. purchase_recommendations.shared_inventory
+   (GCP가 이미 계산해서 저장한 jsonb)를 그대로 포맷팅만 해요 - 프론트에서 풀링을
+   다시 계산하지 않습니다(SSOT는 products.set_parent_id/set_qty, 계산은
+   purchase_recommendation_batch.py._apply_inventory_pools()가 전담).
+   재고현황/발주추천 두 화면이 이 함수 하나를 공유해서 표시 방식이 갈리지 않게 해요. */
+function sharedInventoryBadgeHtml(shared) {
+  if (!shared) return "";
+  if (shared.role === "base") {
+    const labels = (shared.velocity_breakdown || [])
+      .slice().sort((a, b) => (a.set_qty || 0) - (b.set_qty || 0))
+      .map(b => b.set_qty === 1 ? "단품(1개)" : `${b.set_qty}개세트`);
+    return `
+      <div class="chip mine" style="display:inline-block;margin-top:4px;padding:4px 8px;font-size:12px;line-height:1.6;text-align:left;white-space:normal">
+        🔗 공유재고<br>
+        실재고 ${fmt(shared.pool_stock)}EA<br>
+        ${esc(labels.join(" / "))}가 이 재고를 공유<br>
+        환산 일평균 판매량 ${Number(shared.pool_velocity).toFixed(3)}EA/일
+      </div>`;
+  }
+  if (shared.role === "child") {
+    return `
+      <div class="chip waiting" style="display:inline-block;margin-top:4px;padding:4px 8px;font-size:12px;line-height:1.6;text-align:left;white-space:normal">
+        🔗 원상품 재고 공유<br>
+        ${shared.set_qty}개세트 → 현재 base 재고 기준 최대 ${fmt(shared.available_sets)}세트 판매 가능<br>
+        독립 발주추천은 하지 않음
+      </div>`;
+  }
+  return "";
+}
 
 let prRecoCache = [];
 let prRecoFilter = { group: "", q: "" };
@@ -3542,7 +3583,7 @@ function prRecoTableHtml(list) {
         return `
         <tr>
           <td>${selectable ? `<input type="checkbox" class="pr-reco-chk" ${prRecoSelected.has(r.vendor_item_id) ? "checked" : ""} onchange="togglePrRecoSelect('${esc(r.vendor_item_id)}', this.checked)">` : ""}</td>
-          <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${r.is_active === false ? `<br><span class="chip waiting" style="padding:1px 6px;margin-top:2px;display:inline-block">⚫ 비활성${r.stale_at ? "(" + new Date(r.stale_at).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" }) + "부터)" : ""}</span>` : ""}</td>
+          <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${r.is_active === false ? `<br><span class="chip waiting" style="padding:1px 6px;margin-top:2px;display:inline-block">⚫ 비활성${r.stale_at ? "(" + new Date(r.stale_at).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" }) + "부터)" : ""}</span>` : ""}${sharedInventoryBadgeHtml(r.shared_inventory)}</td>
           <td>${esc(r.supplier_name || "-")}</td>
           <td class="num"><b>${r.recommended_units != null ? fmt(r.recommended_units) : "-"}</b></td>
           <td class="num">${r.recommended_boxes != null ? fmt(r.recommended_boxes) : "-"}</td>
