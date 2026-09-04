@@ -5291,6 +5291,18 @@ const rgCanPrepareRetry = (p, supersededIds) =>
   p.submit_status === "SUBMIT_ATTEMPTED" && p.internal_status === "FAILED" &&
   rgErrorClassify(p).retryable && !supersededIds.has(p.id);
 
+// PARCEL(BOX) 전용 - 2026-09-04 추가. TRUCK 조건(rgCanDecide/rgCanSubmit/
+// rgCanPrepareRetry)은 위에서 이미 다 걸러지므로, 여기 두 조건은 transport_
+// type==='PARCEL'인 plan에서만 의미가 있어요(TRUCK plan은 automation_state
+// 자체를 안 씀 - null이라 아래 두 조건에 절대 안 걸림).
+const rgCanEnterParcelBoxes = p => p.transport_type === "PARCEL" && p.automation_state === "STEP1_DONE";
+const rgCanSelectParcelFc = p => p.transport_type === "PARCEL" && p.automation_state === "FC_MAPPING_DONE";
+// PDF 저장 - SHIPMENT_CONFIRMED(=실제 WING 제출이 끝나 shipmentId가 확정된
+// 뒤)에만 버튼을 보여줌(2026-09-04 추가). PDF_ATTACHED/ERP_SUCCESS로 넘어가면
+// 이 조건에 더 이상 안 걸려서 버튼이 자동으로 사라짐(중복 클릭 방지는 서버
+// attach_parcel_pdf()가 이미 함 - 여기는 화면 표시 조건만).
+const rgCanAttachParcelPdf = p => p.transport_type === "PARCEL" && p.automation_state === "SHIPMENT_CONFIRMED";
+
 function rgActionsHtml(p, supersededIds) {
   if (rgCanDecide(p)) {
     return `<button class="btn sm green" onclick="decideRgInbound('${p.id}','APPROVED')">승인</button>
@@ -5301,6 +5313,15 @@ function rgActionsHtml(p, supersededIds) {
   }
   if (rgCanPrepareRetry(p, supersededIds)) {
     return `<button class="btn sm secondary" onclick="openRgRetryModal('${p.id}')">🔄 재시도 준비</button>`;
+  }
+  if (rgCanEnterParcelBoxes(p)) {
+    return `<button class="btn sm" onclick="openParcelBoxConfigModal('${p.id}')">📦 박스 송장번호 입력</button>`;
+  }
+  if (rgCanSelectParcelFc(p)) {
+    return `<button class="btn sm" onclick="openParcelFcSelectModal('${p.id}')">🏢 입고센터·입고일 선택</button>`;
+  }
+  if (rgCanAttachParcelPdf(p)) {
+    return `<button class="btn sm" onclick="attachParcelPdf('${p.id}')">📄 PDF 저장</button>`;
   }
   return "";
 }
@@ -5475,6 +5496,378 @@ async function confirmRgRetry(planId) {
   route();
 }
 
+/* ==================== PARCEL(BOX) Pause①/② - 2026-09-04 추가 ====================
+   TRUCK 흐름(위 승인/거절/제출/재시도)은 한 줄도 안 건드림 - 여기는 전부 새
+   함수예요. wing_submit_api.py의 4개 신규 엔드포인트(GET/POST parcel-box-config,
+   GET parcel-fc-candidates, POST parcel-resume)를 openRgRetryModal()과 동일한
+   패턴(세션 JWT 획득 -> fetch -> 에러/성공 처리 -> closeModal()+route())으로
+   호출해요. */
+
+// Pause① - STEP2 이전에 저장된 박스 뼈대(handlingId/수량)를 보여주고, 박스별
+// creation_invoice_number(값 A)를 입력받아요. 실제 출고 송장번호(actual_
+// invoice_number, "값 B")와는 완전히 다른 개념이라 이 모달에서 절대 안 다뤄요
+// (2차 워크플로우 - 이번 라운드 범위 밖).
+async function openParcelBoxConfigModal(planId) {
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); return; }
+
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>📦 박스별 송장번호 입력</h3>
+        <p style="font-size:13.5px;color:var(--text-sub);margin:4px 0 12px;line-height:1.7">
+          WING 입고신청 생성(STEP2)에는 박스마다 <b>송장번호(creation_invoice_number)</b>가 필요합니다.
+          아직 실제 택배 출고 전이라 실제 운송장번호가 없다면, 임시로 식별 가능한 값을 입력하세요 —
+          실제 출고 1일 전에 공급처가 알려주는 <b>진짜 운송장번호는 별도 단계</b>에서 다시 입력합니다.</p>
+        <div id="parcel-box-list" style="font-size:13.5px;color:var(--text-sub)">불러오는 중...</div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="parcel-box-confirm" onclick="confirmParcelBoxConfig('${planId}')">STEP2 진행</button>
+        </div>
+      </div>
+    </div>`;
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/parcel-box-config`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => ({}));
+    const box = document.getElementById("parcel-box-list");
+    if (!box) return;  // 조회 도중 모달을 닫았으면 아무것도 안 함
+    if (!resp.ok) {
+      box.innerHTML = `<span class="chip rejected">조회 실패</span> ${esc(body.detail || String(resp.status))}`;
+      return;
+    }
+    renderParcelBoxList(body);
+  } catch (e) {
+    const box = document.getElementById("parcel-box-list");
+    if (box) box.innerHTML = `<span class="chip rejected">조회 오류</span> ${esc(e.message)}`;
+  }
+}
+
+function renderParcelBoxList(body) {
+  const box = document.getElementById("parcel-box-list");
+  if (!box) return;
+  const boxes = body.boxes || [];
+  if (!boxes.length) {
+    box.innerHTML = `<span class="chip rejected">박스 정보 없음</span> parcel_boxes가 비어있습니다.`;
+    return;
+  }
+  box.innerHTML = `
+    <div style="margin-bottom:8px">총 <b>${boxes.length}박스</b> - 박스마다 값을 입력하세요(전부 채워야 진행됩니다)</div>
+    <div style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
+      ${boxes.map(b => `
+        <label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:8px">
+          <span style="min-width:64px;color:var(--text-sub)">박스 ${b.box_index + 1}</span>
+          <input type="text" data-box-index="${b.box_index}" class="parcel-invoice-input"
+                 value="${esc(b.creation_invoice_number || "")}" placeholder="송장번호 입력"
+                 style="flex:1;padding:6px 8px;border:1px solid var(--border);border-radius:6px">
+        </label>`).join("")}
+    </div>`;
+}
+
+async function confirmParcelBoxConfig(planId) {
+  const inputs = document.querySelectorAll(".parcel-invoice-input");
+  const invoiceNumbersByIndex = {};
+  let hasEmpty = false;
+  inputs.forEach(el => {
+    const v = el.value.trim();
+    if (!v) hasEmpty = true;
+    invoiceNumbersByIndex[el.dataset.boxIndex] = v;
+  });
+  if (!inputs.length || hasEmpty) { toast("모든 박스에 송장번호를 입력해야 합니다"); return; }
+  if (!confirm(`${inputs.length}개 박스의 송장번호로 WING STEP2를 진행합니다. 계속할까요?`)) return;
+
+  const btn = document.getElementById("parcel-box-confirm");
+  if (btn) btn.disabled = true;
+
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); if (btn) btn.disabled = false; return; }
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/parcel-box-config`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ invoice_numbers_by_index: invoiceNumbersByIndex }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(`박스 설정(STEP2) 실패: ${body.detail || resp.status}`);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    toast(body.automation_state === "FC_MAPPING_DONE"
+      ? "STEP2가 완료됐습니다 - 이제 입고센터·입고일을 선택해주세요"
+      : `처리 결과 확인이 필요합니다: ${body.automation_state}`);
+  } catch (e) {
+    toast(`STEP2 요청 중 오류: ${e.message}`);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  closeModal();
+  route();
+}
+
+// Pause② - fc-mappings 후보를 매번 다시 조회해서 보여줘요("옵션 B" 재조회형 -
+// 화면을 열 때마다 최신 후보를 가져오고, 서버(resume_and_finalize_parcel_step3)가
+// 확인 시점에 다시 한번 재검증함 - 여기서 보여준 후보와 실제 확정 시점 후보가
+// 다를 수 있다는 전제). 순위/추천을 이 화면이 임의로 매기지 않고 WING이 준
+// fcPriority만 그대로 보여줘요.
+let _parcelSelectedCandidate = null;
+
+async function openParcelFcSelectModal(planId) {
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); return; }
+
+  _parcelSelectedCandidate = null;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>🏢 입고센터·입고일 선택</h3>
+        <p style="font-size:13.5px;color:var(--text-sub);margin:4px 0 12px;line-height:1.7">
+          WING이 알려준 후보 중에서 실제 입고를 진행할 센터와 입고예정일을 선택하세요.
+          확인을 누르면 그 시점 후보를 <b>다시 한번</b> WING에서 재조회해서 선택값이 여전히
+          유효한지 확인한 뒤에만 STEP3를 진행합니다(후보가 바뀌었으면 다시 선택해야 해요).</p>
+        <div id="parcel-fc-candidates" style="font-size:13.5px;color:var(--text-sub)">후보 조회 중...</div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="parcel-fc-confirm" disabled onclick="confirmParcelResume('${planId}')">이 센터·입고일로 확정</button>
+        </div>
+      </div>
+    </div>`;
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/parcel-fc-candidates`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => ({}));
+    const box = document.getElementById("parcel-fc-candidates");
+    if (!box) return;
+    if (!resp.ok) {
+      box.innerHTML = `<span class="chip rejected">조회 실패</span> ${esc(body.detail || String(resp.status))}`;
+      return;
+    }
+    renderParcelFcCandidates(body);
+  } catch (e) {
+    const box = document.getElementById("parcel-fc-candidates");
+    if (box) box.innerHTML = `<span class="chip rejected">조회 오류</span> ${esc(e.message)}`;
+  }
+}
+
+function renderParcelFcCandidates(body) {
+  const box = document.getElementById("parcel-fc-candidates");
+  if (!box) return;
+  const byEdd = body.candidates_by_edd || {};
+  const edds = Object.keys(byEdd).sort();
+  if (!edds.length) {
+    box.innerHTML = `<span class="chip waiting">후보 없음</span> 지금은 선택 가능한 입고센터/입고일 후보가 없습니다.`;
+    return;
+  }
+  let idx = 0;
+  const flat = [];
+  const rows = edds.map(edd => {
+    const candidates = (byEdd[edd] || []).slice().sort((a, b) => (a.fc_priority ?? 999) - (b.fc_priority ?? 999));
+    return `<div style="margin:6px 0 2px;font-weight:600">${esc(edd)}</div>` + candidates.map(c => {
+      const i = idx++;
+      flat.push({ edd, fc_code: c.fc_code });
+      return `<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer">
+        <input type="radio" name="parcel-fc-candidate" value="${i}" onchange="pickParcelFcCandidate(${i})">
+        ${esc(c.fc_code)}${c.cluster ? ` · ${esc(c.cluster)}` : ""}${c.fc_priority != null ? ` (우선순위 ${esc(String(c.fc_priority))})` : ""}
+      </label>`;
+    }).join("");
+  }).join("");
+  box.innerHTML = `<div style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">${rows}</div>`;
+  box.dataset.candidates = JSON.stringify(flat);
+}
+
+function pickParcelFcCandidate(index) {
+  const box = document.getElementById("parcel-fc-candidates");
+  const flat = JSON.parse(box?.dataset.candidates || "[]");
+  _parcelSelectedCandidate = flat[index] || null;
+  const btn = document.getElementById("parcel-fc-confirm");
+  if (btn) btn.disabled = !_parcelSelectedCandidate;
+}
+
+async function confirmParcelResume(planId) {
+  if (!_parcelSelectedCandidate) return;
+  const { edd, fc_code } = _parcelSelectedCandidate;
+  if (!confirm(`${edd} · ${fc_code}로 입고를 확정합니다(STEP3). 계속할까요?`)) return;
+
+  const btn = document.getElementById("parcel-fc-confirm");
+  if (btn) btn.disabled = true;
+
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); if (btn) btn.disabled = false; return; }
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/parcel-resume`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ chosen_fc_code: fc_code, chosen_edd: edd }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(`센터·입고일 확정 실패: ${body.detail || resp.status}`);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    toast(body.preflight_status === "PASSED"
+      ? "STEP3가 완료됐습니다 - 이제 승인 대기 상태입니다"
+      : `처리 결과 확인이 필요합니다: ${body.automation_state}`);
+  } catch (e) {
+    toast(`센터·입고일 확정 요청 중 오류: ${e.message}`);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  closeModal();
+  route();
+}
+
+// PARCEL(BOX) Phase 1 - "PARCEL 입고 생성" 버튼/모달(2026-09-04 추가). 아직
+// plan row 자체가 없는 시점의 시작점이라(승인/거절/제출/재시도/Pause①②처럼
+// 기존 plan row에 붙는 액션이 아님) 카드 헤더의 독립 버튼으로 둠. 서버(POST
+// /api/inbound-plans/parcel)가 check_no_active_plan_conflict()로 중복을
+// 다시 한번 막아주므로, 여기 목록에서 "이미 진행 중" 표시는 사용자 편의용
+// 힌트일 뿐 최종 방어선이 아님 - 그래서 서버 판단과 화면 판단이 살짝 어긋나도
+// (예: 방금 다른 사람이 같은 품목으로 생성) 안전함(서버가 409로 막음).
+async function openParcelCreateModal() {
+  const [itemsRes, posRes, planItemsRes, plansRes] = await Promise.all([
+    sb.from("purchase_order_items").select("id,po_id,product_id,qty"),
+    sb.from("purchase_orders").select("id,po_no,supplier"),
+    sb.from("inbound_plan_items").select("purchase_order_item_id,inbound_plan_id"),
+    sb.from("inbound_plans").select("id,internal_status"),
+  ]);
+  const posById = {};
+  (posRes.data || []).forEach(p => { posById[p.id] = p; });
+  const plansById = {};
+  (plansRes.data || []).forEach(p => { plansById[p.id] = p; });
+  const activeItemIds = new Set(
+    (planItemsRes.data || [])
+      .filter(pi => !["FAILED", "CANCELLED"].includes(plansById[pi.inbound_plan_id]?.internal_status))
+      .map(pi => pi.purchase_order_item_id)
+  );
+  const items = (itemsRes.data || []).filter(it => posById[it.po_id]);
+
+  const options = items.map(it => {
+    const po = posById[it.po_id];
+    const busy = activeItemIds.has(it.id);
+    return `<option value="${it.id}" data-qty="${it.qty}" ${busy ? "disabled" : ""}>
+      ${esc(po.po_no)} · ${esc(prodName(it.product_id))} · 발주수량 ${fmt(it.qty)}${busy ? " (이미 입고신청 진행 중)" : ""}
+    </option>`;
+  }).join("");
+
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>📦 PARCEL(박스/택배) 입고 생성</h3>
+        <p style="font-size:13.5px;color:var(--text-sub);margin:4px 0 12px;line-height:1.7">
+          쿠팡 WING에 새 PARCEL(BOX) 입고신청 초안을 만듭니다(new/v2~STEP1) - 아직 승인/제출이
+          아니라 준비 단계예요. 이미 진행 중인 발주 품목은 목록에서 선택할 수 없습니다.</p>
+        <label style="display:block;margin-bottom:10px">
+          발주 품목
+          <select id="parcel-create-po-item" style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-top:4px">
+            <option value="">선택하세요</option>
+            ${options}
+          </select>
+        </label>
+        <label style="display:block;margin-bottom:10px">
+          입고 수량
+          <input type="number" id="parcel-create-qty" min="1" step="1"
+                 style="width:100%;padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-top:4px">
+        </label>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="parcel-create-confirm" onclick="confirmParcelCreate()">입고 생성 시작</button>
+        </div>
+      </div>
+    </div>`;
+
+  const sel = document.getElementById("parcel-create-po-item");
+  if (sel) sel.addEventListener("change", (e) => {
+    const opt = e.target.selectedOptions[0];
+    const qty = opt?.dataset.qty;
+    const qtyInput = document.getElementById("parcel-create-qty");
+    if (qty && qtyInput) qtyInput.value = qty;
+  });
+}
+
+async function confirmParcelCreate() {
+  const poItemId = document.getElementById("parcel-create-po-item")?.value;
+  const qty = numOf(document.getElementById("parcel-create-qty")?.value);
+  if (!poItemId) return toast("발주 품목을 선택해주세요");
+  if (!qty || qty <= 0 || !Number.isInteger(qty)) return toast("입고 수량은 1 이상 정수로 입력해주세요");
+  if (!confirm("새 PARCEL 입고신청을 생성합니다(WING new/v2). 계속할까요?")) return;
+
+  const btn = document.getElementById("parcel-create-confirm");
+  if (btn) btn.disabled = true;
+
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); if (btn) btn.disabled = false; return; }
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/parcel`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ purchase_order_item_id: poItemId, coupang_inbound_qty: qty }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(`PARCEL 입고 생성 실패: ${body.detail || resp.status}`);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    toast(body.ok
+      ? "PARCEL 입고신청이 생성됐습니다 - 다음 단계(박스 송장번호 입력)를 진행해주세요"
+      : `생성은 됐지만 확인이 필요합니다: ${body.error_message || "알 수 없는 오류"}`);
+  } catch (e) {
+    toast(`PARCEL 입고 생성 요청 중 오류: ${e.message}`);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  closeModal();
+  route();
+}
+
+// PDF 저장 - automation_state=SHIPMENT_CONFIRMED 이후에만 버튼이 보임
+// (rgCanAttachParcelPdf). WING PDF fetch -> Storage 업로드는 전부 서버가
+// 자동화 계정 토큰으로 하고(2026-09-04 [PARCEL STORAGE OPTION B]), 여기서는
+// 사람 JWT로 그 트리거만 함 - Storage/DB 자격증명은 프론트에 전혀 노출 안 됨.
+async function attachParcelPdf(planId) {
+  if (!confirm("이 입고신청의 WING PDF를 다운로드해서 저장합니다. 계속할까요?")) return;
+
+  const row = event?.target?.closest("tr");
+  const rowBtns = row ? row.querySelectorAll("button") : [];
+  rowBtns.forEach(b => b.disabled = true);
+
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); rowBtns.forEach(b => b.disabled = false); return; }
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/parcel-pdf`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(`PDF 저장 실패: ${body.detail || resp.status}`);
+      rowBtns.forEach(b => b.disabled = false);
+      return;
+    }
+    toast(body.automation_state === "PDF_ATTACHED" ? "PDF가 저장됐습니다" : `처리 결과 확인이 필요합니다: ${body.automation_state}`);
+  } catch (e) {
+    toast(`PDF 저장 요청 중 오류: ${e.message}`);
+    rowBtns.forEach(b => b.disabled = false);
+    return;
+  }
+  route();
+}
+
 async function viewRgInbound(preloaded) {
   const [plansRes, itemsRes] = preloaded || await Promise.all([
     sb.from("inbound_plans").select("*").order("created_at", { ascending: false }),
@@ -5538,7 +5931,10 @@ async function viewRgInbound(preloaded) {
 
   return `
     <div class="card">
-      <div class="card-head"><h2>🚀 쿠팡 로켓그로스 입고관리</h2></div>
+      <div class="card-head">
+        <h2>🚀 쿠팡 로켓그로스 입고관리</h2>
+        <button class="btn sm" onclick="openParcelCreateModal()">＋ PARCEL 입고 생성</button>
+      </div>
       <p style="font-size:13px;color:var(--text-sub)">
         쿠팡 WING 로켓그로스 자동 입고신청(PRE-FLIGHT) 진행 상태예요. 위 <b>발주서 → 입고 처리</b>(자사창고에
         실제로 도착한 수량을 직접 세어 입력하는 기능)와는 별개의 흐름입니다 — 여기는 쿠팡 시스템에 전자적으로
