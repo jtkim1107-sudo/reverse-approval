@@ -5230,6 +5230,112 @@ const rgChip = (map, val) => {
   return `<span class="chip ${cls}">${label}</span>`;
 };
 
+/* ==================== TRUCK 자동입고 준비대기 (2026-09-05 추가) ====================
+   truck_inbound_prep은 판단 SSOT가 아니라 "지금 왜 자동입고가 멈춰있는지"를
+   보여주는 운영 상태 기록이에요(po_approved_truck_poll.py가 매 사이클 fresh
+   재판단 - 여기서 사람이 값을 채워도 이 화면이 직접 prep_status를 바꾸지
+   않습니다. 다음 poll cycle이 product_wing_metadata/coupang_centers를 다시
+   읽고 스스로 PLAN_CREATED로 넘길지 판단해요). */
+const TIP_STATUS_LABEL = {
+  NEEDS_METADATA: ["rejected", "⚖️ 무게 정보 필요"],
+  NEEDS_DESTINATION_CENTER: ["rejected", "🏢 입고센터 선택 필요"],
+  PROCUREMENT_DATA_MISSING: ["waiting", "📋 상품 조달정보 오류"],
+  PREFLIGHT_FAILED: ["waiting", "⚠️ WING 사전처리 실패"],
+};
+
+async function saveTruckPrepCenter(prepId) {
+  const sel = document.getElementById(`tip-center-${prepId}`);
+  const centerId = sel?.value;
+  if (!centerId) return toast("입고센터를 선택해 주세요");
+  const { error } = await sb.from("truck_inbound_prep").update({ destination_center_id: centerId }).eq("id", prepId);
+  if (error) return toast("저장에 실패했습니다");
+  toast("입고센터가 저장되었습니다 - 다음 자동 확인 주기(최대 5분)에 자동으로 이어서 진행됩니다");
+  route();
+}
+
+async function saveTruckMetadataWeight(vendorItemId, productId, mappingId, prepId) {
+  const input = document.getElementById(`tip-weight-${prepId}`);
+  const weight = Number(input?.value);
+  if (!weight || weight <= 0 || !Number.isInteger(weight)) return toast("무게(g)를 1 이상 정수로 입력해 주세요");
+  const { error } = await sb.from("product_wing_metadata").insert({
+    product_id: productId, product_channel_mapping_id: mappingId || null,
+    vendor_item_id: vendorItemId, weight, source: "MANUAL",
+  });
+  if (error) return toast("저장에 실패했습니다: " + (error.message || ""));
+  toast("무게가 등록되었습니다 - 이후 이 상품의 모든 PO에서 자동 재사용됩니다. 다음 자동 확인 주기(최대 5분)에 자동으로 이어서 진행됩니다");
+  route();
+}
+
+async function renderTruckInboundPrepCard() {
+  const { data: prepRows } = await sb.from("truck_inbound_prep").select("*")
+    .neq("prep_status", "PLAN_CREATED").order("updated_at", { ascending: false });
+  if (!prepRows || !prepRows.length) return "";
+
+  const poiIds = prepRows.map(p => p.purchase_order_item_id);
+  const [{ data: poiRows }, { data: centerRows }] = await Promise.all([
+    sb.from("purchase_order_items").select("id,po_id,product_id").in("id", poiIds),
+    sb.from("coupang_centers").select("id,center_name").order("center_name"),
+  ]);
+  const poiById = {}; (poiRows || []).forEach(x => { poiById[x.id] = x; });
+  const productIds = [...new Set((poiRows || []).map(x => x.product_id).filter(Boolean))];
+  const poIds = [...new Set((poiRows || []).map(x => x.po_id).filter(Boolean))];
+  const [{ data: productRows }, { data: mappingRows }, { data: poRows }] = (productIds.length || poIds.length) ? await Promise.all([
+    productIds.length ? sb.from("products").select("id,name").in("id", productIds) : Promise.resolve({ data: [] }),
+    productIds.length ? sb.from("product_channel_mapping").select("product_id,id,external_id").eq("channel", "rocket_growth").in("product_id", productIds) : Promise.resolve({ data: [] }),
+    poIds.length ? sb.from("purchase_orders").select("id,po_no").in("id", poIds) : Promise.resolve({ data: [] }),
+  ]) : [{ data: [] }, { data: [] }, { data: [] }];
+  const productById = {}; (productRows || []).forEach(x => { productById[x.id] = x; });
+  const mappingByProductId = {}; (mappingRows || []).forEach(x => { mappingByProductId[x.product_id] = x; });
+  const poById = {}; (poRows || []).forEach(x => { poById[x.id] = x; });
+
+  const centerOptions = (centerRows || []).map(c => `<option value="${esc(c.id)}">${esc(c.center_name)}</option>`).join("");
+
+  const rows = prepRows.map(p => {
+    const poi = poiById[p.purchase_order_item_id] || {};
+    const product = productById[poi.product_id] || {};
+    const mapping = mappingByProductId[poi.product_id] || {};
+    const po = poById[poi.po_id] || {};
+    const [cls, label] = TIP_STATUS_LABEL[p.prep_status] || ["waiting", p.prep_status];
+
+    let actionHtml = "";
+    if (p.prep_status === "NEEDS_METADATA") {
+      actionHtml = mapping.external_id
+        ? `<div style="display:flex;gap:6px;align-items:center">
+             <code style="font-size:12px">vendorItemId: ${esc(mapping.external_id)}</code>
+             <input id="tip-weight-${esc(p.id)}" type="number" min="1" step="1" placeholder="무게(g)" style="width:90px">
+             <button class="btn sm" onclick="saveTruckMetadataWeight('${esc(mapping.external_id)}','${esc(poi.product_id)}','${esc(mapping.id)}','${esc(p.id)}')">저장</button>
+           </div>`
+        : `<small style="color:var(--text-sub)">vendorItemId(product_channel_mapping)가 없어 무게 입력 불가 - 채널 매핑을 먼저 등록하세요</small>`;
+    } else if (p.prep_status === "NEEDS_DESTINATION_CENTER") {
+      actionHtml = `<div style="display:flex;gap:6px;align-items:center">
+          <select id="tip-center-${esc(p.id)}"><option value="">센터 선택...</option>${centerOptions}</select>
+          <button class="btn sm" onclick="saveTruckPrepCenter('${esc(p.id)}')">저장</button>
+        </div>`;
+    } else {
+      actionHtml = `<small style="color:var(--text-sub)">${esc(p.last_error_message || "-")}</small>`;
+    }
+
+    return `<tr>
+        <td><b>${esc(product.name || "-")}</b><br><small style="color:var(--text-sub)">${esc(po.po_no || poi.po_id || "-")}</small></td>
+        <td><span class="chip ${cls}">${label}</span></td>
+        <td>${actionHtml}</td>
+      </tr>`;
+  }).join("");
+
+  return `
+    <div class="card">
+      <div class="card-head"><h2>⚠️ TRUCK 자동입고 준비대기 (${prepRows.length}건)</h2></div>
+      <p style="font-size:13px;color:var(--text-sub)">
+        아래 건은 자동입고 생성이 부족한 정보 때문에 멈춰 있어요. 필요한 값을 채우면 다음 자동
+        확인 주기(최대 5분)에 자동으로 이어서 진행됩니다 - 이 화면에서 직접 "생성" 처리를 하는
+        버튼은 없습니다.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>상품 / 발주서</th><th>정지 사유</th><th>처리</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>`;
+}
+
 // submit_status만으로는 "제출됨"이 성공인지 실패인지 구분이 안 돼서(2026-09-02
 // 실제 첫 submit이 WING 슬롯 거부로 실패했는데도 UI는 "제출됨"만 보여준 문제),
 // submit_status(NOT_SUBMITTED/SUBMIT_ATTEMPTED, 한 번 ATTEMPTED되면 영구 고정)와
@@ -5929,17 +6035,20 @@ async function viewRgInbound(preloaded) {
       </tr>`));
   });
 
+  const truckPrepCardHtml = await renderTruckInboundPrepCard();
+
   return `
     <div class="card">
       <div class="card-head">
         <h2>🚀 쿠팡 로켓그로스 입고관리</h2>
-        <button class="btn sm" onclick="openParcelCreateModal()">＋ PARCEL 입고 생성</button>
+        <button class="btn sm" onclick="openParcelCreateModal()">＋ 수동 택배 입고</button>
       </div>
       <p style="font-size:13px;color:var(--text-sub)">
         쿠팡 WING 로켓그로스 자동 입고신청(PRE-FLIGHT) 진행 상태예요. 위 <b>발주서 → 입고 처리</b>(자사창고에
         실제로 도착한 수량을 직접 세어 입력하는 기능)와는 별개의 흐름입니다 — 여기는 쿠팡 시스템에 전자적으로
         입고를 신청·승인·제출하는 상태만 보여줘요. 승인/거절만 여기서 처리하고, 실제 쿠팡 제출은 아직 연결 전입니다.</p>
     </div>
+    ${truckPrepCardHtml}
     <div class="card">
       <h2>입고신청 내역 (${plans.length}건)</h2>
       <div class="table-wrap"><table>
