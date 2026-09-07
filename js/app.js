@@ -23,42 +23,72 @@ const WING_SUBMIT_API_BASE = "https://34-30-248-218.sslip.io";
 // 씀 - 새 서버/새 시크릿을 만들지 않고, 이미 이 화면이 로그인 시 갖고 있는
 // Supabase 세션 JWT를 그대로 재사용(WING 제출과 동일한 인증 방식).
 const LIVE_STOCK_API_BASE = WING_SUBMIT_API_BASE;
-const LIVE_STOCK_FETCH_TIMEOUT_MS = 8000;
+// 2026-09-07 [live 조회 안정성 수정, 사용자 명시 실측 사고 - cold cache에서
+// fallback 재현됨] 기존 8000ms 단일 timeout이 taltal-server의 TTL 캐시가
+// 콜드일 때(28개 상품 bulk+per-vid fallback 조회, rg_live_inventory_helper.py
+// 문서상 최대 7~12초 예상) 실측으로 부족한 것을 실제 브라우저 세션에서
+// 재현·확인함.
+//
+// *** timeout만 늘리기 vs timeout+제한된 1회 retry 비교(사용자 명시 요청) ***
+// - timeout만 늘리면(예: 15000ms) 매번 최악의 경우 15초를 기다려야 함(성공
+//   케이스도 콜드 캐시 첫 진입마다 그만큼 느려짐 체감).
+// - retry는 "무한 retry 금지"만 지키면 오히려 유리함: taltal-server의
+//   get_cached_live_rg_inventory()는 클라이언트가 timeout으로 fetch를
+//   중단해도 서버 쪽 동기 처리(Coupang API 호출)는 이미 시작된 요청이라
+//   계속 실행돼 TTL 캐시를 채움 - 그래서 짧은 대기 후 재시도하면 이미 캐시가
+//   따뜻해져 있어 두 번째 시도가 훨씬 빨리 끝날 가능성이 높음(실측: 콜드
+//   ~8초+ vs 웜 900ms 수준).
+// *** 최종 선택: timeout을 10000ms로 소폭만 늘리고, 실패(timeout/네트워크
+// 오류)시에만 정확히 1회만 재시도 - 그 이상은 절대 재시도 안 함(사용자 명시
+// "무한 retry 금지") ***. non-ok HTTP 응답(401 등, 재시도해도 안 고쳐지는
+// 문제)은 재시도 대상에서 제외.
+const LIVE_STOCK_FETCH_TIMEOUT_MS = 10000;
+const LIVE_STOCK_FETCH_MAX_ATTEMPTS = 2; // 최초 1회 + 재시도 최대 1회 = 합계 2회, 그 이상 없음
+
+async function _fetchLiveStockMapAttempt(vendorItemIds, jwt) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LIVE_STOCK_FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetch(
+      `${LIVE_STOCK_API_BASE}/api/coupang/rg-inventory-live?vids=${encodeURIComponent(vendorItemIds.join(","))}`,
+      { headers: { Authorization: `Bearer ${jwt}` }, signal: controller.signal },
+    );
+    if (!resp.ok) return { outcome: "http_error", ok: false, map: {} };
+    const body = await resp.json().catch(() => null);
+    return { outcome: "ok", ok: true, map: (body && body.live_stock_map) || {} };
+  } catch (e) {
+    // AbortError(timeout) 또는 네트워크 오류 - 재시도 가치가 있는 케이스
+    return { outcome: "network_or_timeout", ok: false, map: {} };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // 2026-09-07 [live_stock ERP 화면 배선, 사용자 명시] 지정한 vendor_item_id들의
 // 실시간 로켓그로스 재고를 taltal-server에서 조회 - Supabase 스키마 변경/WRITE
 // 전혀 없음(이 함수는 조회만, 그것도 taltal-server가 이미 하고 있음).
 //
 // *** 실패해도 화면이 절대 안 죽음(사용자 명시) *** - 로그인 세션 없음/
-// 네트워크 오류/timeout(8초)/서버 오류/JSON 파싱 실패 전부 잡아서
-// {ok:false, map:{}}를 반환해요 - 호출부(mergeLiveStockIntoRows)가 이 경우
-// 모든 행을 기존 스냅샷 기준으로 그대로 보여주되, "실시간 조회 실패"임을
-// 화면에 명확히 표시해요(연동 자체가 안 된 것과 구분 - stockSourceBadgeHtml
-// 참고). ok:true인데 특정 vid가 map에 없는 것도 정상(그 SKU만 live 데이터가
-// 없다는 뜻 - taltal-server가 이미 그렇게 설계됨).
+// 네트워크 오류/timeout/서버 오류/JSON 파싱 실패 전부 잡아서 {ok:false,
+// map:{}}를 반환해요 - 호출부(mergeLiveStockIntoRows)가 이 경우 모든 행을
+// 기존 스냅샷 기준으로 그대로 보여주되, "실시간 조회 실패"임을 화면에
+// 명확히 표시해요(연동 자체가 안 된 것과 구분 - stockSourceBadgeHtml 참고).
+// ok:true인데 특정 vid가 map에 없는 것도 정상(그 SKU만 live 데이터가 없다는
+// 뜻 - taltal-server가 이미 그렇게 설계됨).
 async function fetchLiveStockMap(vendorItemIds) {
   if (!vendorItemIds.length) return { ok: true, map: {} };
-  try {
-    const { data: { session } } = await sb.auth.getSession();
-    const jwt = session?.access_token;
-    if (!jwt) return { ok: false, map: {} };
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), LIVE_STOCK_FETCH_TIMEOUT_MS);
-    let resp;
-    try {
-      resp = await fetch(
-        `${LIVE_STOCK_API_BASE}/api/coupang/rg-inventory-live?vids=${encodeURIComponent(vendorItemIds.join(","))}`,
-        { headers: { Authorization: `Bearer ${jwt}` }, signal: controller.signal },
-      );
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!resp.ok) return { ok: false, map: {} };
-    const body = await resp.json().catch(() => null);
-    return { ok: true, map: (body && body.live_stock_map) || {} };
-  } catch (e) {
-    return { ok: false, map: {} };
+  const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
+  const jwt = session?.access_token;
+  if (!jwt) return { ok: false, map: {} };
+
+  let lastResult = { ok: false, map: {} };
+  for (let attempt = 1; attempt <= LIVE_STOCK_FETCH_MAX_ATTEMPTS; attempt++) {
+    const result = await _fetchLiveStockMapAttempt(vendorItemIds, jwt);
+    if (result.outcome === "ok") return { ok: true, map: result.map };
+    if (result.outcome === "http_error") return { ok: false, map: {} }; // 재시도해도 안 고쳐짐 - 즉시 포기
+    lastResult = { ok: false, map: {} }; // network_or_timeout - 재시도 대상(루프가 최대 1회만 더 돎)
   }
+  return lastResult;
 }
 
 // 2026-09-07 [live_stock ERP 화면 배선, 사용자 명시 "현재재고 = live 우선,
@@ -3208,6 +3238,20 @@ function stockSourceBadgeHtml(r) {
   return `<span class="chip ${t.chip}">${t.icon} ${t.label}</span>${updatedAt ? `<br><small style="color:var(--text-sub)">${updatedAt}</small>` : ""}${snapshotNote}`;
 }
 
+// 2026-09-07 [ERP 재고현황 UI 혼동 제거, 사용자 명시 실측 사고] "제품별 재고
+// (자사창고/쿠팡)" 표(매입-판매 장부 기반, viewInventory 소관)에 로켓그로스
+// 실제 재고를 나란히 보여주는 전용 셀 - stockSourceBadgeHtml()과 달리 숫자
+// 자체(current_stock)를 크게 앞세우고 출처는 작은 글씨로만 덧붙임(이 표에서
+// "가장 중요한 숫자"라는 우선순위를 시각적으로도 반영, 사용자 명시). 로켓그로스
+// 매핑이 아예 없는 상품(마켓플레이스/미매핑)은 "-"만 표시(추측 안 함).
+function rgLiveStockCellHtml(rgRow) {
+  if (!rgRow || rgRow.current_stock == null) return `<span style="color:var(--text-sub)">-</span>`;
+  const isLive = rgRow.stock_source === "COUPANG_RG_LIVE";
+  const icon = isLive ? "🟢" : "🔵";
+  const label = isLive ? "실시간" : "스냅샷";
+  return `<b style="font-size:14px">${fmt(rgRow.current_stock)}</b><br><small style="color:var(--text-sub)">${icon} ${label}</small>`;
+}
+
 /* 판매속도·발주예상 표 - purchase_recommendations를 그대로 재사용(계산은
    GCP가 이미 끝냄, 여기서는 조회+표시만). preloaded를 안 주면 직접 조회.
    2026-09-07: 현재재고/재고출처(live·snapshot)/incoming_qty/pending_qty/
@@ -3302,6 +3346,20 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
     const st = erpStock[p.id] || { stock: 0, inHouse: 0, atCoupang: 0, lastCost: 0, bought: 0, sold: 0 };
     return { p, ...st, value: st.stock * st.lastCost };
   });
+
+  // 2026-09-07 [ERP 재고현황 UI 혼동 제거, 사용자 명시 실측 사고 - "39" 오인]
+  // 아래 표의 "쿠팡"/"총재고" 컬럼은 purchase_recommendations(로켓그로스 live/
+  // 스냅샷 재고)와 전혀 무관한 별도 계산(총매입-총판매+이동 기록, Coupang API를
+  // 전혀 안 씀)이에요 - 실측으로 실제 사용자가 이 장부값(39)을 쿠팡 실재고로
+  // 오인한 사고가 있었음. purchase_recommendations는 이미 로드돼 있으므로
+  // (재고현황 탭 진입 시 항상 preloadedPurchaseReco를 줌) product_id -> 로켓그로스
+  // live/스냅샷 현재재고를 새 조회 없이 그대로 매핑만 해서, 이 표에 "쿠팡
+  // 현재재고(live)"를 장부값과 나란히·더 우선적으로 보여줘요(사용자 명시
+  // "가장 중요한 숫자는 쿠팡 현재재고(live)").
+  const rgLiveByProductId = {};
+  (preloadedPurchaseReco?.data || []).forEach(r => {
+    if (r.channel === "rocket_growth" && r.product_id) rgLiveByProductId[r.product_id] = r;
+  });
   const totalValue = inv.reduce((s, r) => s + r.value, 0);
   const totalCoupang = inv.reduce((s, r) => s + r.atCoupang, 0);
   const totalInHouse = inv.reduce((s, r) => s + r.inHouse, 0);
@@ -3324,11 +3382,19 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
           <button class="btn sm" onclick="openTransferModal()">🚚 쿠팡 재고 이동</button>
           <button class="btn sm secondary" onclick="location.hash='#/purchases'">＋ 매입 입력</button>
         </div></div>
+      <p style="font-size:12.5px;color:var(--text-sub);margin:-4px 0 12px">
+        로켓그로스(쿠팡 풀필먼트) 상품은 <b>쿠팡 현재재고(live)</b>가 실제 쿠팡 재고예요 —
+        <b>쿠팡(이동장부)</b>·<b>총재고</b>는 매입/판매 입력을 그대로 누적 계산한 별도 장부값이라
+        실제 쿠팡 재고와 다를 수 있어요(예: 로켓그로스 직송이라 이동 기록 자체가 없는 경우).
+      </p>
       <div class="table-wrap"><table>
-        <thead><tr><th>제품</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">자사창고</th><th class="num">쿠팡</th><th class="num">총 재고</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
-        <tbody>${inv.length ? inv.map(r => `
+        <thead><tr><th>제품</th><th class="num">🚀 쿠팡 현재재고(live)</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">자사창고</th><th class="num" title="매입-판매 누적 장부값(실제 쿠팡 API 조회 아님)">쿠팡(이동장부)</th><th class="num" title="자사창고+쿠팡(이동장부) 합 - 장부값">총재고(장부)</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
+        <tbody>${inv.length ? inv.map(r => {
+          const rg = rgLiveByProductId[r.p.id];
+          return `
           <tr>
             <td><b>${esc(r.p.name)}</b><br><small style="color:var(--text-sub)">${esc(r.p.code)} · ${esc(r.p.spec)}</small></td>
+            <td class="num">${rgLiveStockCellHtml(rg)}</td>
             <td class="num">${fmt(r.bought)}</td>
             <td class="num">${fmt(r.sold)}</td>
             <td class="num" style="color:${r.inHouse < 0 ? "var(--red)" : "var(--text)"}">${fmt(r.inHouse)}</td>
@@ -3336,7 +3402,8 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
             <td class="num" style="font-weight:800;color:${r.stock < 0 ? "var(--red)" : r.stock <= 5 ? "var(--amber)" : "var(--text)"}">${fmt(r.stock)}</td>
             <td class="num">₩${fmt(r.lastCost)}</td>
             <td class="num">₩${fmt(r.value)}</td>
-          </tr>`).join("") : `<tr><td colspan="8" class="empty">제품이 없습니다</td></tr>`}
+          </tr>`;
+        }).join("") : `<tr><td colspan="9" class="empty">제품이 없습니다</td></tr>`}
         </tbody>
       </table></div>
       ${(() => {
@@ -3350,6 +3417,8 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
         </div>` : "";
       })()}
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
+        ※ <b>🚀 쿠팡 현재재고(live)</b>는 쿠팡 로켓그로스 API를 직접 조회한 실제 재고예요(가능하면 실시간, 안 되면 자동으로 BigQuery 스냅샷으로 대체) — 로켓그로스 상품의 실제 쿠팡 재고를 확인할 땐 이 컬럼을 보세요.<br>
+        ※ <b>쿠팡(이동장부)</b>·<b>총재고(장부)</b>는 매입 입력 - 판매 + 쿠팡 재고 이동 기록을 그대로 누적한 값이에요(쿠팡 API 조회 아님) — 로켓그로스처럼 공급처가 쿠팡 물류센터로 직접 보내 이동 기록 자체가 없는 경우 실제 재고와 크게 다를 수 있어요.<br>
         ※ 창고에서 쿠팡 물류센터로 보낸 수량은 <b>🚚 쿠팡 재고 이동</b>으로 기록하세요.<br>
         ※ <b>풀필먼트 채널</b>(쿠팡 로켓그로스 등) 매출은 쿠팡 재고에서, 그 외(쿠팡 판매자배송 포함) 매출은 자사창고에서 차감됩니다.<br>
         ※ 숫자가 음수면 이동/매입 기록이 누락된 것입니다. 위탁 상품은 이 화면에 표시되지 않습니다.<br>
