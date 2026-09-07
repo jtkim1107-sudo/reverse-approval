@@ -5336,6 +5336,61 @@ async function renderTruckInboundPrepCard() {
     </div>`;
 }
 
+/* 2026-09-07 [PARCEL 승인센터 연결] STEP3(FC/센터/입고예정일 확정)까지 끝나
+   사람 승인을 기다리는 PARCEL plan만 모아서 보여주는 전용 카드예요(renderTruckInbound
+   PrepCard()와 동일한 "완전히 별도 카드" 원칙 - 기존 일반 목록 테이블은 한 글자도
+   안 건드림). plans/itemsByPlan은 viewRgInbound()가 이미 조회해 둔 값을 그대로
+   재사용(중복 쿼리 없음) - coupang_centers 센터명만 추가로 1회 조회해요.
+   승인/거절 버튼은 decideParcelApproval()만 호출하고 WING을 전혀 안 불러요. */
+async function renderParcelApprovalCard(plans, itemsByPlan) {
+  const pending = plans.filter(rgCanApproveParcel);
+  if (!pending.length) return "";
+
+  const centerIds = [...new Set(pending.map(p => p.destination_center_id).filter(Boolean))];
+  const { data: centerRows } = centerIds.length
+    ? await sb.from("coupang_centers").select("id,center_name").in("id", centerIds)
+    : { data: [] };
+  const centerNameById = {};
+  (centerRows || []).forEach(c => { centerNameById[c.id] = c.center_name; });
+
+  const rows = pending.map(p => {
+    const it = (itemsByPlan[p.id] || [])[0] || {};
+    const boxes = (p.parcel_boxes && p.parcel_boxes.boxes) || [];
+    const centerName = p.destination_center_id ? centerNameById[p.destination_center_id] : null;
+    return `<tr data-rg-plan="${esc(p.id)}">
+        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}</td>
+        <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
+        <td class="num">${fmt(boxes.length)}</td>
+        <td>${esc(p.destination_center_raw || "-")}${centerName ? `<br><small style="color:var(--text-sub)">${esc(centerName)}</small>` : ""}</td>
+        <td>${esc(p.inbound_date || "-")}</td>
+        <td>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
+        <td><span class="chip progress">${esc(p.automation_state)}</span></td>
+        <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
+        <td style="white-space:nowrap">
+          <button class="btn sm green" onclick="decideParcelApproval('${esc(p.id)}','APPROVED')">승인</button>
+          <button class="btn sm danger" onclick="decideParcelApproval('${esc(p.id)}','REJECTED')">거절</button>
+        </td>
+      </tr>`;
+  }).join("");
+
+  return `
+    <div class="card">
+      <div class="card-head"><h2>📦 PARCEL 입고 승인 대기 (${pending.length}건)</h2></div>
+      <p style="font-size:13px;color:var(--text-sub)">
+        택배(PARCEL) 입고신청이 WING 사전처리(STEP1~STEP3, 센터·입고예정일 확정)까지 끝나
+        사람 승인을 기다리는 중이에요. <b>승인은 결재 상태만 바꿀 뿐 쿠팡 제출을 자동으로
+        실행하지 않습니다</b> - 실제 제출은 승인 이후 아래 일반 목록에 새로 나타나는
+        "쿠팡 제출" 버튼을 별도로 눌러야만 나가요.</p>
+      <div class="table-wrap"><table>
+        <thead><tr>
+          <th>상품</th><th class="num">수량</th><th class="num">BOX 수</th><th>최종 센터</th>
+          <th>입고 예정일</th><th>PRE-FLIGHT</th><th>진행 상태</th><th>WING inboundPlanId</th><th></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+    </div>`;
+}
+
 // submit_status만으로는 "제출됨"이 성공인지 실패인지 구분이 안 돼서(2026-09-02
 // 실제 첫 submit이 WING 슬롯 거부로 실패했는데도 UI는 "제출됨"만 보여준 문제),
 // submit_status(NOT_SUBMITTED/SUBMIT_ATTEMPTED, 한 번 ATTEMPTED되면 영구 고정)와
@@ -5409,10 +5464,35 @@ const rgCanSelectParcelFc = p => p.transport_type === "PARCEL" && p.automation_s
 // attach_parcel_pdf()가 이미 함 - 여기는 화면 표시 조건만).
 const rgCanAttachParcelPdf = p => p.transport_type === "PARCEL" && p.automation_state === "SHIPMENT_CONFIRMED";
 
+// 2026-09-07 [PARCEL 승인센터 연결] STEP3(FC/센터 확정)까지 끝나 사람 승인을
+// 기다리는 PARCEL plan - automation_state가 PENDING_HUMAN_APPROVAL일 때만
+// (TRUCK plan은 automation_state 자체를 안 써서 null이라 여기 절대 안 걸림).
+// 승인(decideParcelApproval)은 approval_status만 바꾸고 automation_state는
+// 서버(Python) 쪽에서도 절대 안 건드림 - 실제 WING 제출은 별도 rgCanSubmitParcel
+// 버튼으로 완전히 분리됨.
+const rgCanApproveParcel = p =>
+  p.transport_type === "PARCEL" && p.automation_state === "PENDING_HUMAN_APPROVAL" && p.approval_status === "PENDING_APPROVAL";
+// 승인(APPROVED) 이후에도 automation_state는 여전히 PENDING_HUMAN_APPROVAL로
+// 남아있어요(서버 submit_parcel_plan()이 CAS 성공 시점에만 SUBMITTING으로
+// 바꿈) - 그래서 제출 버튼 조건은 automation_state가 아니라 approval_status로
+// 판단해요(기존 TRUCK rgCanSubmit()과 동일한 원칙).
+const rgCanSubmitParcel = p =>
+  p.transport_type === "PARCEL" && p.automation_state === "PENDING_HUMAN_APPROVAL" &&
+  p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
+
 function rgActionsHtml(p, supersededIds) {
   if (rgCanDecide(p)) {
     return `<button class="btn sm green" onclick="decideRgInbound('${p.id}','APPROVED')">승인</button>
             <button class="btn sm danger" onclick="decideRgInbound('${p.id}','REJECTED')">거절</button>`;
+  }
+  // 2026-09-07 [PARCEL 승인센터 연결] rgCanSubmit(아래)은 transport_type을 안 보고
+  // approval_status/submit_status만 봐서 PARCEL도 매칭돼버림 - PARCEL 전용 분기를
+  // 먼저 확인해야 submitRgInbound(TRUCK 확인문구·로직)가 아니라 반드시
+  // submitParcelPlan(PARCEL 전용 확인문구·rgCanSubmitParcel 재검증)이 불려요. 승인
+  // (APPROVED) 이후에만 여기 걸림 - 승인 전(PENDING_APPROVAL)은 위
+  // renderParcelApprovalCard()의 전용 승인/거절 버튼에서만 처리해요.
+  if (rgCanSubmitParcel(p)) {
+    return `<button class="btn sm" onclick="submitParcelPlan('${p.id}')">쿠팡 제출</button>`;
   }
   if (rgCanSubmit(p) && !rgIsSuperseded(p, supersededIds)) {
     return `<button class="btn sm" onclick="submitRgInbound('${p.id}')">쿠팡 제출</button>`;
@@ -6035,7 +6115,10 @@ async function viewRgInbound(preloaded) {
       </tr>`));
   });
 
-  const truckPrepCardHtml = await renderTruckInboundPrepCard();
+  const [truckPrepCardHtml, parcelApprovalCardHtml] = await Promise.all([
+    renderTruckInboundPrepCard(),
+    renderParcelApprovalCard(plans, itemsByPlan),
+  ]);
 
   return `
     <div class="card">
@@ -6048,6 +6131,7 @@ async function viewRgInbound(preloaded) {
         실제로 도착한 수량을 직접 세어 입력하는 기능)와는 별개의 흐름입니다 — 여기는 쿠팡 시스템에 전자적으로
         입고를 신청·승인·제출하는 상태만 보여줘요. 승인/거절만 여기서 처리하고, 실제 쿠팡 제출은 아직 연결 전입니다.</p>
     </div>
+    ${parcelApprovalCardHtml}
     ${truckPrepCardHtml}
     <div class="card">
       <h2>입고신청 내역 (${plans.length}건)</h2>
@@ -6094,6 +6178,95 @@ async function decideRgInbound(planId, decision) {
   });
 
   toast(decision === "APPROVED" ? "입고신청을 승인했습니다" : "입고신청을 거절했습니다");
+  route();
+}
+
+/* 2026-09-07 [PARCEL 승인센터 연결] decideRgInbound()와 완전히 동일한 CAS 원칙
+   (최신 상태 재확인 + UPDATE 자체에도 같은 조건을 걸어 동시 클릭 방지) - 여기에
+   automation_state=PENDING_HUMAN_APPROVAL 조건만 추가돼요(TRUCK 조건은 한 글자도
+   안 건드림 - decideRgInbound()는 그대로 둠, 이 함수는 완전히 별개). 이 함수는
+   approval_status만 바꿔요 - WING은 이 함수 어디에서도 호출하지 않습니다(실제
+   제출은 submitParcelPlan()으로 완전히 분리됨). */
+async function decideParcelApproval(planId, decision) {
+  const row = event?.target?.closest("tr");
+  const rowBtns = row ? row.querySelectorAll("button") : [];
+  rowBtns.forEach(b => b.disabled = true);
+
+  const { data: fresh, error: e0 } = await sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle();
+  if (e0 || !fresh || !rgCanApproveParcel(fresh)) {
+    toast("이미 처리됐거나 조건이 맞지 않는 PARCEL 입고신청입니다");
+    return route();
+  }
+
+  const { data, error } = await sb.from("inbound_plans")
+    .update({ approval_status: decision })
+    .eq("id", planId).eq("preflight_status", "PASSED")
+    .eq("approval_status", "PENDING_APPROVAL").eq("submit_status", "NOT_SUBMITTED")
+    .eq("automation_state", "PENDING_HUMAN_APPROVAL")
+    .select("id");
+  if (error || !data?.length) {
+    toast("처리에 실패했습니다");
+    rowBtns.forEach(b => b.disabled = false);
+    return route();
+  }
+
+  await sb.from("inbound_plan_events").insert({
+    inbound_plan_id: planId,
+    event_type: decision === "REJECTED" ? "HUMAN_REJECTED" : "HUMAN_APPROVED",
+    detail: { decided_by: me.name, decided_at: nowStr(), transport_type: "PARCEL" },
+  });
+
+  toast(decision === "APPROVED" ? "PARCEL 입고신청을 승인했습니다(실제 쿠팡 제출은 별도 버튼입니다)" : "PARCEL 입고신청을 거절했습니다");
+  route();
+}
+
+/* 2026-09-07 [PARCEL 승인센터 연결] submitRgInbound()와 동일한 엔드포인트
+   (/api/inbound-plans/{plan_id}/submit)를 그대로 호출해요 - 서버가 이미
+   transport_type으로 TRUCK/PARCEL을 분기해서 PARCEL이면 erp_parcel_bridge.
+   submit_parcel_plan()으로 보내요(WING_INBOUND_SUBMIT_ENABLED AND
+   WING_PARCEL_SUBMIT_ENABLED 둘 다 true여야만 실제로 나감 - 하나라도 꺼져
+   있으면 서버가 409로 fail-closed 거부, 이 버튼 자체는 비활성화하지 않고
+   서버 gate에 맡김). 승인 버튼(decideParcelApproval)과 완전히 분리된 별도
+   액션이라 승인만 눌러서는 절대 WING 제출이 나가지 않아요. */
+async function submitParcelPlan(planId) {
+  if (!confirm("쿠팡(WING)에 실제로 PARCEL 입고신청을 제출합니다.\n제출 후에는 취소할 수 없습니다. 계속할까요?")) return;
+
+  const row = event?.target?.closest("tr");
+  const rowBtns = row ? row.querySelectorAll("button") : [];
+  rowBtns.forEach(b => b.disabled = true);
+
+  const { data: fresh, error: e0 } = await sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle();
+  if (e0 || !fresh || !rgCanSubmitParcel(fresh)) {
+    toast("이미 처리됐거나 제출 가능한 상태가 아닙니다");
+    return route();
+  }
+
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) {
+    toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요");
+    rowBtns.forEach(b => b.disabled = false);
+    return;
+  }
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/submit`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      // WING_PARCEL_SUBMIT_ENABLED=false면 서버가 여기서 409로 막아요(fail-closed).
+      toast(`제출 실패: ${body.detail || resp.status}`);
+      rowBtns.forEach(b => b.disabled = false);
+      return route();
+    }
+    toast(body.ok ? "PARCEL 쿠팡 제출이 완료됐습니다" : `제출 결과 확인 필요: ${body.internal_status}`);
+  } catch (e) {
+    toast(`제출 요청 중 오류: ${e.message}`);
+    rowBtns.forEach(b => b.disabled = false);
+    return;
+  }
   route();
 }
 
