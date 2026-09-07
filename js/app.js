@@ -17,6 +17,74 @@ const sb = window.supabase.createClient(SUPA_URL, SUPA_KEY);
 // WING 관련 비밀정보가 전혀 없어요.
 const WING_SUBMIT_API_BASE = "https://34-30-248-218.sslip.io";
 
+// 2026-09-07 [live_stock ERP 화면 배선, 사용자 명시 "기존 live inventory
+// API/발주추천 API를 READ-only로 조합"] taltal-server(위 WING_SUBMIT_API_BASE,
+// 같은 GCP 서버)의 새 read 전용 경로(/api/coupang/rg-inventory-live)를 그대로
+// 씀 - 새 서버/새 시크릿을 만들지 않고, 이미 이 화면이 로그인 시 갖고 있는
+// Supabase 세션 JWT를 그대로 재사용(WING 제출과 동일한 인증 방식).
+const LIVE_STOCK_API_BASE = WING_SUBMIT_API_BASE;
+const LIVE_STOCK_FETCH_TIMEOUT_MS = 8000;
+
+// 2026-09-07 [live_stock ERP 화면 배선, 사용자 명시] 지정한 vendor_item_id들의
+// 실시간 로켓그로스 재고를 taltal-server에서 조회 - Supabase 스키마 변경/WRITE
+// 전혀 없음(이 함수는 조회만, 그것도 taltal-server가 이미 하고 있음).
+//
+// *** 실패해도 화면이 절대 안 죽음(사용자 명시) *** - 로그인 세션 없음/
+// 네트워크 오류/timeout(8초)/서버 오류/JSON 파싱 실패 전부 잡아서
+// {ok:false, map:{}}를 반환해요 - 호출부(mergeLiveStockIntoRows)가 이 경우
+// 모든 행을 기존 스냅샷 기준으로 그대로 보여주되, "실시간 조회 실패"임을
+// 화면에 명확히 표시해요(연동 자체가 안 된 것과 구분 - stockSourceBadgeHtml
+// 참고). ok:true인데 특정 vid가 map에 없는 것도 정상(그 SKU만 live 데이터가
+// 없다는 뜻 - taltal-server가 이미 그렇게 설계됨).
+async function fetchLiveStockMap(vendorItemIds) {
+  if (!vendorItemIds.length) return { ok: true, map: {} };
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    const jwt = session?.access_token;
+    if (!jwt) return { ok: false, map: {} };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LIVE_STOCK_FETCH_TIMEOUT_MS);
+    let resp;
+    try {
+      resp = await fetch(
+        `${LIVE_STOCK_API_BASE}/api/coupang/rg-inventory-live?vids=${encodeURIComponent(vendorItemIds.join(","))}`,
+        { headers: { Authorization: `Bearer ${jwt}` }, signal: controller.signal },
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!resp.ok) return { ok: false, map: {} };
+    const body = await resp.json().catch(() => null);
+    return { ok: true, map: (body && body.live_stock_map) || {} };
+  } catch (e) {
+    return { ok: false, map: {} };
+  }
+}
+
+// 2026-09-07 [live_stock ERP 화면 배선, 사용자 명시 "현재재고 = live 우선,
+// pending/incoming/available_stock는 기존 Supabase 데이터 유지"] purchase_
+// recommendations 행에 live_stock_map을 merge - current_stock을 live 값으로
+// override하기 *전에* 원래 BigQuery 스냅샷 값을 snapshot_stock에 보존해두고,
+// incoming_qty/available_stock/pending 관련 필드는 이 함수가 절대 안 건드림
+// (기존 컬럼 그대로). r._liveFetchOk는 화면 전용 임시 플래그(Supabase에 저장
+// 안 됨) - stockSourceBadgeHtml()이 "연동 전"과 "이번엔 조회 실패"를 구분해서
+// 보여주는 데 씀.
+function mergeLiveStockIntoRows(rows, liveResult) {
+  const { ok, map } = liveResult;
+  rows.forEach(r => {
+    r._liveFetchOk = ok;
+    const live = map[r.vendor_item_id];
+    if (live && live.live_stock != null) {
+      r.snapshot_stock = r.current_stock;
+      r.current_stock = live.live_stock;
+      r.live_stock = live.live_stock;
+      r.stock_source = "COUPANG_RG_LIVE";
+      r.stock_updated_at = live.stock_updated_at || null;
+    }
+  });
+  return rows;
+}
+
 const VAPID_PUBLIC_KEY = "BDGjrHCi-tBEuRwLkJ5HGtuB32VcQNwF69x1T0XJZy4QyUsO7D9RlWEfbVaXL-qQXI9S9JgRGJikX4DkdBFqbf4";
 
 const ACCOUNTS = ["상품매입비", "운반비", "복리후생비", "여비교통비", "접대비", "소모품비", "지급수수료", "광고선전비", "통신비", "차량유지비", "교육훈련비", "기타"];
@@ -2977,11 +3045,23 @@ function exportErpCSV(table) {
 // 조회). 3번(입고계획)/4번(쿠팡입고) 탭은 서로 다른 테이블을 조회하므로
 // 공유 캐시 대상이 아니지만, 마찬가지로 한 번 조회한 뒤 탭을 오가도 재조회하지
 // 않도록 탭별로 결과를 캐시해요.
-let stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null };
+let stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null, poInfo: null };
 
 async function getStockFlowPurchaseReco() {
   if (!stockFlowCache.purchaseReco) {
-    stockFlowCache.purchaseReco = await sb.from("purchase_recommendations").select("*");
+    const res = await sb.from("purchase_recommendations").select("*");
+    // 2026-09-07 [live_stock ERP 화면 배선, 사용자 명시] 활성 상품만(비활성/
+    // 제외 상품까지 live 조회하는 건 불필요한 API 호출) vendor_item_id를 모아
+    // taltal-server에 실시간 재고를 물어보고, 성공한 만큼만 행에 merge해요.
+    // 조회 자체가 실패해도(로그인 세션 없음/네트워크/timeout) 이 함수는 계속
+    // 정상적으로 res를 반환해요(사용자 명시 "화면이 절대 안 죽음") - 그냥
+    // 모든 행이 기존 스냅샷 기준으로 남을 뿐이에요.
+    if (!res.error && res.data) {
+      const activeVids = res.data.filter(r => r.is_active !== false).map(r => r.vendor_item_id).filter(Boolean);
+      const liveResult = await fetchLiveStockMap(activeVids);
+      mergeLiveStockIntoRows(res.data, liveResult);
+    }
+    stockFlowCache.purchaseReco = res;
   }
   return stockFlowCache.purchaseReco;
 }
@@ -3000,8 +3080,18 @@ async function getStockFlowRgData() {
   }
   return stockFlowCache.rgData;
 }
+// 2026-09-07 [재고현황/발주추천 통합 표시, 사용자 명시] 재고현황(1번 탭)과
+// 발주추천(2번 탭)이 "이미 진행 중인 발주(PO)" 정보를 같은 기준으로 봐야
+// 그레이/블랙 판정이 두 화면에서 어긋나지 않아요 - purchaseReco와 동일하게
+// 세션 내 1번만 조회해서 공유(새로고침 버튼으로 같이 무효화).
+async function getStockFlowPoInfo() {
+  if (!stockFlowCache.poInfo) {
+    stockFlowCache.poInfo = await loadPoInfoByVid();
+  }
+  return stockFlowCache.poInfo;
+}
 function stockFlowRefresh() {
-  stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null };
+  stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null, poInfo: null };
   route();
 }
 
@@ -3016,9 +3106,9 @@ async function viewStockFlow(tab) {
   tab = STOCKFLOW_TABS.some(t => t[0] === tab) ? tab : "stock";
   let body;
   if (tab === "stock") {
-    body = await viewInventory(await getStockFlowErpBase(), await getStockFlowPurchaseReco());
+    body = await viewInventory(await getStockFlowErpBase(), await getStockFlowPurchaseReco(), await getStockFlowPoInfo());
   } else if (tab === "reco") {
-    body = await viewPurchaseReco(await getStockFlowPurchaseReco());
+    body = await viewPurchaseReco(await getStockFlowPurchaseReco(), await getStockFlowPoInfo());
   } else if (tab === "plan") {
     body = await viewShipmentPlans();
   } else {
@@ -3035,9 +3125,97 @@ async function viewStockFlow(tab) {
     ${body}`;
 }
 
+const PO_OPEN_STATUSES = ["ordered", "partial"];
+const PO_PRE_STATUSES = ["progress", "approved"];
+
+// 2026-09-07 [재고현황/발주추천 통합 표시, 사용자 명시] purchase_order_items
+// ↔ purchase_orders를 vendor_item_id로 조인해서 (1) 대표 최신 PO 1건(기존
+// prRecoPoStatusByVid와 동일한 방식) (2) 아직 결재대기/승인만 된 pending
+// 수량 합(progress/approved) (3) 이미 발주 확정된 open 수량 합(ordered/
+// partial)을 한 번에 계산 - purchase_recommendation.py의 PO_OPEN_STATUSES/
+// PO_PRE_STATUSES와 정확히 동일한 상태값(그 계산 원칙을 그대로 재사용, 새
+// 규칙을 만들지 않음). 재고현황/발주추천 두 탭이 이 함수 하나(getStockFlowPoInfo
+// 캐시)를 공유해서 "이미 진행 중인 발주가 있는지" 판정이 두 화면에서 어긋나지
+// 않게 함. READ-only(조회만, WRITE 없음).
+async function loadPoInfoByVid() {
+  const [poItemsRes, poRes] = await Promise.all([
+    sb.from("purchase_order_items").select("po_id,vendor_item_id,qty"),
+    sb.from("purchase_orders").select("id,po_no,status,created_at").order("created_at", { ascending: false }),
+  ]);
+  const poById = Object.fromEntries((poRes.data || []).map(p => [p.id, p]));
+  const latestByVid = {};
+  const pendingQtyByVid = {};
+  const openQtyByVid = {};
+  (poItemsRes.data || []).forEach(it => {
+    const po = poById[it.po_id];
+    if (!po || !it.vendor_item_id) return;
+    const existing = latestByVid[it.vendor_item_id];
+    if (!existing || (po.created_at || "") > (existing.created_at || "")) latestByVid[it.vendor_item_id] = po;
+    if (PO_PRE_STATUSES.includes(po.status)) {
+      pendingQtyByVid[it.vendor_item_id] = (pendingQtyByVid[it.vendor_item_id] || 0) + (Number(it.qty) || 0);
+    }
+    if (PO_OPEN_STATUSES.includes(po.status)) {
+      openQtyByVid[it.vendor_item_id] = (openQtyByVid[it.vendor_item_id] || 0) + (Number(it.qty) || 0);
+    }
+  });
+  return { latestByVid, pendingQtyByVid, openQtyByVid };
+}
+
+// 그레이/블랙 발판 구분(사용자 명시) - 이미 진행 중인 발주(결재대기/승인/
+// 발주완료/부분입고)가 있는 vendor_item_id는 "실제 발주 후보"가 아니라
+// "기존 발주 확인 필요" 상태로 봐야 함(중복 발주 방지). ORDER_REQUIRED
+// 판정 자체(GCP 계산)는 안 바꾸고, 이 화면의 표시/선택 가능 여부만 조정.
+function hasExistingPoInFlight(vid, poInfo) {
+  return !!(poInfo?.pendingQtyByVid?.[vid] || poInfo?.openQtyByVid?.[vid]);
+}
+
+// 2026-09-07 [실시간 재고 최신성 UI, 사용자 명시] live_stock을 taltal-server
+// (기존 API)에서 실제로 merge하도록 배선 완료 - r.stock_source는 이제 실제
+// COUPANG_RG_LIVE 조회 성공분에서 real하게 채워짐(getStockFlowPurchaseReco/
+// mergeLiveStockIntoRows 참고). stock_source가 없는 3가지 경우를 사용자
+// 명시("live 조회 실패 시 fallback임을 명확히 표시")대로 구분해서 보여줌:
+//   1) r._liveFetchOk===false - 이번 조회 자체가 실패함(로그인 세션 없음/
+//      네트워크/timeout/서버 오류) - 주황 경고로 "실시간 조회 실패"를 명확히
+//   2) r._liveFetchOk===true인데 이 vid만 map에 없음 - 조회는 성공했지만
+//      이 SKU는 실시간 재고 데이터가 없음(정상적인 개별 케이스, 경고 아님)
+//   3) r._liveFetchOk===undefined - 애초에 live 조회를 시도조차 안 한 경로
+//      (예: renderStockVelocityTable을 merge 없이 직접 부르는 다른 호출부)
+const STOCK_SOURCE_LABEL = {
+  COUPANG_RG_LIVE: { chip: "mine", icon: "🟢", label: "실시간 재고" },
+  BIGQUERY_SNAPSHOT: { chip: "waiting", icon: "🔵", label: "스냅샷 재고" },
+};
+function stockSourceBadgeHtml(r) {
+  const updatedAt = r.stock_updated_at
+    ? new Date(r.stock_updated_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
+  if (!r.stock_source) {
+    if (r._liveFetchOk === false) {
+      return `<span class="chip progress">⚠️ 스냅샷 재고</span><br><small style="color:var(--text-sub)">실시간 조회 실패 - 자동 대체</small>`;
+    }
+    if (r._liveFetchOk === true) {
+      return `<span class="chip waiting">스냅샷 재고</span><br><small style="color:var(--text-sub)">이 상품은 실시간 재고 데이터 없음</small>`;
+    }
+    return `<span class="chip waiting">스냅샷 재고</span><br><small style="color:var(--text-sub)">실시간 연동 예정</small>`;
+  }
+  const t = STOCK_SOURCE_LABEL[r.stock_source] || { chip: "waiting", icon: "❓", label: r.stock_source };
+  // 2026-09-07 [사용자 명시 - live_stock/snapshot_stock 둘 다 한눈에] 실시간
+  // 값(live_stock, 이미 current_stock으로 화면에 표시됨)과 별개로 BigQuery
+  // snapshot_stock도 참고용으로 같이 보여줌 - 두 값이 다르면(실시간 재고가
+  // 최근 스냅샷과 얼마나 차이 나는지) 사용자가 바로 알 수 있게 함(비교/판단은
+  // 사람 몫 - 이 함수는 계산 없이 두 값을 나란히 보여주기만 함).
+  const snapshotNote = (r.stock_source === "COUPANG_RG_LIVE" && r.snapshot_stock != null && r.snapshot_stock !== r.live_stock)
+    ? `<br><small style="color:var(--text-sub)">스냅샷 ${fmt(r.snapshot_stock)}개</small>` : "";
+  return `<span class="chip ${t.chip}">${t.icon} ${t.label}</span>${updatedAt ? `<br><small style="color:var(--text-sub)">${updatedAt}</small>` : ""}${snapshotNote}`;
+}
+
 /* 판매속도·발주예상 표 - purchase_recommendations를 그대로 재사용(계산은
-   GCP가 이미 끝냄, 여기서는 조회+표시만). preloaded를 안 주면 직접 조회. */
-async function renderStockVelocityTable(preloaded) {
+   GCP가 이미 끝냄, 여기서는 조회+표시만). preloaded를 안 주면 직접 조회.
+   2026-09-07: 현재재고/재고출처(live·snapshot)/incoming_qty/pending_qty/
+   available_stock 5칸을 앞에 추가(사용자 명시 - 재고현황 탭이 "현재재고"
+   전체 그림을 한눈에 보여주는 자리). poInfo를 안 주면 pending_qty는 "-"로
+   표시(회귀 없음 - 기존 #/inventory 단독 라우트처럼 poInfo 없이 부르는
+   경우도 안전하게 동작). */
+async function renderStockVelocityTable(preloaded, poInfo) {
   const { data, error } = preloaded || await sb.from("purchase_recommendations").select("*");
   if (error) {
     return `<div class="card"><p class="empty">판매속도·발주예상 데이터를 불러오지 못했습니다.</p></div>`;
@@ -3054,18 +3232,22 @@ async function renderStockVelocityTable(preloaded) {
         <span style="font-size:12px;color:var(--text-sub)">"무엇이 언제 부족해지는가" — 발주 의사결정(추천수량 등)은 <a onclick="location.hash='#/stockflow/reco'" style="color:var(--brand);cursor:pointer">발주 추천 탭</a>에서</span></div>
       <div class="table-wrap"><table>
         <thead><tr>
-          <th>상품</th><th class="num">최근7일</th><th class="num">최근30일</th><th class="num">일평균</th>
+          <th>상품</th><th class="num">현재재고</th><th>재고출처</th>
+          <th class="num">입고예정</th><th class="num">결재중 수량</th><th class="num">가용재고</th>
+          <th class="num">최근7일</th><th class="num">최근30일</th><th class="num">일평균</th>
           <th class="num">예상소진일</th><th>발주예상일</th><th class="num">안전재고일</th><th>재고상태</th>
         </tr></thead>
         <tbody>${sorted.length ? sorted.map(r => {
           const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
           const isChild = r.shared_inventory?.role === "child";
+          const pendingQty = poInfo?.pendingQtyByVid?.[r.vendor_item_id];
           // 세트상품(child)은 물리재고가 없고 base와 공유하므로(SSOT는
           // products.set_parent_id/set_qty), current_stock=0 기준으로 계산된
           // 예상소진일/발주예상일/안전재고일/재고상태를 그대로 보여주면 "진짜
           // 재고 0"처럼 오인시킬 수 있어요 - 이 4칸을 공유재고 안내 1칸으로
-          // 합쳐요(최근7일/최근30일/일평균은 이 SKU 자신의 실제 판매 사실이라
-          // 그대로 유지, colspan=4로 헤더 8칸과 정확히 맞춤: 1+3+4=8).
+          // 합쳐요(최근7일/최근30일/일평균/현재재고 블록은 이 SKU 자신의 실제
+          // 값이라 그대로 유지, colspan=4로 헤더 12칸과 정확히 맞춤: 1+5+3+4=13
+          // → 마지막 4칸만 병합이므로 colspan=4 그대로).
           const tailCells = isChild
             ? `<td colspan="4">${sharedInventoryBadgeHtml(r.shared_inventory)}</td>`
             : `
@@ -3076,14 +3258,24 @@ async function renderStockVelocityTable(preloaded) {
           return `
           <tr>
             <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${!isChild ? sharedInventoryBadgeHtml(r.shared_inventory) : ""}</td>
+            <td class="num">${r.current_stock != null ? fmt(r.current_stock) : "-"}</td>
+            <td>${stockSourceBadgeHtml(r)}</td>
+            <td class="num">${r.incoming_qty != null ? fmt(r.incoming_qty) : "-"}</td>
+            <td class="num">${pendingQty ? fmt(pendingQty) : "-"}</td>
+            <td class="num">${r.available_stock != null ? fmt(r.available_stock) : "-"}</td>
             <td class="num">${r.sales_qty_7d != null ? fmt(r.sales_qty_7d) : "-"}</td>
             <td class="num">${r.sales_qty_30d != null ? fmt(r.sales_qty_30d) : "-"}</td>
             <td class="num">${r.avg_daily_sales != null ? Number(r.avg_daily_sales).toFixed(2) : "-"}</td>
             ${tailCells}
           </tr>`;
-        }).join("") : `<tr><td colspan="8" class="empty">데이터가 없습니다</td></tr>`}
+        }).join("") : `<tr><td colspan="13" class="empty">데이터가 없습니다</td></tr>`}
         </tbody>
       </table></div>
+      <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
+        ※ <b>현재재고/재고출처</b> — 🟢 실시간 재고(쿠팡 로켓그로스 API 직접 조회)가 가능하면 그 값을, 안 되면 자동으로 🔵 스냅샷 재고(BigQuery 최근 계산값)로 대체돼요.<br>
+        ※ <b>결재중 수량</b> — 아직 승인 전(결재대기/승인만 됨)인 발주서 수량이에요. 이미 실제로 발주 확정(발주완료/부분입고)된 수량은 <b>입고예정</b>에 포함돼요.<br>
+        ※ <b>가용재고</b> = 현재재고 + 입고예정(실제 발주 확정분만, 결재중 수량은 미포함).
+      </p>
     </div>`;
 }
 
@@ -3099,7 +3291,7 @@ async function renderStockVelocityTable(preloaded) {
    요청). 두 표를 억지로 한 행으로 합치지 않았어요(현재재고 계산 방식이
    서로 다른 두 소스라 - 로컬 실시간 계산 vs GCP 배치 스냅샷 - 임의로 하나로
    합치지 말라는 지시를 그대로 반영). */
-async function viewInventory(preloadedErpBase, preloadedPurchaseReco) {
+async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedPoInfo) {
   const { buys, sales } = preloadedErpBase || await loadErpBase();
 
   // 재고 관리는 사입 낱개 상품만 (위탁은 공급처 재고, 연동 세트는 낱개 재고에 포함됨)
@@ -3164,7 +3356,7 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco) {
         ※ <b>구성이 지정된 세트상품</b>의 판매는 낱개 상품 재고에서 자동 차감되므로, 이 표에는 낱개 상품만 나옵니다.
       </p>
     </div>
-    ${await renderStockVelocityTable(preloadedPurchaseReco)}
+    ${await renderStockVelocityTable(preloadedPurchaseReco, preloadedPoInfo)}
     <div class="card">
       <h2>쿠팡 재고 이동 내역 (최근 20건)</h2>
       <div class="table-wrap"><table>
@@ -3308,14 +3500,23 @@ let podDraftGroups = [];          // openPODraftModal()이 만든 공급처별 �
 // vendor_item_id -> {po_no, status} - 이 추천과 관련된 가장 최근 발주서(있으면).
 // purchase_order_items.vendor_item_id를 그대로 재사용한 조회라 새 컬럼/스키마 변경 없음.
 let prRecoPoStatusByVid = {};
+// 2026-09-07 - loadPoInfoByVid()의 전체 반환값({latestByVid/pendingQtyByVid/
+// openQtyByVid}) - prRecoIsDraftSelectable()이 "이미 진행 중인 발주가 있는지"
+// 판정할 때 씀(그레이/블랙 발판 구분, 사용자 명시).
+let prRecoPoInfo = null;
 
 // 2026-09-03 강화: 발주서 초안 선택 가능 조건 = is_active===true AND
 // status==='ORDER_REQUIRED' AND recommended_units>0. recommended_units가
 // 0/null인 상품은(추천수량이 없는데도 화면 표시상 발주필요로 보이는 예외 케이스)
 // 체크박스 자체를 아예 못 누르게 막아요 - 서버(RPC)의 qty>0 검증과 별개로
 // 프론트에서 먼저 막는 이중 방어예요.
+// 2026-09-07 [그레이/블랙 발판 구분, 사용자 명시] 이미 진행 중인 발주
+// (결재대기/승인/발주완료/부분입고)가 있는 vendor_item_id는 "실제 발주
+// 후보"에서 제외 - 중복 발주 방지, 그런 경우는 체크박스 대신 "기존 발주
+// 확인 필요" 그레이 chip만 보여줌(prRecoTableHtml 참고).
 function prRecoIsDraftSelectable(r) {
-  return r.is_active === true && r.status === "ORDER_REQUIRED" && Number(r.recommended_units) > 0;
+  return r.is_active === true && r.status === "ORDER_REQUIRED" && Number(r.recommended_units) > 0
+    && !hasExistingPoInFlight(r.vendor_item_id, prRecoPoInfo);
 }
 
 // ==================== 입고 물류 최적화(shipment_plans, READ-only 연결) ====================
@@ -3450,7 +3651,7 @@ async function viewShipmentPlans() {
 // 같은 "언제 부족해지는가" 컬럼은 재고현황 탭(renderStockVelocityTable)으로
 // 옮겼어요(중복 제거, 사용자 지시 반영). "발주예상일"도 재고현황 쪽 몫으로
 // 옮겼습니다.
-async function viewPurchaseReco(preloaded) {
+async function viewPurchaseReco(preloaded, preloadedPoInfo) {
   const { data, error } = preloaded || await sb.from("purchase_recommendations").select("*");
   prRecoCache = data || [];
   prRecoSelected = new Set();   // 화면을 새로 열 때마다 선택 초기화(최신 데이터 기준으로 다시 선택)
@@ -3458,24 +3659,11 @@ async function viewPurchaseReco(preloaded) {
     return `<div class="card"><p class="empty">발주추천 데이터를 불러오지 못했습니다.</p></div>`;
   }
 
-  // "PO 상태" 컬럼용 best-effort 조회 - 새 컬럼/스키마 없이 기존
-  // purchase_order_items.vendor_item_id로 그대로 조인해요. 여러 PO가 같은
-  // vendor_item_id를 가질 수 있어서, 가장 최근(created_at) PO 1건만 대표로 씀.
-  {
-    const [poItemsRes, poRes] = await Promise.all([
-      sb.from("purchase_order_items").select("po_id,vendor_item_id"),
-      sb.from("purchase_orders").select("id,po_no,status,created_at").order("created_at", { ascending: false }),
-    ]);
-    const poById = Object.fromEntries((poRes.data || []).map(p => [p.id, p]));
-    const byVid = {};
-    (poItemsRes.data || []).forEach(it => {
-      const po = poById[it.po_id];
-      if (!po || !it.vendor_item_id) return;
-      const existing = byVid[it.vendor_item_id];
-      if (!existing || (po.created_at || "") > (existing.created_at || "")) byVid[it.vendor_item_id] = po;
-    });
-    prRecoPoStatusByVid = byVid;
-  }
+  // "PO 상태"/"기존 발주 확인 필요" 판정용 - 2026-09-07부터 재고현황 탭과
+  // 동일한 loadPoInfoByVid() 결과를 공유(중복 조회/판정 불일치 제거).
+  // preloadedPoInfo가 없으면(방어적으로) 직접 조회.
+  prRecoPoInfo = preloadedPoInfo || await loadPoInfoByVid();
+  prRecoPoStatusByVid = prRecoPoInfo.latestByVid;
   // 2026-09-02 추가(stale-row 대응): is_active=false는 product_master에서 더 이상 ACTIVE가
   // 아니게 된 상품(판매종료 등)의 과거 계산 이력이에요 - 기본 화면/통계에서는 제외하고,
   // 아래 상태 필터에서 "비활성/제외 상품"을 선택했을 때만 보여줘요(물리 DELETE가 없어서
@@ -3525,6 +3713,7 @@ async function viewPurchaseReco(preloaded) {
         ※ 옵션(색상 등)이 있는 상품은 상품명 아래 작은 글씨로 옵션명이 같이 표시돼요.<br>
         ※ ⚫ <b>비활성/제외 상품</b>은 product_master에서 더 이상 ACTIVE가 아니게 된(판매종료 등) 상품의 과거 계산 이력이에요 - 삭제되지 않고 상태 필터로 언제든 다시 볼 수 있어요.<br>
         ※ <b>PO 상태</b>는 이 상품의 vendor_item_id로 만들어진 가장 최근 발주서 상태예요(있으면) - 여러 건이 있어도 최신 1건만 표시돼요.<br>
+        ※ <b>⚠️ 기존 발주 확인 필요</b>(그레이) — 발주가 필요한 상품인데 이미 결재대기/승인/발주완료/부분입고 상태인 발주서가 있어요. 중복 발주를 막기 위해 체크박스로 새 발주서 초안에 선택할 수 없어요 - <b>PO 상태</b> 칸의 발주서를 먼저 확인하세요.<br>
         ※ <b>발주서 초안 만들기</b>는 아직 미리보기(dry-run)까지만 가능해요 - 실제 발주서 생성은 검토 후 다음 단계에서 열립니다. 그 전까지 발주는 <b>발주서</b> 메뉴에서 직접 작성하세요.
       </p>
     </div>`;
@@ -3577,9 +3766,17 @@ function prRecoTableHtml(list) {
         <th>발주 근거 · 상태</th><th>PO 상태</th>
       </tr></thead>
       <tbody>${sorted.length ? sorted.map(r => {
-        const [cls, label] = PR_STATUS_CHIP[r.status] || ["waiting", r.status];
+        // 2026-09-07 [그레이/블랙 발판 구분, 사용자 명시] ORDER_REQUIRED인데
+        // 이미 진행 중인 발주(결재대기/승인/발주완료/부분입고)가 있으면 -
+        // "실제 발주 후보"(블랙, 기존 빨간 칩 그대로)가 아니라 "기존 발주
+        // 확인 필요"(그레이 chip waiting)로 바꿔서 보여줌. GCP가 계산한
+        // status 값 자체(r.status)는 절대 안 바꿈 - 이 화면의 표시만 조정.
+        const inFlight = r.status === "ORDER_REQUIRED" && hasExistingPoInFlight(r.vendor_item_id, prRecoPoInfo);
+        const [cls, label] = inFlight ? ["waiting", "⚠️ 기존 발주 확인 필요"] : (PR_STATUS_CHIP[r.status] || ["waiting", r.status]);
         const selectable = prRecoIsDraftSelectable(r);
         const po = prRecoPoStatusByVid[r.vendor_item_id];
+        const pendingQty = prRecoPoInfo?.pendingQtyByVid?.[r.vendor_item_id];
+        const openQty = prRecoPoInfo?.openQtyByVid?.[r.vendor_item_id];
         return `
         <tr>
           <td>${selectable ? `<input type="checkbox" class="pr-reco-chk" ${prRecoSelected.has(r.vendor_item_id) ? "checked" : ""} onchange="togglePrRecoSelect('${esc(r.vendor_item_id)}', this.checked)">` : ""}</td>
@@ -3588,8 +3785,8 @@ function prRecoTableHtml(list) {
           <td class="num"><b>${r.recommended_units != null ? fmt(r.recommended_units) : "-"}</b></td>
           <td class="num">${r.recommended_boxes != null ? fmt(r.recommended_boxes) : "-"}</td>
           <td class="num">${r.recommended_plts != null ? fmt(r.recommended_plts) : "-"}</td>
-          <td><span class="chip ${cls}">${label}</span>${r.reason ? `<br><small style="color:var(--text-sub)">${esc(r.reason)}</small>` : ""}</td>
-          <td>${po ? `<a onclick="location.hash='#/podoc/${esc(po.id)}'" style="color:var(--brand);cursor:pointer">${esc(po.po_no)}</a><br><small style="color:var(--text-sub)">${esc(po.status)}</small>` : `<span style="color:var(--text-sub)">-</span>`}</td>
+          <td><span class="chip ${cls}">${label}</span>${r.reason ? `<br><small style="color:var(--text-sub)">${esc(r.reason)}</small>` : ""}${inFlight ? `<br><small style="color:var(--text-sub)">${pendingQty ? `결재중 ${fmt(pendingQty)}개` : ""}${pendingQty && openQty ? " · " : ""}${openQty ? `발주확정 ${fmt(openQty)}개` : ""}</small>` : ""}</td>
+          <td>${po ? `<a onclick="location.hash='#/podoc/${esc(po.id)}'" style="color:var(--brand);cursor:pointer">${esc(po.po_no)}</a><br>${poChip(po.status)}` : `<span style="color:var(--text-sub)">-</span>`}</td>
         </tr>`;
       }).join("") : `<tr><td colspan="8" class="empty">조건에 맞는 상품이 없습니다</td></tr>`}
       </tbody>
@@ -5295,7 +5492,17 @@ async function renderTruckInboundPrepCard() {
     const product = productById[poi.product_id] || {};
     const mapping = mappingByProductId[poi.product_id] || {};
     const po = poById[poi.po_id] || {};
-    const [cls, label] = TIP_STATUS_LABEL[p.prep_status] || ["waiting", p.prep_status];
+    let [cls, label] = TIP_STATUS_LABEL[p.prep_status] || ["waiting", p.prep_status];
+    if (p.prep_status === "PREFLIGHT_FAILED" && p.last_error_code === "SafetyGateError") {
+      // 2026-09-05 [상태 의미 오류 수정] - 이건 실제 WING 실패가 아니라
+      // WING_INBOUND_PREFLIGHT_ENABLED가 꺼져 있어 create_inbound_plan()이
+      // 자체 안전장치(SafetyGateError)로 막힌 것. erp_inbound_bridge.
+      // _extract_error_fields()가 이 예외의 타입명을 last_error_code에 그대로
+      // 넣는다는 사실에 근거(추측 아님) - 실제 WING 실패와 같은 문구로 보이면
+      // 안 됨.
+      cls = "waiting";
+      label = "🔒 자동화 안전장치 OFF (WING 실패 아님)";
+    }
 
     let actionHtml = "";
     if (p.prep_status === "NEEDS_METADATA") {
