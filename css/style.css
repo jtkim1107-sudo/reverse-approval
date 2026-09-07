@@ -607,4 +607,46 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .form-grid { grid-template-columns: 1fr; }
   .topbar-user { display: none; }
   .card { padding: 16px; }
+  .card-head { flex-direction: column; align-items: stretch; }
+  .card-head > div { display: flex; flex-wrap: wrap; }
+
+  /* 터치 대상 최소 44px(iOS HIG) - 승인/발주 등 주요 버튼이 좁은 화면에서도 정확히 눌리도록 */
+  .btn { min-height: 44px; padding: 10px 16px; }
+  .btn.sm { min-height: 40px; padding: 9px 14px; }
+
+  /* ===== 반응형 테이블(공통) — 여러 화면(재고현황/발주추천/문서함 등)이 함께 쓰는
+     테이블→카드 전환 패턴이에요. 테이블마다 새로 짜지 않고, JS에서 td에
+     data-label만 달아주면 이 규칙 하나로 전부 카드형이 됩니다. */
+  .rtable table { border: none; }
+  .rtable thead { display: none; }
+  .rtable tbody { display: flex; flex-direction: column; gap: 10px; }
+  .rtable tr {
+    display: flex; flex-direction: column;
+    border: 1.5px solid var(--line); border-radius: 12px;
+    padding: 10px 12px; background: var(--card);
+  }
+  .rtable tr.clickable:hover td { background: none; }
+  .rtable td {
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 14px; padding: 7px 0; border-bottom: 1px solid var(--line);
+    text-align: right; white-space: normal; word-break: break-word;
+  }
+  .rtable td:last-child { border-bottom: none; }
+  .rtable td[data-label]::before {
+    content: attr(data-label); font-size: 11.5px; font-weight: 700;
+    color: var(--text-sub); text-align: left; flex-shrink: 0;
+  }
+  .rtable td:not([data-label]) { justify-content: flex-end; }
+  .rtable td.rt-empty { display: block; text-align: center; }
+  .rtable td.rt-empty::before { content: none; }
+  /* 상품명 등 "카드 제목" 역할을 하는 첫 칸 - 라벨 없이 왼쪽 정렬, 굵게 */
+  .rtable td.rt-title {
+    order: -10; justify-content: flex-start; text-align: left;
+    font-size: 14.5px; padding-bottom: 9px; margin-bottom: 3px;
+    border-bottom: 1.5px solid var(--line);
+  }
+  .rtable td.rt-title::before { content: none; }
+  /* 긴 문장/뱃지 여러 개 등 좌우 정렬이 안 어울리는 칸(라벨 없이 한 줄 전체 사용) */
+  .rtable td.rt-block { display: block; text-align: left; }
+  .rtable td.rt-block::before { content: none; }
 }

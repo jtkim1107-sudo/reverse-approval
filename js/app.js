@@ -1293,11 +1293,11 @@ async function viewDashboard() {
         <h2>제품 마스터 최근 업데이트</h2>
         <button class="btn sm secondary" onclick="location.hash='#/products'">전체 보기</button>
       </div>
-      <div class="table-wrap"><table>
+      <div class="table-wrap rtable"><table>
         <thead><tr><th>제품코드</th><th>제품명</th><th>규격</th><th class="num">단가</th><th>수정일</th></tr></thead>
         <tbody>
-        ${products.map(p => `<tr><td>${esc(p.code)}</td><td><b>${esc(p.name)}</b></td><td>${esc(p.spec)}</td><td class="num">₩${fmt(p.price)}</td><td>${esc(p.updated_at)}</td></tr>`).join("")
-          || `<tr><td colspan="5" class="empty">등록된 제품이 없습니다</td></tr>`}
+        ${products.map(p => `<tr><td data-label="제품코드">${esc(p.code)}</td><td data-label="제품명"><b>${esc(p.name)}</b></td><td data-label="규격">${esc(p.spec)}</td><td class="num" data-label="단가">₩${fmt(p.price)}</td><td data-label="수정일">${esc(p.updated_at)}</td></tr>`).join("")
+          || `<tr><td colspan="5" class="empty rt-empty">등록된 제품이 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>`;
@@ -1305,17 +1305,17 @@ async function viewDashboard() {
 
 /* ---------- 문서 목록 테이블 ---------- */
 function docTable(list) {
-  if (!list.length) return `<div class="table-wrap"><table><tbody><tr><td class="empty">문서가 없습니다</td></tr></tbody></table></div>`;
-  return `<div class="table-wrap"><table>
+  if (!list.length) return `<div class="table-wrap rtable"><table><tbody><tr><td class="empty rt-empty">문서가 없습니다</td></tr></tbody></table></div>`;
+  return `<div class="table-wrap rtable"><table>
     <thead><tr><th>문서번호</th><th>제목</th><th>기안자</th><th>기안일</th><th class="num">금액</th><th>상태</th></tr></thead>
     <tbody>${list.map(d => `
       <tr class="clickable" onclick="location.hash='#/doc/${d.id}'">
-        <td>${esc(d.doc_no)}</td>
-        <td><b>${esc(d.title)}</b></td>
-        <td>${userName(d.drafter_id)}</td>
-        <td>${esc(d.date)}</td>
-        <td class="num">₩${fmt(d.total)}</td>
-        <td>${docStatusChip(d)}</td>
+        <td data-label="문서번호">${esc(d.doc_no)}</td>
+        <td data-label="제목"><b>${esc(d.title)}</b></td>
+        <td data-label="기안자">${userName(d.drafter_id)}</td>
+        <td data-label="기안일">${esc(d.date)}</td>
+        <td class="num" data-label="금액">₩${fmt(d.total)}</td>
+        <td data-label="상태">${docStatusChip(d)}</td>
       </tr>`).join("")}
     </tbody></table></div>`;
 }
@@ -3280,7 +3280,7 @@ async function renderStockVelocityTable(preloaded, poInfo) {
     <div class="card">
       <div class="card-head"><h2>판매속도 · 발주 예상</h2>
         <span style="font-size:12px;color:var(--text-sub)">"무엇이 언제 부족해지는가" — 발주 의사결정(추천수량 등)은 <a onclick="location.hash='#/stockflow/reco'" style="color:var(--brand);cursor:pointer">발주 추천 탭</a>에서</span></div>
-      <div class="table-wrap"><table>
+      <div class="table-wrap rtable"><table>
         <thead><tr>
           <th>상품</th><th class="num">현재재고</th><th>재고출처</th>
           <th class="num">입고예정</th><th class="num">결재중 수량</th><th class="num">가용재고</th>
@@ -3299,26 +3299,26 @@ async function renderStockVelocityTable(preloaded, poInfo) {
           // 값이라 그대로 유지, colspan=4로 헤더 12칸과 정확히 맞춤: 1+5+3+4=13
           // → 마지막 4칸만 병합이므로 colspan=4 그대로).
           const tailCells = isChild
-            ? `<td colspan="4">${sharedInventoryBadgeHtml(r.shared_inventory)}</td>`
+            ? `<td colspan="4" class="rt-block" style="order:-1">${sharedInventoryBadgeHtml(r.shared_inventory)}</td>`
             : `
-            <td class="num">${r.stock_days != null ? fmt(r.stock_days) + "일" : "-"}</td>
-            <td>${prOrderByDateChip(r.order_by_date)}</td>
-            <td class="num">${r.safety_stock_days != null ? r.safety_stock_days + "일" : "-"}</td>
-            <td><span class="chip ${cls}">${label}</span></td>`;
+            <td class="num" data-label="예상소진일">${r.stock_days != null ? fmt(r.stock_days) + "일" : "-"}</td>
+            <td class="rt-block" data-label="발주예상일">${prOrderByDateChip(r.order_by_date)}</td>
+            <td class="num" data-label="안전재고일">${r.safety_stock_days != null ? r.safety_stock_days + "일" : "-"}</td>
+            <td class="rt-block" data-label="재고상태" style="order:-1"><span class="chip ${cls}">${label}</span></td>`;
           return `
           <tr>
-            <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${!isChild ? sharedInventoryBadgeHtml(r.shared_inventory) : ""}</td>
-            <td class="num">${r.current_stock != null ? fmt(r.current_stock) : "-"}</td>
-            <td>${stockSourceBadgeHtml(r)}</td>
-            <td class="num">${r.incoming_qty != null ? fmt(r.incoming_qty) : "-"}</td>
-            <td class="num">${pendingQty ? fmt(pendingQty) : "-"}</td>
-            <td class="num">${r.available_stock != null ? fmt(r.available_stock) : "-"}</td>
-            <td class="num">${r.sales_qty_7d != null ? fmt(r.sales_qty_7d) : "-"}</td>
-            <td class="num">${r.sales_qty_30d != null ? fmt(r.sales_qty_30d) : "-"}</td>
-            <td class="num">${r.avg_daily_sales != null ? Number(r.avg_daily_sales).toFixed(2) : "-"}</td>
+            <td class="rt-title"><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${!isChild ? sharedInventoryBadgeHtml(r.shared_inventory) : ""}</td>
+            <td class="num" data-label="현재재고" style="order:-6">${r.current_stock != null ? fmt(r.current_stock) : "-"}</td>
+            <td class="rt-block" data-label="재고출처" style="order:-5">${stockSourceBadgeHtml(r)}</td>
+            <td class="num" data-label="최근7일" style="order:-3">${r.sales_qty_7d != null ? fmt(r.sales_qty_7d) : "-"}</td>
+            <td class="num" data-label="최근30일" style="order:-2">${r.sales_qty_30d != null ? fmt(r.sales_qty_30d) : "-"}</td>
+            <td class="num" data-label="입고예정">${r.incoming_qty != null ? fmt(r.incoming_qty) : "-"}</td>
+            <td class="num" data-label="결재중 수량">${pendingQty ? fmt(pendingQty) : "-"}</td>
+            <td class="num" data-label="가용재고">${r.available_stock != null ? fmt(r.available_stock) : "-"}</td>
+            <td class="num" data-label="일평균">${r.avg_daily_sales != null ? Number(r.avg_daily_sales).toFixed(2) : "-"}</td>
             ${tailCells}
           </tr>`;
-        }).join("") : `<tr><td colspan="13" class="empty">데이터가 없습니다</td></tr>`}
+        }).join("") : `<tr><td colspan="13" class="empty rt-empty">데이터가 없습니다</td></tr>`}
         </tbody>
       </table></div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
@@ -3404,22 +3404,22 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
         값(Coupang API 조회 아님), <b>쿠팡 실재고</b>는 Coupang 로켓그로스 API를 직접 조회한 값이에요.
         실제 쿠팡 재고를 확인할 땐 반드시 <b>쿠팡 실재고</b> 컬럼을 보세요.
       </p>
-      <div class="table-wrap"><table>
+      <div class="table-wrap rtable"><table>
         <thead><tr><th>제품</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">자사재고</th><th class="num" title="매입-판매+이동 누적 장부값(Coupang API 조회 아님)">ERP 장부재고</th><th class="num" title="Coupang 로켓그로스 API 직접 조회(live 우선, 실패 시 BigQuery snapshot)">🚀 쿠팡 실재고</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
         <tbody>${inv.length ? inv.map(r => {
           const rg = rgLiveByProductId[r.p.id];
           return `
           <tr>
-            <td><b>${esc(r.p.name)}</b><br><small style="color:var(--text-sub)">${esc(r.p.code)} · ${esc(r.p.spec)}</small></td>
-            <td class="num">${fmt(r.bought)}</td>
-            <td class="num">${fmt(r.sold)}</td>
-            <td class="num" style="color:${r.inHouse < 0 ? "var(--red)" : "var(--text)"}">${fmt(r.inHouse)}</td>
-            <td class="num" style="color:${r.atCoupang < 0 ? "var(--red)" : "var(--amber)"}">${fmt(r.atCoupang)}</td>
-            <td class="num">${rgLiveStockCellHtml(rg)}</td>
-            <td class="num">₩${fmt(r.lastCost)}</td>
-            <td class="num">₩${fmt(r.value)}</td>
+            <td class="rt-title"><b>${esc(r.p.name)}</b><br><small style="color:var(--text-sub)">${esc(r.p.code)} · ${esc(r.p.spec)}</small></td>
+            <td class="num" data-label="🚀 쿠팡 실재고" style="order:-5">${rgLiveStockCellHtml(rg)}</td>
+            <td class="num" data-label="ERP 장부재고" style="order:-4;color:${r.atCoupang < 0 ? "var(--red)" : "var(--amber)"}">${fmt(r.atCoupang)}</td>
+            <td class="num" data-label="자사재고" style="color:${r.inHouse < 0 ? "var(--red)" : "var(--text)"}">${fmt(r.inHouse)}</td>
+            <td class="num" data-label="총 매입">${fmt(r.bought)}</td>
+            <td class="num" data-label="총 판매">${fmt(r.sold)}</td>
+            <td class="num" data-label="최근 매입단가">₩${fmt(r.lastCost)}</td>
+            <td class="num" data-label="재고 금액">₩${fmt(r.value)}</td>
           </tr>`;
-        }).join("") : `<tr><td colspan="8" class="empty">제품이 없습니다</td></tr>`}
+        }).join("") : `<tr><td colspan="8" class="empty rt-empty">제품이 없습니다</td></tr>`}
         </tbody>
       </table></div>
       ${(() => {
@@ -3444,18 +3444,18 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
     ${await renderStockVelocityTable(preloadedPurchaseReco, preloadedPoInfo)}
     <div class="card">
       <h2>쿠팡 재고 이동 내역 (최근 20건)</h2>
-      <div class="table-wrap"><table>
+      <div class="table-wrap rtable"><table>
         <thead><tr><th>일자</th><th>품목</th><th>구분</th><th class="num">수량</th><th>메모</th><th>입력자</th><th></th></tr></thead>
         <tbody>${recentTransfers.length ? recentTransfers.map(t => `
           <tr>
-            <td>${esc(t.date)}</td>
-            <td><b>${esc(prodName(t.product_id))}</b></td>
-            <td>${t.kind === "쿠팡입고" ? '<span class="chip mine">창고→쿠팡</span>' : '<span class="chip waiting">쿠팡→창고</span>'}</td>
-            <td class="num">${fmt(t.qty)}</td>
-            <td>${esc(t.memo)}</td>
-            <td>${esc(t.created_by)}</td>
+            <td class="rt-title"><b>${esc(prodName(t.product_id))}</b></td>
+            <td data-label="구분">${t.kind === "쿠팡입고" ? '<span class="chip mine">창고→쿠팡</span>' : '<span class="chip waiting">쿠팡→창고</span>'}</td>
+            <td class="num" data-label="수량">${fmt(t.qty)}</td>
+            <td data-label="일자">${esc(t.date)}</td>
+            <td data-label="메모">${esc(t.memo)}</td>
+            <td data-label="입력자">${esc(t.created_by)}</td>
             <td><button class="btn sm danger" onclick="deleteErpRow('stock_transfers','${t.id}')">삭제</button></td>
-          </tr>`).join("") : `<tr><td colspan="7" class="empty">이동 내역이 없습니다</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="7" class="empty rt-empty">이동 내역이 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>`;
@@ -3843,7 +3843,7 @@ function prRecoTableHtml(list) {
   // 아니라 "예상 PLT"로 라벨을 명확히 구분했어요(입고계획의 "확정 계획 PLT",
   // 쿠팡입고의 "WING 실행 PLT"와 혼동 방지).
   return `
-    <div class="table-wrap"><table>
+    <div class="table-wrap rtable"><table>
       <thead><tr>
         <th>${selectableVids.length ? `<input type="checkbox" id="pr-select-all" ${allSelected ? "checked" : ""} onchange="togglePrRecoSelectAll(this.checked)" title="발주필요 상품 전체 선택">` : ""}</th>
         <th>상품</th><th>공급처</th>
@@ -3865,15 +3865,15 @@ function prRecoTableHtml(list) {
         return `
         <tr>
           <td>${selectable ? `<input type="checkbox" class="pr-reco-chk" ${prRecoSelected.has(r.vendor_item_id) ? "checked" : ""} onchange="togglePrRecoSelect('${esc(r.vendor_item_id)}', this.checked)">` : ""}</td>
-          <td><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${r.is_active === false ? `<br><span class="chip waiting" style="padding:1px 6px;margin-top:2px;display:inline-block">⚫ 비활성${r.stale_at ? "(" + new Date(r.stale_at).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" }) + "부터)" : ""}</span>` : ""}${sharedInventoryBadgeHtml(r.shared_inventory)}</td>
-          <td>${esc(r.supplier_name || "-")}</td>
-          <td class="num"><b>${r.recommended_units != null ? fmt(r.recommended_units) : "-"}</b></td>
-          <td class="num">${r.recommended_boxes != null ? fmt(r.recommended_boxes) : "-"}</td>
-          <td class="num">${r.recommended_plts != null ? fmt(r.recommended_plts) : "-"}</td>
-          <td><span class="chip ${cls}">${label}</span>${r.reason ? `<br><small style="color:var(--text-sub)">${esc(r.reason)}</small>` : ""}${inFlight ? `<br><small style="color:var(--text-sub)">${pendingQty ? `결재중 ${fmt(pendingQty)}개` : ""}${pendingQty && openQty ? " · " : ""}${openQty ? `발주확정 ${fmt(openQty)}개` : ""}</small>` : ""}</td>
-          <td>${po ? `<a onclick="location.hash='#/podoc/${esc(po.id)}'" style="color:var(--brand);cursor:pointer">${esc(po.po_no)}</a><br>${poChip(po.status)}` : `<span style="color:var(--text-sub)">-</span>`}</td>
+          <td class="rt-title"><b>${esc(r.product_name || r.vendor_item_id)}</b>${r.option_name ? `<br><small style="color:var(--text-sub)">${esc(r.option_name)}</small>` : ""}${r.is_active === false ? `<br><span class="chip waiting" style="padding:1px 6px;margin-top:2px;display:inline-block">⚫ 비활성${r.stale_at ? "(" + new Date(r.stale_at).toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" }) + "부터)" : ""}</span>` : ""}${sharedInventoryBadgeHtml(r.shared_inventory)}</td>
+          <td class="num" data-label="추천수량" style="order:-4"><b>${r.recommended_units != null ? fmt(r.recommended_units) : "-"}</b></td>
+          <td class="num" data-label="BOX" style="order:-3">${r.recommended_boxes != null ? fmt(r.recommended_boxes) : "-"}</td>
+          <td class="num" data-label="예상 PLT" style="order:-2">${r.recommended_plts != null ? fmt(r.recommended_plts) : "-"}</td>
+          <td class="rt-block" data-label="PO 상태" style="order:-1">${po ? `<a onclick="location.hash='#/podoc/${esc(po.id)}'" style="color:var(--brand);cursor:pointer">${esc(po.po_no)}</a><br>${poChip(po.status)}` : `<span style="color:var(--text-sub)">-</span>`}</td>
+          <td class="rt-block" data-label="발주 근거 · 상태"><span class="chip ${cls}">${label}</span>${r.reason ? `<br><small style="color:var(--text-sub)">${esc(r.reason)}</small>` : ""}${inFlight ? `<br><small style="color:var(--text-sub)">${pendingQty ? `결재중 ${fmt(pendingQty)}개` : ""}${pendingQty && openQty ? " · " : ""}${openQty ? `발주확정 ${fmt(openQty)}개` : ""}</small>` : ""}</td>
+          <td class="rt-block" data-label="공급처">${esc(r.supplier_name || "-")}</td>
         </tr>`;
-      }).join("") : `<tr><td colspan="8" class="empty">조건에 맞는 상품이 없습니다</td></tr>`}
+      }).join("") : `<tr><td colspan="8" class="empty rt-empty">조건에 맞는 상품이 없습니다</td></tr>`}
       </tbody>
     </table></div>`;
 }
