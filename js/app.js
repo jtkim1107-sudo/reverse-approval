@@ -3238,18 +3238,24 @@ function stockSourceBadgeHtml(r) {
   return `<span class="chip ${t.chip}">${t.icon} ${t.label}</span>${updatedAt ? `<br><small style="color:var(--text-sub)">${updatedAt}</small>` : ""}${snapshotNote}`;
 }
 
-// 2026-09-07 [ERP 재고현황 UI 혼동 제거, 사용자 명시 실측 사고] "제품별 재고
-// (자사창고/쿠팡)" 표(매입-판매 장부 기반, viewInventory 소관)에 로켓그로스
-// 실제 재고를 나란히 보여주는 전용 셀 - stockSourceBadgeHtml()과 달리 숫자
-// 자체(current_stock)를 크게 앞세우고 출처는 작은 글씨로만 덧붙임(이 표에서
-// "가장 중요한 숫자"라는 우선순위를 시각적으로도 반영, 사용자 명시). 로켓그로스
-// 매핑이 아예 없는 상품(마켓플레이스/미매핑)은 "-"만 표시(추측 안 함).
+// 2026-09-07 [ERP 재고현황 UI 완전 분리, 사용자 명시 실측 사고 - "39" 오인]
+// "제품별 재고" 표(매입-판매 장부 기반, viewInventory 소관)의 "쿠팡 실재고"
+// 전용 셀 - *** ERP 장부재고를 절대 이 칸에 대신 표시하지 않음(사용자 명시)
+// *** - 로켓그로스 매핑 자체가 없는 상품(마켓플레이스/미매핑)은 "-", 매핑은
+// 있지만 값을 하나도 못 구한 경우(NO_INVENTORY 등)는 "조회 실패"로 명확히
+// 구분해서 보여줌(추측/대체 없음). 성공(live)이면 "4 🟢" + 조회시각,
+// live 실패로 스냅샷 대체면 "16 🔵 스냅샷"으로 출처를 항상 명시함.
 function rgLiveStockCellHtml(rgRow) {
-  if (!rgRow || rgRow.current_stock == null) return `<span style="color:var(--text-sub)">-</span>`;
+  if (!rgRow) return `<span style="color:var(--text-sub)">-</span>`;
+  if (rgRow.current_stock == null) return `<span style="color:var(--red)">조회 실패</span>`;
   const isLive = rgRow.stock_source === "COUPANG_RG_LIVE";
   const icon = isLive ? "🟢" : "🔵";
-  const label = isLive ? "실시간" : "스냅샷";
-  return `<b style="font-size:14px">${fmt(rgRow.current_stock)}</b><br><small style="color:var(--text-sub)">${icon} ${label}</small>`;
+  const label = isLive ? "" : " 스냅샷";
+  const updatedAt = rgRow.stock_updated_at
+    ? new Date(rgRow.stock_updated_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
+  return `<b style="font-size:14px">${fmt(rgRow.current_stock)}</b> ${icon}${label}` +
+    (updatedAt ? `<br><small style="color:var(--text-sub)">${updatedAt}</small>` : "");
 }
 
 /* 판매속도·발주예상 표 - purchase_recommendations를 그대로 재사용(계산은
@@ -3347,15 +3353,16 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
     return { p, ...st, value: st.stock * st.lastCost };
   });
 
-  // 2026-09-07 [ERP 재고현황 UI 혼동 제거, 사용자 명시 실측 사고 - "39" 오인]
-  // 아래 표의 "쿠팡"/"총재고" 컬럼은 purchase_recommendations(로켓그로스 live/
+  // 2026-09-07 [ERP 재고현황 UI 완전 분리, 사용자 명시 실측 사고 - "39" 오인]
+  // 아래 표의 (구)"쿠팡" 컬럼은 purchase_recommendations(로켓그로스 live/
   // 스냅샷 재고)와 전혀 무관한 별도 계산(총매입-총판매+이동 기록, Coupang API를
   // 전혀 안 씀)이에요 - 실측으로 실제 사용자가 이 장부값(39)을 쿠팡 실재고로
-  // 오인한 사고가 있었음. purchase_recommendations는 이미 로드돼 있으므로
-  // (재고현황 탭 진입 시 항상 preloadedPurchaseReco를 줌) product_id -> 로켓그로스
-  // live/스냅샷 현재재고를 새 조회 없이 그대로 매핑만 해서, 이 표에 "쿠팡
-  // 현재재고(live)"를 장부값과 나란히·더 우선적으로 보여줘요(사용자 명시
-  // "가장 중요한 숫자는 쿠팡 현재재고(live)").
+  // 오인한 사고가 있었음. *** 사용자 명시: 두 값을 절대 합치거나 서로 맞추지
+  // 않음(서로 다른 데이터) *** - "ERP 장부재고"(매입-판매 장부)와 "쿠팡
+  // 실재고"(Coupang RG API live/snapshot)를 완전히 별개 컬럼으로 분리하고,
+  // 기존에 있던 "총재고"(둘을 합산한 값)는 아예 제거함. purchase_recommendations는
+  // 이미 로드돼 있으므로(재고현황 탭 진입 시 항상 preloadedPurchaseReco를 줌)
+  // product_id -> 로켓그로스 live/스냅샷 현재재고를 새 조회 없이 그대로 매핑만 함.
   const rgLiveByProductId = {};
   (preloadedPurchaseReco?.data || []).forEach(r => {
     if (r.channel === "rocket_growth" && r.product_id) rgLiveByProductId[r.product_id] = r;
@@ -3363,6 +3370,12 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
   const totalValue = inv.reduce((s, r) => s + r.value, 0);
   const totalCoupang = inv.reduce((s, r) => s + r.atCoupang, 0);
   const totalInHouse = inv.reduce((s, r) => s + r.inHouse, 0);
+  // 쿠팡 실재고 요약 카드용 - RG 매핑이 있는 상품만, live/snapshot 건수도 같이 셈
+  // (사용자 명시 "서로 다른 데이터" 원칙 - 합계도 장부합과 절대 안 섞음).
+  const rgLiveRows = Object.values(rgLiveByProductId);
+  const rgLiveTotal = rgLiveRows.reduce((s, r) => s + (r.current_stock || 0), 0);
+  const rgLiveCount = rgLiveRows.filter(r => r.stock_source === "COUPANG_RG_LIVE").length;
+  const rgSnapshotCount = rgLiveRows.filter(r => r.stock_source !== "COUPANG_RG_LIVE" && r.current_stock != null).length;
   const recentTransfers = erpTransfers.slice(0, 20);
 
   return `
@@ -3371,39 +3384,42 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
         <div class="stat-value blue">₩${fmt(totalValue)}</div></div>
       <div class="stat"><div class="stat-label">자사창고 재고</div>
         <div class="stat-value">${fmt(totalInHouse)}개</div></div>
-      <div class="stat"><div class="stat-label">쿠팡 사외재고</div>
+      <div class="stat"><div class="stat-label">ERP 장부재고(쿠팡, 매입-판매 계산값)</div>
         <div class="stat-value amber">${fmt(totalCoupang)}개</div></div>
+      <div class="stat"><div class="stat-label">🚀 쿠팡 실재고 합계(RG API)</div>
+        <div class="stat-value" style="color:var(--brand)">${fmt(rgLiveTotal)}개</div>
+        <small style="color:var(--text-sub);font-size:11px">실시간 ${rgLiveCount}종 · 스냅샷 ${rgSnapshotCount}종</small></div>
       <div class="stat" onclick="location.hash='#/products'"><div class="stat-label">위탁 제품 (재고 제외)</div>
         <div class="stat-value">${consignCount}종</div></div>
     </div>
     <div class="card">
-      <div class="card-head"><h2>제품별 재고 (자사창고 / 쿠팡)</h2>
+      <div class="card-head"><h2>제품별 재고 (자사창고 / ERP 장부 / 쿠팡 실재고)</h2>
         <div style="display:flex;gap:8px">
           <button class="btn sm" onclick="openTransferModal()">🚚 쿠팡 재고 이동</button>
           <button class="btn sm secondary" onclick="location.hash='#/purchases'">＋ 매입 입력</button>
         </div></div>
       <p style="font-size:12.5px;color:var(--text-sub);margin:-4px 0 12px">
-        로켓그로스(쿠팡 풀필먼트) 상품은 <b>쿠팡 현재재고(live)</b>가 실제 쿠팡 재고예요 —
-        <b>쿠팡(이동장부)</b>·<b>총재고</b>는 매입/판매 입력을 그대로 누적 계산한 별도 장부값이라
-        실제 쿠팡 재고와 다를 수 있어요(예: 로켓그로스 직송이라 이동 기록 자체가 없는 경우).
+        <b>ERP 장부재고</b>와 <b>쿠팡 실재고</b>는 서로 다른 기준의 서로 다른 데이터예요(하나를 다른
+        하나에 맞추지 않습니다) — <b>ERP 장부재고</b>는 매입 입력 - 판매 + 이동 기록을 누적 계산한
+        값(Coupang API 조회 아님), <b>쿠팡 실재고</b>는 Coupang 로켓그로스 API를 직접 조회한 값이에요.
+        실제 쿠팡 재고를 확인할 땐 반드시 <b>쿠팡 실재고</b> 컬럼을 보세요.
       </p>
       <div class="table-wrap"><table>
-        <thead><tr><th>제품</th><th class="num">🚀 쿠팡 현재재고(live)</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">자사창고</th><th class="num" title="매입-판매 누적 장부값(실제 쿠팡 API 조회 아님)">쿠팡(이동장부)</th><th class="num" title="자사창고+쿠팡(이동장부) 합 - 장부값">총재고(장부)</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
+        <thead><tr><th>제품</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">자사재고</th><th class="num" title="매입-판매+이동 누적 장부값(Coupang API 조회 아님)">ERP 장부재고</th><th class="num" title="Coupang 로켓그로스 API 직접 조회(live 우선, 실패 시 BigQuery snapshot)">🚀 쿠팡 실재고</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
         <tbody>${inv.length ? inv.map(r => {
           const rg = rgLiveByProductId[r.p.id];
           return `
           <tr>
             <td><b>${esc(r.p.name)}</b><br><small style="color:var(--text-sub)">${esc(r.p.code)} · ${esc(r.p.spec)}</small></td>
-            <td class="num">${rgLiveStockCellHtml(rg)}</td>
             <td class="num">${fmt(r.bought)}</td>
             <td class="num">${fmt(r.sold)}</td>
             <td class="num" style="color:${r.inHouse < 0 ? "var(--red)" : "var(--text)"}">${fmt(r.inHouse)}</td>
             <td class="num" style="color:${r.atCoupang < 0 ? "var(--red)" : "var(--amber)"}">${fmt(r.atCoupang)}</td>
-            <td class="num" style="font-weight:800;color:${r.stock < 0 ? "var(--red)" : r.stock <= 5 ? "var(--amber)" : "var(--text)"}">${fmt(r.stock)}</td>
+            <td class="num">${rgLiveStockCellHtml(rg)}</td>
             <td class="num">₩${fmt(r.lastCost)}</td>
             <td class="num">₩${fmt(r.value)}</td>
           </tr>`;
-        }).join("") : `<tr><td colspan="9" class="empty">제품이 없습니다</td></tr>`}
+        }).join("") : `<tr><td colspan="8" class="empty">제품이 없습니다</td></tr>`}
         </tbody>
       </table></div>
       ${(() => {
@@ -3417,8 +3433,8 @@ async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedP
         </div>` : "";
       })()}
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ <b>🚀 쿠팡 현재재고(live)</b>는 쿠팡 로켓그로스 API를 직접 조회한 실제 재고예요(가능하면 실시간, 안 되면 자동으로 BigQuery 스냅샷으로 대체) — 로켓그로스 상품의 실제 쿠팡 재고를 확인할 땐 이 컬럼을 보세요.<br>
-        ※ <b>쿠팡(이동장부)</b>·<b>총재고(장부)</b>는 매입 입력 - 판매 + 쿠팡 재고 이동 기록을 그대로 누적한 값이에요(쿠팡 API 조회 아님) — 로켓그로스처럼 공급처가 쿠팡 물류센터로 직접 보내 이동 기록 자체가 없는 경우 실제 재고와 크게 다를 수 있어요.<br>
+        ※ <b>🚀 쿠팡 실재고</b>는 쿠팡 로켓그로스 API를 직접 조회한 실제 재고예요(가능하면 실시간 🟢, 안 되면 자동으로 BigQuery 스냅샷 🔵으로 대체 - 대체된 값도 항상 출처를 표시함) — 로켓그로스 상품의 실제 쿠팡 재고를 확인할 땐 반드시 이 컬럼을 보세요.<br>
+        ※ <b>ERP 장부재고</b>는 매입 입력 - 판매 + 쿠팡 재고 이동 기록을 그대로 누적한 값이에요(쿠팡 API 조회 아님) — 로켓그로스처럼 공급처가 쿠팡 물류센터로 직접 보내 이동 기록 자체가 없는 경우 실제 재고와 크게 다를 수 있어요. <b>두 컬럼은 서로 다른 데이터라 일부러 합치거나 서로 맞추지 않습니다.</b><br>
         ※ 창고에서 쿠팡 물류센터로 보낸 수량은 <b>🚚 쿠팡 재고 이동</b>으로 기록하세요.<br>
         ※ <b>풀필먼트 채널</b>(쿠팡 로켓그로스 등) 매출은 쿠팡 재고에서, 그 외(쿠팡 판매자배송 포함) 매출은 자사창고에서 차감됩니다.<br>
         ※ 숫자가 음수면 이동/매입 기록이 누락된 것입니다. 위탁 상품은 이 화면에 표시되지 않습니다.<br>
