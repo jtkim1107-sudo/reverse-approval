@@ -3376,6 +3376,7 @@ function stockFlowRefresh() {
   stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null, poInfo: null };
   _stockFlowForceRefreshNext = true; // 다음 getStockFlowPurchaseReco() 호출만 서버 캐시도 강제로 우회
   inventoryDecisionsCache = null; // 통합 판단 엔진 결과도 같이 비움(재고·발주 탭이 다시 fetch함)
+  _inventoryDecisionsForceRefreshNext = true; // 2026-09-08 [성능개선 3A] 다음 fetchInventoryDecisions()만 서버 RG live 캐시도 강제로 우회
   route();
 }
 
@@ -3395,14 +3396,18 @@ const INVENTORY_DECISION_META = {
 };
 const INVENTORY_DECISION_FETCH_TIMEOUT_MS = 95000; // 서버 timeout(90초)보다 살짝 여유
 
-async function fetchInventoryDecisions() {
+// 2026-09-08 [재고·발주 성능개선 3A, 사용자 명시] forceRefresh=true일 때만 서버에
+// RG live 재고를 강제로 다시 조회하게 함(?force_refresh=true) - 평소 화면 진입은
+// 서버의 5분 캐시를 그대로 써서 훨씬 빠름. [새로고침] 버튼을 눌렀을 때만 true로 호출.
+async function fetchInventoryDecisions(forceRefresh = false) {
   const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
   const jwt = session?.access_token;
   if (!jwt) return { ok: false, error: "로그인 세션이 없어요." };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), INVENTORY_DECISION_FETCH_TIMEOUT_MS);
   try {
-    const resp = await fetch(`${LIVE_STOCK_API_BASE}/api/inventory/decisions`, {
+    const url = `${LIVE_STOCK_API_BASE}/api/inventory/decisions${forceRefresh ? "?force_refresh=true" : ""}`;
+    const resp = await fetch(url, {
       headers: { Authorization: `Bearer ${jwt}` }, signal: controller.signal,
     });
     const body = await resp.json().catch(() => null);
@@ -3417,6 +3422,51 @@ async function fetchInventoryDecisions() {
 
 let inventoryDecisionsCache = null; // fetch 결과 원본 - 상세 패널이 재조회 없이 여기서 찾아 씀
 let inventoryDecisionFilter = null; // 요약 칩 클릭 필터(5단계 중 하나 또는 null=전체)
+// 2026-09-08 [재고·발주 성능개선 3A, 사용자 명시] stockFlowRefresh()가 켜고, 다음
+// viewInventoryDecisions() 진입이 소비하자마자 끔(1회성) - [새로고침] 버튼을 눌렀을
+// 때만 서버에 강제 재조회를 요청하기 위한 플래그.
+let _inventoryDecisionsForceRefreshNext = false;
+
+// 2026-09-08 [아가드 shared inventory 정합성, 사용자 명시] 이 옵션이 세트 관계라면
+// "세트", 아니면 "개" - 표/상세 여러 곳에서 재사용.
+function inventoryStockUnit(d) {
+  return d.shared_inventory?.role === "child" ? "세트" : "개";
+}
+
+// 2026-09-08 [아가드 shared inventory 정합성, 사용자 명시 핵심 원칙] live_stock이
+// 없으면(base 자신이든, base를 그대로 따르는 child든) "확인 불가"를 정직하게 보여줌 -
+// BigQuery snapshot(base.snapshot_stock 또는 child의 shared_inventory.
+// snapshot_available_sets)은 삭제하지 않고 참고용으로만 같이 보여줌("실시간 재고
+// 확인 불가 · 최근 스냅샷 N개" 형태) - 이 스냅샷 숫자를 live_stock인 것처럼 굵게/
+// 확정된 값으로 보여주면 안 됨(그래서 항상 "확인 불가"를 먼저 말하고 참고용임을 명시).
+function inventorySnapshotRef(d) {
+  const isChild = d.shared_inventory?.role === "child";
+  return isChild ? d.shared_inventory?.snapshot_available_sets : d.snapshot_stock;
+}
+
+function inventoryStockText(d) {
+  const unit = inventoryStockUnit(d);
+  if (d.live_stock != null) return `${fmt(d.live_stock)}${unit}`;
+  const snapshot = inventorySnapshotRef(d);
+  if (snapshot != null) return `확인 불가 · 스냅샷 ${fmt(snapshot)}${unit}`;
+  return "-";
+}
+
+function inventoryStockDetailText(d) {
+  const unit = inventoryStockUnit(d);
+  if (d.live_stock != null) return `${fmt(d.live_stock)}${unit}`;
+  const snapshot = inventorySnapshotRef(d);
+  if (snapshot != null) return `실시간 재고 확인 불가 · 최근 스냅샷 ${fmt(snapshot)}${unit}`;
+  return "실시간 재고 확인 불가";
+}
+
+// 2026-09-08 [DATA_CHECK UX 정확한 원인 구분, 사용자 명시] 서버가 이미 reason_code
+// 기준으로 결정해준 decision_check_label을 그대로 씀(프론트가 다시 분기 안 함) -
+// DATA_CHECK가 아니면 기존 INVENTORY_DECISION_META 라벨 그대로.
+function inventoryDecisionLabel(d) {
+  if (d.decision === "DATA_CHECK" && d.decision_check_label) return d.decision_check_label;
+  return (INVENTORY_DECISION_META[d.decision] || { label: d.decision }).label;
+}
 
 function inventoryOutlookText(d) {
   if (d.decision === "DATA_CHECK") return "확인 필요";
@@ -3427,7 +3477,14 @@ function inventoryOutlookText(d) {
 
 function inventoryIncomingText(d) {
   if (!d.incoming_qty) return "-";
-  if (d.incoming_date) return `+${fmt(d.incoming_qty)} · ${d.incoming_date.slice(5).replace("-", "/")}`;
+  const dateShort = d.incoming_date ? d.incoming_date.slice(5).replace("-", "/") : null;
+  // 2026-09-08 [DATA_CHECK UX 정확한 원인 구분, 사용자 명시] "입고예정일이 지났는데
+  // 아직 미입고"인 이 케이스만 별도 경고 문구("+200EA · 09/01 예정일 경과") - 다른
+  // DATA_CHECK 사유는 이 표현을 안 씀(일괄 전환 금지).
+  if (d.decision_reason_code === "PO_OVERDUE" && dateShort) {
+    return `⚠️ +${fmt(d.incoming_qty)}${inventoryStockUnit(d) === "세트" ? "세트" : "EA"} · ${dateShort} 예정일 경과`;
+  }
+  if (dateShort) return `+${fmt(d.incoming_qty)} · ${dateShort}`;
   return `+${fmt(d.incoming_qty)} · 날짜 확인필요`;
 }
 
@@ -3445,7 +3502,9 @@ function inventorySharedInventoryBadge(d) {
 
 async function viewInventoryDecisions() {
   if (!inventoryDecisionsCache) {
-    inventoryDecisionsCache = await fetchInventoryDecisions();
+    const forceRefresh = _inventoryDecisionsForceRefreshNext;
+    _inventoryDecisionsForceRefreshNext = false;
+    inventoryDecisionsCache = await fetchInventoryDecisions(forceRefresh);
   }
   const result = inventoryDecisionsCache;
   if (!result.ok) {
@@ -3470,8 +3529,8 @@ async function viewInventoryDecisions() {
 
   const rowsHtml = sorted.map(d => {
     const meta = INVENTORY_DECISION_META[d.decision] || { label: d.decision, chip: "waiting" };
-    const stockUnit = d.shared_inventory?.role === "child" ? "세트" : "개";
-    const stockText = d.live_stock != null ? `${fmt(d.live_stock)}${stockUnit}` : "-";
+    const rowLabel = inventoryDecisionLabel(d);
+    const stockText = inventoryStockText(d);
     const velocityText = d.avg_daily_sales != null ? `${d.avg_daily_sales.toFixed(1)}${d.shared_inventory?.role === "child" ? "세트" : ""}/일` : "-";
     const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개` : "-";
     const sharedBadge = inventorySharedInventoryBadge(d);
@@ -3479,11 +3538,11 @@ async function viewInventoryDecisions() {
     return `
       <tr data-clickable onclick="openInventoryDecisionDetail('${d.product_id}')">
         <td class="idt-name">${esc(d.product_name || "")}${d.option_name ? `<br><small style="color:var(--text-sub);font-weight:400">${esc(d.option_name)}</small>` : ""}${sharedBadge}</td>
-        <td class="idt-stock num">${stockText}</td>
+        <td class="idt-stock num">${esc(stockText)}</td>
         <td class="idt-velocity num">${velocityText}</td>
         <td class="idt-incoming">${inventoryIncomingText(d)}</td>
         <td class="idt-outlook">${esc(inventoryOutlookText(d))}</td>
-        <td><span class="chip ${meta.chip}">${meta.label}</span></td>
+        <td><span class="chip ${meta.chip}">${esc(rowLabel)}</span></td>
         <td class="idt-reco num">${recoText}</td>
         <td class="idt-mobile-meta">${esc(mobileMeta)} · ${esc(inventoryOutlookText(d))}</td>
       </tr>`;
@@ -3513,9 +3572,10 @@ function openInventoryDecisionDetail(productId) {
   const d = (inventoryDecisionsCache?.decisions || []).find(x => x.product_id === productId);
   if (!d) return;
   const meta = INVENTORY_DECISION_META[d.decision] || { label: d.decision, chip: "waiting" };
+  const rowLabel = inventoryDecisionLabel(d);
   const isChild = d.shared_inventory?.role === "child";
   const isBase = d.shared_inventory?.role === "base";
-  const stockUnit = isChild ? "세트" : "개";
+  const stockUnit = inventoryStockUnit(d);
   const poRows = (d.open_po_refs || []).map(r => `
     <tr><td>${esc(r.po_no || "-")}</td><td>${esc(r.status || "-")}</td>
       <td class="num">${fmt(r.qty)}</td><td class="num">${fmt(r.received_qty)}</td><td class="num">${fmt(r.remain)}</td></tr>`).join("");
@@ -3525,7 +3585,7 @@ function openInventoryDecisionDetail(productId) {
       <div class="modal" style="max-width:640px;width:96vw">
         <div class="card-head">
           <h3>${esc(d.product_name || "")}</h3>
-          <span class="chip ${meta.chip}">${meta.label}</span>
+          <span class="chip ${meta.chip}">${esc(rowLabel)}</span>
         </div>
         ${d.option_name ? `<p style="color:var(--text-sub);margin:-6px 0 8px">${esc(d.option_name)}</p>` : ""}
         ${isChild ? `<p style="font-size:13px;background:var(--gray-bg);border-radius:8px;padding:8px 10px;margin:0 0 8px">
@@ -3537,7 +3597,7 @@ function openInventoryDecisionDetail(productId) {
 
         <h4 style="font-size:13px;margin:14px 0 4px">현재</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
-          <tr><td>${isChild ? "판매가능 세트(기준상품 재고 환산)" : "쿠팡 live 재고"}</td><td class="num">${d.live_stock != null ? fmt(d.live_stock) + stockUnit : "조회 실패"}</td></tr>
+          <tr><td>${isChild ? "판매가능 세트(기준상품 재고 환산)" : "쿠팡 live 재고"}</td><td class="num">${esc(inventoryStockDetailText(d))}</td></tr>
           <tr><td>재고 출처 / 갱신시각</td><td class="num">${esc(d.stock_source || "-")} · ${stockUpdated}</td></tr>
         </tbody></table></div>
 
@@ -3765,7 +3825,14 @@ async function viewStockFlow(tab) {
   } else if (tab === "plan") {
     body = await viewShipmentPlans();
   } else {
-    body = await viewRgInbound(await getStockFlowRgData());
+    // 2026-09-08 [쿠팡입고 waterfall 소규모 개선, 사용자 명시] getStockFlowRgData()
+    // (inbound_plans/inbound_plan_items)와 /api/truck-inbound-prep는 서로 독립이라
+    // 순차로 기다릴 필요 없음 - 둘 다 동시에 시작만 해두고, plans/itemsByPlan이
+    // 필요한 viewRgInbound()에서 합류시킴(/api/truck-inbound-prep 자체는 가벼워서
+    // 이것 때문에 큰 리팩터링은 안 함 - 시작 시점만 앞당김).
+    const rgDataPromise = getStockFlowRgData();
+    const truckPrepCardPromise = renderTruckInboundPrepCard();
+    body = await viewRgInbound(await rgDataPromise, truckPrepCardPromise);
   }
   return `
     <div class="card" style="padding:8px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px">
@@ -7019,7 +7086,7 @@ async function attachParcelPdf(planId) {
   route();
 }
 
-async function viewRgInbound(preloaded) {
+async function viewRgInbound(preloaded, truckPrepCardPromise) {
   const [plansRes, itemsRes] = preloaded || await Promise.all([
     sb.from("inbound_plans").select("*").order("created_at", { ascending: false }),
     sb.from("inbound_plan_items").select("*"),
@@ -7080,8 +7147,12 @@ async function viewRgInbound(preloaded) {
       </tr>`));
   });
 
+  // 2026-09-08 [쿠팡입고 waterfall 소규모 개선, 사용자 명시] truckPrepCardPromise를
+  // 호출부(viewStockFlow())가 getStockFlowRgData()와 동시에 미리 시작해뒀으면 그걸
+  // 그대로 기다리기만 함(/api/truck-inbound-prep는 plans/itemsByPlan과 무관 - 순차로
+  // 기다릴 이유가 없었음). 안 넘어오면(다른 호출부) 기존처럼 여기서 새로 시작.
   const [truckPrepCardHtml, parcelApprovalCardHtml] = await Promise.all([
-    renderTruckInboundPrepCard(),
+    truckPrepCardPromise || renderTruckInboundPrepCard(),
     renderParcelApprovalCard(plans, itemsByPlan),
   ]);
 
