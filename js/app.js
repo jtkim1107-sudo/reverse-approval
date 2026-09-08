@@ -45,12 +45,13 @@ const LIVE_STOCK_API_BASE = WING_SUBMIT_API_BASE;
 const LIVE_STOCK_FETCH_TIMEOUT_MS = 10000;
 const LIVE_STOCK_FETCH_MAX_ATTEMPTS = 2; // 최초 1회 + 재시도 최대 1회 = 합계 2회, 그 이상 없음
 
-async function _fetchLiveStockMapAttempt(vendorItemIds, jwt) {
+async function _fetchLiveStockMapAttempt(vendorItemIds, jwt, forceRefresh) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LIVE_STOCK_FETCH_TIMEOUT_MS);
   try {
+    const qs = `vids=${encodeURIComponent(vendorItemIds.join(","))}${forceRefresh ? "&force_refresh=true" : ""}`;
     const resp = await fetch(
-      `${LIVE_STOCK_API_BASE}/api/coupang/rg-inventory-live?vids=${encodeURIComponent(vendorItemIds.join(","))}`,
+      `${LIVE_STOCK_API_BASE}/api/coupang/rg-inventory-live?${qs}`,
       { headers: { Authorization: `Bearer ${jwt}` }, signal: controller.signal },
     );
     if (!resp.ok) return { outcome: "http_error", ok: false, map: {} };
@@ -75,7 +76,12 @@ async function _fetchLiveStockMapAttempt(vendorItemIds, jwt) {
 // 명확히 표시해요(연동 자체가 안 된 것과 구분 - stockSourceBadgeHtml 참고).
 // ok:true인데 특정 vid가 map에 없는 것도 정상(그 SKU만 live 데이터가 없다는
 // 뜻 - taltal-server가 이미 그렇게 설계됨).
-async function fetchLiveStockMap(vendorItemIds) {
+// 2026-09-08 [PHASE 9 STEP 2, 사용자 명시 실측 지적] forceRefresh=true면
+// taltal-server의 5분 TTL 캐시를 우회하고 실제 Coupang API를 다시 조회하도록
+// force_refresh 쿼리파라미터를 실어 보냄(서버 쪽 rg_live_inventory_helper.
+// get_cached_live_rg_inventory(..., force_refresh=True) 배선과 짝) - 예전엔
+// 이 값 자체가 서버로 전달 안 돼서 "새로고침"을 눌러도 서버 캐시가 안 비워짐.
+async function fetchLiveStockMap(vendorItemIds, forceRefresh = false) {
   if (!vendorItemIds.length) return { ok: true, map: {} };
   const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
   const jwt = session?.access_token;
@@ -83,7 +89,7 @@ async function fetchLiveStockMap(vendorItemIds) {
 
   let lastResult = { ok: false, map: {} };
   for (let attempt = 1; attempt <= LIVE_STOCK_FETCH_MAX_ATTEMPTS; attempt++) {
-    const result = await _fetchLiveStockMapAttempt(vendorItemIds, jwt);
+    const result = await _fetchLiveStockMapAttempt(vendorItemIds, jwt, forceRefresh);
     if (result.outcome === "ok") return { ok: true, map: result.map };
     if (result.outcome === "http_error") return { ok: false, map: {} }; // 재시도해도 안 고쳐짐 - 즉시 포기
     lastResult = { ok: false, map: {} }; // network_or_timeout - 재시도 대상(루프가 최대 1회만 더 돎)
@@ -1220,11 +1226,57 @@ async function loadDailySalesBriefing(dateStr) {
   return data || null;
 }
 
+// 2026-09-08 [PHASE 10 STEP 2] 매출내역 상세용 "그 날짜 판매상품 전체"를
+// (product_id, channel) 기준으로 집계 - daily_sales_briefing에 저장 안 하고
+// sales에서 화면 진입 시 직접 계산(새 DB 조회/컬럼 없음, 이미 로드된
+// erpProducts로 이름만 조인). 매출 내림차순 정렬.
+async function loadDailyProductBreakdown(dateStr) {
+  const { data } = await sb.from("sales").select("channel,product_id,qty,amount").eq("date", dateStr);
+  if (!data || !data.length) return [];
+  const byKey = {};
+  for (const r of data) {
+    const key = `${r.product_id}|${r.channel}`;
+    if (!byKey[key]) byKey[key] = { product_id: r.product_id, channel: r.channel, qty: 0, amount: 0 };
+    byKey[key].qty += Number(r.qty) || 0;
+    byKey[key].amount += Number(r.amount) || 0;
+  }
+  const nameById = Object.fromEntries((erpProducts || []).map(p => [p.id, p.name]));
+  return Object.values(byKey)
+    .map(e => ({ ...e, name: nameById[e.product_id] || e.product_id }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
 // 취소/반품 금액은 SETTLED(확정)가 있으면 그 값, 없으면 ESTIMATED(추정) 사용 -
 // daily_sales_briefing.py의 net_amount 계산과 동일한 우선순위
 const briefingAdjAmount = (estimated, settled) => (settled != null ? Number(settled) : Number(estimated || 0));
 
-function briefingCardHtml(b, dateStr, { detailed = false } = {}) {
+// 2026-09-08 [PHASE 9/10] 채널 표시 아이콘 - 알 수 없는 채널이면 아이콘 없이
+// 이름만(추측 없음).
+function channelIconLabel(channel) {
+  if (channel === "쿠팡 로켓그로스") return `🚀 ${esc(channel)}`;
+  if (channel === "쿠팡 판매자배송") return `📦 ${esc(channel)}`;
+  return esc(channel || "기타");
+}
+
+// 2026-09-08 [PHASE 10 STEP 2, 사용자 명시] 상품 단위 판매 카드 - "쿠팡 판매
+// 화면처럼" 상품명/매출/판매량/채널이 한 카드 안에 한눈에 보이게 함. *** 구형
+// {name, amount}만 있는 과거 브리핑 행(2026-09-07 등)도 절대 안 깨지게 -
+// qty/channel이 없으면 그 부분만 생략하고 표시함(에러 없이 안전 렌더링) ***.
+function productSalesCardHtml(item, rank) {
+  const metaParts = [`매출 ₩${fmt(item.amount)}`];
+  if (item.qty != null) metaParts.push(`판매량 ${fmt(item.qty)}개`);
+  const channelPart = item.channel ? channelIconLabel(item.channel) : null;
+  return `
+    <div class="product-sales-card">
+      ${rank != null ? `<div class="product-sales-rank">${rank}</div>` : ""}
+      <div class="product-sales-body">
+        <div class="product-sales-name">${esc(item.name || item.product_id)}</div>
+        <div class="product-sales-meta">${metaParts.join(" · ")}${channelPart ? `<br>${channelPart}` : ""}</div>
+      </div>
+    </div>`;
+}
+
+function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null } = {}) {
   if (!b) {
     return `<div class="card">
       <div class="card-head"><h2>${detailed ? "매출 브리핑 상세" : "어제 매출 브리핑"}</h2></div>
@@ -1242,8 +1294,7 @@ function briefingCardHtml(b, dateStr, { detailed = false } = {}) {
     : "-";
   const channelRows = Object.entries(b.channel_breakdown || {})
     .map(([ch, amt]) => `<tr><td>${esc(ch)}</td><td class="num">₩${fmt(amt)}</td></tr>`).join("");
-  const top5Rows = (b.top5 || []).map((t, i) =>
-    `<tr><td>${i + 1}. ${esc(t.name || t.product_id)}</td><td class="num">₩${fmt(t.amount)}</td></tr>`).join("");
+  const top5Cards = (b.top5 || []).map((t, i) => productSalesCardHtml(t, i + 1)).join("");
 
   return `
     <div class="card" ${needsCheck ? 'style="border:2px solid var(--amber)"' : ""}>
@@ -1272,10 +1323,17 @@ function briefingCardHtml(b, dateStr, { detailed = false } = {}) {
         <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">채널별 매출</h3>
           <table class="items-table"><tbody>${channelRows || '<tr><td colspan="2" style="color:var(--text-sub)">데이터 없음</td></tr>'}</tbody></table></div>
         <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">매출 TOP5</h3>
-          <table class="items-table"><tbody>${top5Rows || '<tr><td colspan="2" style="color:var(--text-sub)">데이터 없음</td></tr>'}</tbody></table></div>
+          <div class="product-sales-list">${top5Cards || '<p style="color:var(--text-sub);font-size:13px">데이터 없음</p>'}</div></div>
       </div>
       ${b.unmatched_count ? `<p style="font-size:12px;color:var(--text-sub);margin-top:8px">매핑 실패/수집 오류 ${fmt(b.unmatched_count)}건</p>` : ""}
+      ${fullProductList ? `
+      <h3 style="font-size:13px;color:var(--text-sub);margin:16px 0 6px">판매 상품 전체 (${fullProductList.length}종, 매출 내림차순)</h3>
+      <div class="product-sales-list">${fullProductList.map((item, i) => productSalesCardHtml(item, i + 1)).join("") ||
+        '<p style="color:var(--text-sub);font-size:13px">판매 데이터 없음</p>'}</div>
       ` : ""}
+      ` : `
+      <div class="product-sales-list" style="margin-top:12px">${top5Cards}</div>
+      `}
     </div>`;
 }
 
@@ -2333,7 +2391,10 @@ async function viewSales() {
   let briefingHtml = "";
   try {
     const yd = yesterday();
-    briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: true });
+    const [briefing, fullProductList] = await Promise.all([
+      loadDailySalesBriefing(yd), loadDailyProductBreakdown(yd),
+    ]);
+    briefingHtml = briefingCardHtml(briefing, yd, { detailed: true, fullProductList });
   } catch (e) { console.error("매출 브리핑 상세 카드:", e); }
 
   return `
@@ -3172,9 +3233,17 @@ function exportErpCSV(table) {
 // 공유 캐시 대상이 아니지만, 마찬가지로 한 번 조회한 뒤 탭을 오가도 재조회하지
 // 않도록 탭별로 결과를 캐시해요.
 let stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null, poInfo: null };
+// 2026-09-08 [PHASE 9 STEP 2] "새로고침" 버튼을 눌러서 들어온 다음 1번의
+// getStockFlowPurchaseReco() 호출만 force_refresh=true로 보내기 위한 1회성
+// 플래그(stockFlowRefresh()가 켜고, 여기서 소비하자마자 끔) - route() 호출
+// 체인 전체에 파라미터를 새로 안 뚫고 기존 방식(캐시 null로 비움)과 동일하게
+// 최소 변경으로 연결.
+let _stockFlowForceRefreshNext = false;
 
 async function getStockFlowPurchaseReco() {
   if (!stockFlowCache.purchaseReco) {
+    const forceRefresh = _stockFlowForceRefreshNext;
+    _stockFlowForceRefreshNext = false;
     const res = await sb.from("purchase_recommendations").select("*");
     // 2026-09-07 [live_stock ERP 화면 배선, 사용자 명시] 활성 상품만(비활성/
     // 제외 상품까지 live 조회하는 건 불필요한 API 호출) vendor_item_id를 모아
@@ -3184,7 +3253,7 @@ async function getStockFlowPurchaseReco() {
     // 모든 행이 기존 스냅샷 기준으로 남을 뿐이에요.
     if (!res.error && res.data) {
       const activeVids = res.data.filter(r => r.is_active !== false).map(r => r.vendor_item_id).filter(Boolean);
-      const liveResult = await fetchLiveStockMap(activeVids);
+      const liveResult = await fetchLiveStockMap(activeVids, forceRefresh);
       mergeLiveStockIntoRows(res.data, liveResult);
     }
     stockFlowCache.purchaseReco = res;
@@ -3218,6 +3287,7 @@ async function getStockFlowPoInfo() {
 }
 function stockFlowRefresh() {
   stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null, poInfo: null };
+  _stockFlowForceRefreshNext = true; // 다음 getStockFlowPurchaseReco() 호출만 서버 캐시도 강제로 우회
   route();
 }
 
@@ -3310,18 +3380,53 @@ const STOCK_SOURCE_LABEL = {
   COUPANG_RG_LIVE: { chip: "mine", icon: "🟢", label: "실시간 재고" },
   BIGQUERY_SNAPSHOT: { chip: "waiting", icon: "🔵", label: "스냅샷 재고" },
 };
+
+// 2026-09-08 [PHASE 9 STEP 3, 사용자 명시 실측 지적] snapshot(purchase_
+// recommendations.current_stock)이 live 실패 시 fallback으로 나올 때, 그
+// 값이 "지금" 재고인 것처럼 보이면 안 됨 - calculated_at 기준 실제 나이를
+// 항상 같이 보여줌. *** 임계값은 정답이 아니라 제안값 *** - 이 배치가
+// 하루 1번(PURCHASE_RECOMMENDATION_SYNC_HOUR_KST=20, 저녁 8시경) 갱신되는
+// 현재 주기를 근거로, "정상적으로 하루 안에 갱신됐다면 26시간을 넘을 리
+// 없다"는 여유를 둔 값 - 배치 주기가 바뀌면 이 상수도 같이 조정해야 함
+// (rg_live_inventory_helper.DEFAULT_CACHE_TTL_SECONDS와 동일한 "제안값"
+// 관례를 그대로 따름).
+const SNAPSHOT_STALE_WARNING_HOURS = 26;
+
+// "3시간 전"/"2일 전" 형태로 사람이 읽기 좋게 - 분 단위까지는 안 내려감(재고
+// 스냅샷 나이 표시 목적상 분 단위 정밀도는 의미 없음, 시간/일 단위면 충분).
+function formatAgeKorean(isoTimestamp) {
+  if (!isoTimestamp) return null;
+  const then = new Date(isoTimestamp);
+  if (isNaN(then)) return null;
+  const hours = (Date.now() - then.getTime()) / 3600000;
+  if (hours < 0) return "방금 전";
+  if (hours < 1) return "1시간 이내";
+  if (hours < 24) return `${Math.floor(hours)}시간 전`;
+  return `${Math.floor(hours / 24)}일 전`;
+}
+
 function stockSourceBadgeHtml(r) {
   const updatedAt = r.stock_updated_at
     ? new Date(r.stock_updated_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : null;
   if (!r.stock_source) {
+    // 2026-09-08 [PHASE 9 STEP 3] snapshot을 절대 🟢(실시간)처럼 안 보이게 하고,
+    // calculated_at 기준 나이를 항상 같이 보여줌 - "16개 · 15시간 전"처럼
+    // 숫자와 나이가 한 문장에 붙어야 실재고로 오인하지 않음.
+    const age = formatAgeKorean(r.calculated_at);
+    const qtyText = r.current_stock != null ? `${fmt(r.current_stock)}개` : "수량 미상";
+    const veryStale = r.calculated_at
+      && (Date.now() - new Date(r.calculated_at).getTime()) / 3600000 >= SNAPSHOT_STALE_WARNING_HOURS;
+    const ageText = age ? ` · ${age}` : "";
     if (r._liveFetchOk === false) {
-      return `<span class="chip progress">⚠️ 스냅샷 재고</span><br><small style="color:var(--text-sub)">실시간 조회 실패 - 자동 대체</small>`;
+      return `<span class="chip ${veryStale ? "rejected" : "progress"}">${veryStale ? "🔴" : "⚠️"} 스냅샷 재고 ${qtyText}${ageText}</span>` +
+        `<br><small style="color:var(--text-sub)">실시간 조회 실패 - 자동 대체${veryStale ? " (오래된 값 - 확인 필요)" : ""}</small>`;
     }
     if (r._liveFetchOk === true) {
-      return `<span class="chip waiting">스냅샷 재고</span><br><small style="color:var(--text-sub)">이 상품은 실시간 재고 데이터 없음</small>`;
+      return `<span class="chip ${veryStale ? "rejected" : "waiting"}">${veryStale ? "🔴" : ""} 스냅샷 재고 ${qtyText}${ageText}</span>` +
+        `<br><small style="color:var(--text-sub)">이 상품은 실시간 재고 데이터 없음</small>`;
     }
-    return `<span class="chip waiting">스냅샷 재고</span><br><small style="color:var(--text-sub)">실시간 연동 예정</small>`;
+    return `<span class="chip waiting">스냅샷 재고 ${qtyText}${ageText}</span><br><small style="color:var(--text-sub)">실시간 연동 예정</small>`;
   }
   const t = STOCK_SOURCE_LABEL[r.stock_source] || { chip: "waiting", icon: "❓", label: r.stock_source };
   // 2026-09-07 [사용자 명시 - live_stock/snapshot_stock 둘 다 한눈에] 실시간
@@ -3345,13 +3450,20 @@ function rgLiveStockCellHtml(rgRow) {
   if (!rgRow) return `<span style="color:var(--text-sub)">-</span>`;
   if (rgRow.current_stock == null) return `<span style="color:var(--red)">조회 실패</span>`;
   const isLive = rgRow.stock_source === "COUPANG_RG_LIVE";
-  const icon = isLive ? "🟢" : "🔵";
+  // 2026-09-08 [PHASE 9 STEP 3, 사용자 명시] 스냅샷일 땐 🟢을 절대 안 쓰고,
+  // calculated_at 기준 나이를 같이 표시 - "16개 🔵 스냅샷 · 15시간 전"처럼.
+  const icon = isLive ? "🟢" : (
+    rgRow.calculated_at && (Date.now() - new Date(rgRow.calculated_at).getTime()) / 3600000 >= SNAPSHOT_STALE_WARNING_HOURS
+      ? "🔴" : "🔵"
+  );
   const label = isLive ? "" : " 스냅샷";
   const updatedAt = rgRow.stock_updated_at
     ? new Date(rgRow.stock_updated_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
     : null;
+  const snapshotAge = !isLive ? formatAgeKorean(rgRow.calculated_at) : null;
   return `<b style="font-size:14px">${fmt(rgRow.current_stock)}</b> ${icon}${label}` +
-    (updatedAt ? `<br><small style="color:var(--text-sub)">${updatedAt}</small>` : "");
+    (updatedAt ? `<br><small style="color:var(--text-sub)">${updatedAt}</small>` : "") +
+    (snapshotAge ? `<br><small style="color:var(--text-sub)">${snapshotAge}</small>` : "");
 }
 
 /* 판매속도·발주예상 표 - purchase_recommendations를 그대로 재사용(계산은
