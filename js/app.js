@@ -3431,6 +3431,18 @@ function inventoryIncomingText(d) {
   return `+${fmt(d.incoming_qty)} · 날짜 확인필요`;
 }
 
+// 2026-09-08 [공유재고(세트상품) 정합성, 사용자 명시] 아가드 1/2/3개처럼 같은
+// 물리재고를 나눠 쓰는 옵션이 "처음 보는 사람에게도" 명확히 보이도록 - child는
+// 별도 0개 재고 때문에 헷갈리지 않게, base는 "여기가 실제 재고 기준"임을 표시.
+function inventorySharedInventoryBadge(d) {
+  const s = d.shared_inventory;
+  if (!s) return "";
+  if (s.role === "child") {
+    return `<br><span class="chip waiting" style="margin-top:4px;display:inline-block">🔗 ${esc(s.base_product_name || "기준 상품")}과 재고 공유(1개→${s.set_qty}개 소모)</span>`;
+  }
+  return `<br><span class="chip approved" style="margin-top:4px;display:inline-block">📦 공유재고 기준상품(다른 구성이 이 재고를 나눠 씀)</span>`;
+}
+
 async function viewInventoryDecisions() {
   if (!inventoryDecisionsCache) {
     inventoryDecisionsCache = await fetchInventoryDecisions();
@@ -3458,13 +3470,15 @@ async function viewInventoryDecisions() {
 
   const rowsHtml = sorted.map(d => {
     const meta = INVENTORY_DECISION_META[d.decision] || { label: d.decision, chip: "waiting" };
-    const stockText = d.live_stock != null ? `${fmt(d.live_stock)}개` : "-";
-    const velocityText = d.avg_daily_sales != null ? `${d.avg_daily_sales.toFixed(1)}/일` : "-";
+    const stockUnit = d.shared_inventory?.role === "child" ? "세트" : "개";
+    const stockText = d.live_stock != null ? `${fmt(d.live_stock)}${stockUnit}` : "-";
+    const velocityText = d.avg_daily_sales != null ? `${d.avg_daily_sales.toFixed(1)}${d.shared_inventory?.role === "child" ? "세트" : ""}/일` : "-";
     const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개` : "-";
+    const sharedBadge = inventorySharedInventoryBadge(d);
     const mobileMeta = [stockText, velocityText, inventoryIncomingText(d)].join(" · ");
     return `
       <tr data-clickable onclick="openInventoryDecisionDetail('${d.product_id}')">
-        <td class="idt-name">${esc(d.product_name || "")}${d.option_name ? `<br><small style="color:var(--text-sub);font-weight:400">${esc(d.option_name)}</small>` : ""}</td>
+        <td class="idt-name">${esc(d.product_name || "")}${d.option_name ? `<br><small style="color:var(--text-sub);font-weight:400">${esc(d.option_name)}</small>` : ""}${sharedBadge}</td>
         <td class="idt-stock num">${stockText}</td>
         <td class="idt-velocity num">${velocityText}</td>
         <td class="idt-incoming">${inventoryIncomingText(d)}</td>
@@ -3499,6 +3513,9 @@ function openInventoryDecisionDetail(productId) {
   const d = (inventoryDecisionsCache?.decisions || []).find(x => x.product_id === productId);
   if (!d) return;
   const meta = INVENTORY_DECISION_META[d.decision] || { label: d.decision, chip: "waiting" };
+  const isChild = d.shared_inventory?.role === "child";
+  const isBase = d.shared_inventory?.role === "base";
+  const stockUnit = isChild ? "세트" : "개";
   const poRows = (d.open_po_refs || []).map(r => `
     <tr><td>${esc(r.po_no || "-")}</td><td>${esc(r.status || "-")}</td>
       <td class="num">${fmt(r.qty)}</td><td class="num">${fmt(r.received_qty)}</td><td class="num">${fmt(r.remain)}</td></tr>`).join("");
@@ -3511,27 +3528,33 @@ function openInventoryDecisionDetail(productId) {
           <span class="chip ${meta.chip}">${meta.label}</span>
         </div>
         ${d.option_name ? `<p style="color:var(--text-sub);margin:-6px 0 8px">${esc(d.option_name)}</p>` : ""}
+        ${isChild ? `<p style="font-size:13px;background:var(--gray-bg);border-radius:8px;padding:8px 10px;margin:0 0 8px">
+            🔗 <b>${esc(d.shared_inventory.base_product_name || "기준 상품")}</b>과 같은 물리재고를 공유해요(1세트 판매 시 기준재고 -${d.shared_inventory.set_qty}개로 계산돼요) — 이 옵션만의 별도 재고는 없어요.
+            <a onclick="closeModal();openInventoryDecisionDetail('${d.shared_inventory.base_product_id}')" style="color:var(--brand);cursor:pointer;font-weight:600">기준 상품 보기 →</a>
+          </p>` : ""}
+        ${isBase ? `<p style="font-size:12.5px;color:var(--text-sub);margin:0 0 8px">📦 이 상품은 다른 구성(세트)과 재고를 나누는 공유재고 기준상품이에요.</p>` : ""}
         <p style="font-size:13px">${esc(d.decision_reason || "")}</p>
 
         <h4 style="font-size:13px;margin:14px 0 4px">현재</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
-          <tr><td>쿠팡 live 재고</td><td class="num">${d.live_stock != null ? fmt(d.live_stock) + "개" : "조회 실패"}</td></tr>
+          <tr><td>${isChild ? "판매가능 세트(기준상품 재고 환산)" : "쿠팡 live 재고"}</td><td class="num">${d.live_stock != null ? fmt(d.live_stock) + stockUnit : "조회 실패"}</td></tr>
           <tr><td>재고 출처 / 갱신시각</td><td class="num">${esc(d.stock_source || "-")} · ${stockUpdated}</td></tr>
         </tbody></table></div>
 
         <h4 style="font-size:13px;margin:14px 0 4px">판매</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
-          <tr><td>최근 7일 / 30일</td><td class="num">${fmt(d.sales_7d)}개 / ${fmt(d.sales_30d)}개</td></tr>
-          <tr><td>일평균 판매속도</td><td class="num">${d.avg_daily_sales != null ? d.avg_daily_sales.toFixed(2) + "개" : "-"}</td></tr>
+          <tr><td>최근 7일 / 30일</td><td class="num">${fmt(d.sales_7d)}${stockUnit} / ${fmt(d.sales_30d)}${stockUnit}</td></tr>
+          <tr><td>일평균 판매속도</td><td class="num">${d.avg_daily_sales != null ? d.avg_daily_sales.toFixed(2) + stockUnit : "-"}</td></tr>
         </tbody></table></div>
 
         <h4 style="font-size:13px;margin:14px 0 4px">기존 발주 / 입고</h4>
-        ${poRows ? `<div class="table-wrap"><table class="items-table">
+        ${isChild ? `<p style="color:var(--text-sub);font-size:13px">이 옵션은 별도 발주를 등록하지 않아요 — 발주/입고는 기준 상품(${esc(d.shared_inventory.base_product_name || "-")})에서 관리돼요.</p>`
+          : poRows ? `<div class="table-wrap"><table class="items-table">
           <thead><tr><th>발주서</th><th>상태</th><th class="num">발주</th><th class="num">입고</th><th class="num">미입고</th></tr></thead>
           <tbody>${poRows}</tbody></table></div>` : `<p style="color:var(--text-sub);font-size:13px">유효한 기존 발주 없음</p>`}
         <p style="font-size:13px;margin-top:6px">현재 예상 입고일: <b>${d.incoming_date || "확정 안 됨"}</b> ${d.incoming_source ? `(${esc(inventoryIncomingSourceLabel(d.incoming_source))})` : ""}</p>
         ${d.wing_slot_date ? `<p style="font-size:12.5px;color:var(--text-sub)">WING 예약 슬롯: ${d.wing_slot_date}${d.wing_slot_date !== d.incoming_date ? " (실제 ETA와 다름 — WING 제출 이력으로 그대로 보존)" : ""}</p>` : ""}
-        <button class="btn sm secondary" style="margin-top:6px" onclick="openIncomingRegisterModal('${d.product_id}')">📥 실제 발주/입고 정보 등록</button>
+        ${!isChild ? `<button class="btn sm secondary" style="margin-top:6px" onclick="openIncomingRegisterModal('${d.product_id}')">📥 실제 발주/입고 정보 등록</button>` : ""}
 
         <h4 style="font-size:13px;margin:14px 0 4px">예측</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
@@ -3546,7 +3569,7 @@ function openInventoryDecisionDetail(productId) {
         <div class="table-wrap"><table class="items-table"><tbody>
           <tr><td>리드타임 / 안전재고</td><td class="num">${d.lead_time_days ?? "-"}일 / ${d.safety_stock_days ?? "-"}일</td></tr>
           <tr><td>재발주점</td><td class="num">${d.reorder_point_qty != null ? Number(d.reorder_point_qty).toFixed(1) : "-"}개</td></tr>
-          <tr><td>추천 발주수량</td><td class="num">${d.recommended_order_qty_ea ? fmt(d.recommended_order_qty_ea) + "EA" + (d.recommended_order_qty_box ? ` / ${d.recommended_order_qty_box}BOX` : "") + (d.recommended_order_qty_plt ? ` / ${d.recommended_order_qty_plt}PLT` : "") : "-"}</td></tr>
+          <tr><td>추천 발주수량</td><td class="num">${isChild ? "- (기준 상품에서 1건만 추천)" : d.recommended_order_qty_ea ? fmt(d.recommended_order_qty_ea) + "EA" + (d.recommended_order_qty_box ? ` / ${d.recommended_order_qty_box}BOX` : "") + (d.recommended_order_qty_plt ? ` / ${d.recommended_order_qty_plt}PLT` : "") : "-"}</td></tr>
         </tbody></table></div>
 
         ${d.data_quality_flags && d.data_quality_flags.length ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ ${d.data_quality_flags.map(esc).join(" · ")}</p>` : ""}
@@ -3559,6 +3582,7 @@ function openInventoryDecisionDetail(productId) {
 
 const INCOMING_SOURCE_LABEL = {
   PO_DUE_DATE: "발주서 예상입고일", INBOUND_PLAN: "WING 예약 슬롯", PO_ONLY: "발주만 있음(입고일 미확정)", NONE: "-",
+  SHARED_POOL: "기준 상품 입고예정에서 환산",
 };
 const inventoryIncomingSourceLabel = s => INCOMING_SOURCE_LABEL[s] || s || "-";
 

@@ -18,6 +18,8 @@ global.fmt = eval(fmtMatch[0].replace("const fmt = ", ""));
 
 const inventoryOutlookText = extractFn("inventoryOutlookText");
 const inventoryIncomingText = extractFn("inventoryIncomingText");
+global.esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const inventorySharedInventoryBadge = extractFn("inventorySharedInventoryBadge");
 
 const labelMatch = src.match(/const INCOMING_SOURCE_LABEL = \{[\s\S]*?\};/);
 global.INCOMING_SOURCE_LABEL = eval(`(${labelMatch[0].replace("const INCOMING_SOURCE_LABEL = ", "").replace(/;\s*$/, "")})`);
@@ -47,6 +49,20 @@ check(inventoryIncomingSourceLabel("PO_DUE_DATE"), "발주서 예상입고일", 
 check(inventoryIncomingSourceLabel("INBOUND_PLAN"), "WING 예약 슬롯", "INBOUND_PLAN - WING 슬롯만 있을 때");
 check(inventoryIncomingSourceLabel("PO_ONLY"), "발주만 있음(입고일 미확정)", "PO_ONLY - 확정일 없음");
 check(inventoryIncomingSourceLabel(undefined), "-", "값 없으면 - 표시");
+check(inventoryIncomingSourceLabel("SHARED_POOL"), "기준 상품 입고예정에서 환산", "[핵심] SHARED_POOL(공유재고 child) - 원시 코드값이 그대로 새지 않고 한글 라벨로 표시");
+
+console.log("\n=== inventorySharedInventoryBadge ===");
+check(inventorySharedInventoryBadge({ shared_inventory: null }), "", "공유재고 관계 없으면 빈 문자열(일반 상품 대다수, 회귀 없음)");
+check(
+  inventorySharedInventoryBadge({ shared_inventory: { role: "child", base_product_name: "아가드 구름목욕시간 제로", set_qty: 2 } }),
+  '<br><span class="chip waiting" style="margin-top:4px;display:inline-block">🔗 아가드 구름목욕시간 제로과 재고 공유(1개→2개 소모)</span>',
+  "[핵심] child - 🔗 기준상품명 + 소모배수가 뱃지에 명확히 보임"
+);
+check(
+  inventorySharedInventoryBadge({ shared_inventory: { role: "base" } }),
+  '<br><span class="chip approved" style="margin-top:4px;display:inline-block">📦 공유재고 기준상품(다른 구성이 이 재고를 나눠 씀)</span>',
+  "base - 기준상품이라는 사실도 뱃지로 보임"
+);
 
 console.log(`\n=== 결과: ${failures === 0 ? "전체 통과" : failures + "건 실패"} ===`);
 process.exit(failures === 0 ? 0 : 1);
