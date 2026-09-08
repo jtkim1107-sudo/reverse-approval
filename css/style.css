@@ -285,6 +285,33 @@ a { text-decoration: none; color: inherit; }
   .product-sales-table td.ps-mobile-meta { display: block; font-size: 12.5px; color: var(--text-sub); text-align: left; }
 }
 
+/* 2026-09-08 [재고·발주 판단 엔진 통일, 사용자 명시 "가로 대형테이블 금지 -
+   상품 카드로"] .product-sales-table과 완전히 동일한 기법(한 마크업, 미디어쿼리로
+   전환) - 데스크톱은 7열 표, 390px 이하는 상품명+판정+요약줄(.idt-mobile-meta)만
+   보이는 카드. */
+.inv-decision-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.inv-decision-table th {
+  text-align: left; font-size: 11.5px; font-weight: 700; color: var(--text-sub);
+  padding: 5px 8px; border-bottom: 1.5px solid var(--line);
+}
+.inv-decision-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.inv-decision-table tr:last-child td { border-bottom: none; }
+.inv-decision-table tr[data-clickable] { cursor: pointer; }
+.inv-decision-table tr[data-clickable]:hover { background: var(--bg-soft, rgba(0,0,0,.03)); }
+.inv-decision-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.inv-decision-table .idt-name { font-weight: 700; }
+.inv-decision-table .idt-mobile-meta { display: none; }
+
+@media (max-width: 640px) {
+  .inv-decision-table thead { display: none; }
+  .inv-decision-table, .inv-decision-table tbody, .inv-decision-table tr, .inv-decision-table td { display: block; width: 100%; }
+  .inv-decision-table tr { padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .inv-decision-table td { padding: 1px 0; border-bottom: none; }
+  .inv-decision-table .idt-stock, .inv-decision-table .idt-velocity, .inv-decision-table .idt-incoming,
+  .inv-decision-table .idt-outlook, .inv-decision-table .idt-reco { display: none; }
+  .inv-decision-table td.idt-mobile-meta { display: block; font-size: 12.5px; color: var(--text-sub); text-align: left; margin-top: 2px; }
+}
+
 /* 테이블 */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }

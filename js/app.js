@@ -3375,12 +3375,192 @@ async function getStockFlowPoInfo() {
 function stockFlowRefresh() {
   stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null, poInfo: null };
   _stockFlowForceRefreshNext = true; // 다음 getStockFlowPurchaseReco() 호출만 서버 캐시도 강제로 우회
+  inventoryDecisionsCache = null; // 통합 판단 엔진 결과도 같이 비움(재고·발주 탭이 다시 fetch함)
   route();
 }
 
+// =============================================================================
+// 2026-09-08 [재고·발주 판단 엔진 통일, 사용자 명시] "재고현황"과 "발주추천"
+// 두 대형 표를 프론트가 각자 계산하지 않고, GCP taltal-server의 단일
+// /api/inventory/decisions(inventory_decision.compute_all_inventory_decisions())
+// 결과 하나만 표시한다. 화면(이 탭/향후 대시보드 경고 등)이 재계산하면 다시
+// "화면마다 다른 숫자" 문제로 돌아가므로, 이 fetch 결과를 그대로만 씀.
+// =============================================================================
+const INVENTORY_DECISION_META = {
+  ORDER_NOW: { label: "🔴 지금 발주", chip: "rejected" },
+  ORDER_SOON: { label: "🟠 곧 발주", chip: "progress" },
+  AWAITING_INBOUND: { label: "🔵 입고대기", chip: "mine" },
+  OK: { label: "🟢 정상", chip: "approved" },
+  DATA_CHECK: { label: "⚠️ 데이터확인", chip: "waiting" },
+};
+const INVENTORY_DECISION_FETCH_TIMEOUT_MS = 95000; // 서버 timeout(90초)보다 살짝 여유
+
+async function fetchInventoryDecisions() {
+  const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
+  const jwt = session?.access_token;
+  if (!jwt) return { ok: false, error: "로그인 세션이 없어요." };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), INVENTORY_DECISION_FETCH_TIMEOUT_MS);
+  try {
+    const resp = await fetch(`${LIVE_STOCK_API_BASE}/api/inventory/decisions`, {
+      headers: { Authorization: `Bearer ${jwt}` }, signal: controller.signal,
+    });
+    const body = await resp.json().catch(() => null);
+    if (!resp.ok) return { ok: false, error: body?.detail || body?.error || `HTTP ${resp.status}` };
+    return { ok: true, decisions: body.decisions || [], summary: body.summary || {}, calculatedAt: body.calculated_at };
+  } catch (e) {
+    return { ok: false, error: e.name === "AbortError" ? "계산 시간 초과(약 95초) - 다시 시도해 주세요." : String(e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let inventoryDecisionsCache = null; // fetch 결과 원본 - 상세 패널이 재조회 없이 여기서 찾아 씀
+let inventoryDecisionFilter = null; // 요약 칩 클릭 필터(5단계 중 하나 또는 null=전체)
+
+function inventoryOutlookText(d) {
+  if (d.decision === "DATA_CHECK") return "확인 필요";
+  if ((d.live_stock ?? 0) <= 0) return d.incoming_qty ? "품절 · 입고대기" : "품절";
+  if (d.days_of_stock_now != null) return `약 ${d.days_of_stock_now}일`;
+  return "-";
+}
+
+function inventoryIncomingText(d) {
+  if (!d.incoming_qty) return "-";
+  if (d.incoming_date) return `+${fmt(d.incoming_qty)} · ${d.incoming_date.slice(5).replace("-", "/")}`;
+  return `+${fmt(d.incoming_qty)} · 날짜 확인필요`;
+}
+
+async function viewInventoryDecisions() {
+  if (!inventoryDecisionsCache) {
+    inventoryDecisionsCache = await fetchInventoryDecisions();
+  }
+  const result = inventoryDecisionsCache;
+  if (!result.ok) {
+    return `<div class="card">
+      <div class="card-head"><h2>재고 · 발주</h2></div>
+      <p style="color:var(--red)">⚠️ 재고·발주 판단을 불러오지 못했어요: ${esc(result.error)}</p>
+      <button class="btn sm secondary" onclick="stockFlowRefresh()">🔄 다시 시도</button>
+    </div>`;
+  }
+  const counts = { ORDER_NOW: 0, ORDER_SOON: 0, AWAITING_INBOUND: 0, OK: 0, DATA_CHECK: 0, ...result.summary };
+  const filtered = inventoryDecisionFilter
+    ? result.decisions.filter(d => d.decision === inventoryDecisionFilter)
+    : result.decisions;
+  const priority = { ORDER_NOW: 0, DATA_CHECK: 1, ORDER_SOON: 2, AWAITING_INBOUND: 3, OK: 4 };
+  const sorted = [...filtered].sort((a, b) => (priority[a.decision] ?? 9) - (priority[b.decision] ?? 9));
+
+  const summaryChips = Object.entries(INVENTORY_DECISION_META).map(([key, meta]) => `
+    <button class="btn sm ${inventoryDecisionFilter === key ? "" : "secondary"}"
+      onclick="inventoryDecisionFilter = (inventoryDecisionFilter === '${key}' ? null : '${key}'); route()">
+      ${meta.label} ${counts[key] ?? 0}
+    </button>`).join("");
+
+  const rowsHtml = sorted.map(d => {
+    const meta = INVENTORY_DECISION_META[d.decision] || { label: d.decision, chip: "waiting" };
+    const stockText = d.live_stock != null ? `${fmt(d.live_stock)}개` : "-";
+    const velocityText = d.avg_daily_sales != null ? `${d.avg_daily_sales.toFixed(1)}/일` : "-";
+    const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개` : "-";
+    const mobileMeta = [stockText, velocityText, inventoryIncomingText(d)].join(" · ");
+    return `
+      <tr data-clickable onclick="openInventoryDecisionDetail('${d.product_id}')">
+        <td class="idt-name">${esc(d.product_name || "")}${d.option_name ? `<br><small style="color:var(--text-sub);font-weight:400">${esc(d.option_name)}</small>` : ""}</td>
+        <td class="idt-stock num">${stockText}</td>
+        <td class="idt-velocity num">${velocityText}</td>
+        <td class="idt-incoming">${inventoryIncomingText(d)}</td>
+        <td class="idt-outlook">${esc(inventoryOutlookText(d))}</td>
+        <td><span class="chip ${meta.chip}">${meta.label}</span></td>
+        <td class="idt-reco num">${recoText}</td>
+        <td class="idt-mobile-meta">${esc(mobileMeta)} · ${esc(inventoryOutlookText(d))}</td>
+      </tr>`;
+  }).join("");
+
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h2>재고 · 발주</h2>
+        <span style="font-size:11px;color:var(--text-sub)">
+          ${result.calculatedAt ? "계산: " + new Date(result.calculatedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+        </span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${summaryChips}</div>
+      <div class="table-wrap"><table class="inv-decision-table">
+        <thead><tr>
+          <th>상품</th><th class="num idt-stock">현재재고</th><th class="idt-velocity">판매속도</th>
+          <th class="idt-incoming">입고예정</th><th class="idt-outlook">재고전망</th><th>판정</th><th class="num idt-reco">추천발주</th>
+        </tr></thead>
+        <tbody>${rowsHtml || `<tr><td colspan="7" style="color:var(--text-sub)">데이터 없음</td></tr>`}</tbody>
+      </table></div>
+      <p style="font-size:11.5px;color:var(--text-sub);margin-top:8px">행을 누르면 상세 근거(라이브재고/ERP장부재고/판매이력/기존발주/입고예정/예측)를 볼 수 있어요.</p>
+    </div>`;
+}
+
+function openInventoryDecisionDetail(productId) {
+  const d = (inventoryDecisionsCache?.decisions || []).find(x => x.product_id === productId);
+  if (!d) return;
+  const meta = INVENTORY_DECISION_META[d.decision] || { label: d.decision, chip: "waiting" };
+  const poRows = (d.open_po_refs || []).map(r => `
+    <tr><td>${esc(r.po_no || "-")}</td><td>${esc(r.status || "-")}</td>
+      <td class="num">${fmt(r.qty)}</td><td class="num">${fmt(r.received_qty)}</td><td class="num">${fmt(r.remain)}</td></tr>`).join("");
+  const stockUpdated = d.stock_updated_at ? new Date(d.stock_updated_at).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:640px;width:96vw">
+        <div class="card-head">
+          <h3>${esc(d.product_name || "")}</h3>
+          <span class="chip ${meta.chip}">${meta.label}</span>
+        </div>
+        ${d.option_name ? `<p style="color:var(--text-sub);margin:-6px 0 8px">${esc(d.option_name)}</p>` : ""}
+        <p style="font-size:13px">${esc(d.decision_reason || "")}</p>
+
+        <h4 style="font-size:13px;margin:14px 0 4px">현재</h4>
+        <div class="table-wrap"><table class="items-table"><tbody>
+          <tr><td>쿠팡 live 재고</td><td class="num">${d.live_stock != null ? fmt(d.live_stock) + "개" : "조회 실패"}</td></tr>
+          <tr><td>재고 출처 / 갱신시각</td><td class="num">${esc(d.stock_source || "-")} · ${stockUpdated}</td></tr>
+        </tbody></table></div>
+
+        <h4 style="font-size:13px;margin:14px 0 4px">판매</h4>
+        <div class="table-wrap"><table class="items-table"><tbody>
+          <tr><td>최근 7일 / 30일</td><td class="num">${fmt(d.sales_7d)}개 / ${fmt(d.sales_30d)}개</td></tr>
+          <tr><td>일평균 판매속도</td><td class="num">${d.avg_daily_sales != null ? d.avg_daily_sales.toFixed(2) + "개" : "-"}</td></tr>
+        </tbody></table></div>
+
+        <h4 style="font-size:13px;margin:14px 0 4px">기존 발주 / 입고</h4>
+        ${poRows ? `<div class="table-wrap"><table class="items-table">
+          <thead><tr><th>발주서</th><th>상태</th><th class="num">발주</th><th class="num">입고</th><th class="num">미입고</th></tr></thead>
+          <tbody>${poRows}</tbody></table></div>` : `<p style="color:var(--text-sub);font-size:13px">유효한 기존 발주 없음</p>`}
+        <p style="font-size:13px;margin-top:6px">입고예정일: <b>${d.incoming_date || "확정 안 됨"}</b> ${d.incoming_source ? `(${esc(d.incoming_source)})` : ""}</p>
+
+        <h4 style="font-size:13px;margin:14px 0 4px">예측</h4>
+        <div class="table-wrap"><table class="items-table"><tbody>
+          <tr><td>현재 재고로 버티는 일수</td><td class="num">${d.days_of_stock_now ?? "-"}${d.days_of_stock_now != null ? "일" : ""}</td></tr>
+          <tr><td>입고 전 예상재고</td><td class="num">${d.projected_stock_before_inbound ?? "-"}</td></tr>
+          <tr><td>입고 후 예상재고</td><td class="num">${d.projected_stock_after_inbound ?? "-"}</td></tr>
+          <tr><td>입고 후 예상 지속일</td><td class="num">${d.projected_days_after_inbound ?? "-"}${d.projected_days_after_inbound != null ? "일" : ""}</td></tr>
+          <tr><td>다음 발주 예상일</td><td class="num">${d.next_reorder_date ?? "-"}</td></tr>
+        </tbody></table></div>
+
+        <h4 style="font-size:13px;margin:14px 0 4px">발주 기준</h4>
+        <div class="table-wrap"><table class="items-table"><tbody>
+          <tr><td>리드타임 / 안전재고</td><td class="num">${d.lead_time_days ?? "-"}일 / ${d.safety_stock_days ?? "-"}일</td></tr>
+          <tr><td>재발주점</td><td class="num">${d.reorder_point_qty != null ? Number(d.reorder_point_qty).toFixed(1) : "-"}개</td></tr>
+          <tr><td>추천 발주수량</td><td class="num">${d.recommended_order_qty_ea ? fmt(d.recommended_order_qty_ea) + "EA" + (d.recommended_order_qty_box ? ` / ${d.recommended_order_qty_box}BOX` : "") + (d.recommended_order_qty_plt ? ` / ${d.recommended_order_qty_plt}PLT` : "") : "-"}</td></tr>
+        </tbody></table></div>
+
+        ${d.data_quality_flags && d.data_quality_flags.length ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ ${d.data_quality_flags.map(esc).join(" · ")}</p>` : ""}
+        <p style="font-size:11px;color:var(--text-sub);margin-top:8px">계산시각: ${d.calculated_at || "-"}</p>
+
+        <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">닫기</button></div>
+      </div>
+    </div>`;
+}
+
+// 2026-09-08 [재고·발주 판단 엔진 통일, 사용자 명시] 기존 "재고현황"/"발주추천"
+// 2개 탭(각자 다른 계산: ERP 장부재고 vs BigQuery snapshot)을 하나로 합침 -
+// viewInventoryDecisions() 하나가 /api/inventory/decisions(단일 판단 엔진)만
+// 표시함. "입고계획"/"쿠팡입고"는 이번 범위 밖(그대로 유지).
 const STOCKFLOW_TABS = [
-  ["stock", "📦 재고현황"],
-  ["reco", "📈 발주추천"],
+  ["stock", "📦 재고 · 발주"],
   ["plan", "🚚 입고계획"],
   ["rginbound", "🚀 쿠팡입고"],
 ];
@@ -3389,9 +3569,7 @@ async function viewStockFlow(tab) {
   tab = STOCKFLOW_TABS.some(t => t[0] === tab) ? tab : "stock";
   let body;
   if (tab === "stock") {
-    body = await viewInventory(await getStockFlowErpBase(), await getStockFlowPurchaseReco(), await getStockFlowPoInfo());
-  } else if (tab === "reco") {
-    body = await viewPurchaseReco(await getStockFlowPurchaseReco(), await getStockFlowPoInfo());
+    body = await viewInventoryDecisions();
   } else if (tab === "plan") {
     body = await viewShipmentPlans();
   } else {
