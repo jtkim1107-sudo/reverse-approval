@@ -259,21 +259,31 @@ a { text-decoration: none; color: inherit; }
   .briefing-detail-grid { grid-template-columns: 1fr; gap: 12px; }
 }
 
-/* 2026-09-08 [PHASE 10 STEP 2] 상품별 판매 카드 - "쿠팡 판매 화면처럼" 상품명/
-   매출/판매량/채널이 한 카드에 보이게 함. 순위 배지 + 본문 2단 구성. */
-.product-sales-list { display: flex; flex-direction: column; gap: 8px; }
-.product-sales-card {
-  display: flex; align-items: center; gap: 10px;
-  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--card);
+/* 2026-09-08 [사용자 지적 - 카드가 세로로 너무 길어짐] 상품별 판매를 데스크톱은
+   컴팩트한 표(상품명|채널|판매량|매출, 기존 ERP 테이블 행높이)로, 모바일은
+   상품명 + 요약 1줄(최대 2줄)로 압축. 행 하나(<tr>)에 데스크톱용 개별 칸과
+   모바일용 요약 칸(.ps-mobile-meta)을 같이 두고 미디어쿼리로 보이는 쪽만 전환 -
+   JS가 화면별로 다른 마크업을 만들지 않음(product_sales_table_html 참고). */
+.product-sales-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.product-sales-table th {
+  text-align: left; font-size: 11.5px; font-weight: 700; color: var(--text-sub);
+  padding: 5px 8px; border-bottom: 1.5px solid var(--line);
 }
-.product-sales-rank {
-  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%;
-  background: var(--brand-light); color: var(--brand); font-weight: 800; font-size: 12px;
-  display: flex; align-items: center; justify-content: center;
+.product-sales-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.product-sales-table tr:last-child td { border-bottom: none; }
+.product-sales-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.product-sales-table .ps-rank { color: var(--text-sub); width: 20px; }
+.product-sales-table .ps-name { font-weight: 700; }
+.product-sales-table th.ps-mobile-meta, .product-sales-table td.ps-mobile-meta { display: none; }
+
+@media (max-width: 640px) {
+  .product-sales-table thead { display: none; }
+  .product-sales-table, .product-sales-table tbody, .product-sales-table tr, .product-sales-table td { display: block; width: 100%; }
+  .product-sales-table tr { padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .product-sales-table td { padding: 1px 0; border-bottom: none; }
+  .product-sales-table .ps-rank, .product-sales-table .ps-channel, .product-sales-table .ps-qty, .product-sales-table .ps-amount { display: none; }
+  .product-sales-table td.ps-mobile-meta { display: block; font-size: 12.5px; color: var(--text-sub); text-align: left; }
 }
-.product-sales-body { min-width: 0; flex: 1; }
-.product-sales-name { font-size: 13.5px; font-weight: 700; overflow-wrap: break-word; }
-.product-sales-meta { font-size: 12.5px; color: var(--text-sub); margin-top: 2px; }
 
 /* 테이블 */
 .table-wrap { overflow-x: auto; }

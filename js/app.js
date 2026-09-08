@@ -1262,17 +1262,40 @@ function channelIconLabel(channel) {
 // 화면처럼" 상품명/매출/판매량/채널이 한 카드 안에 한눈에 보이게 함. *** 구형
 // {name, amount}만 있는 과거 브리핑 행(2026-09-07 등)도 절대 안 깨지게 -
 // qty/channel이 없으면 그 부분만 생략하고 표시함(에러 없이 안전 렌더링) ***.
-function productSalesCardHtml(item, rank) {
-  const metaParts = [`매출 ₩${fmt(item.amount)}`];
-  if (item.qty != null) metaParts.push(`판매량 ${fmt(item.qty)}개`);
-  const channelPart = item.channel ? channelIconLabel(item.channel) : null;
+// 2026-09-08 [사용자 지적 - 카드가 세로로 너무 길어짐] 큰 카드 대신 데스크톱은
+// "상품명 | 채널 | 판매량 | 매출" 1행(기존 ERP 테이블 행높이), 모바일은 상품명
+// + 요약 1줄(최대 2줄)로 압축. *** 행 하나(<tr>)에 데스크톱용 개별 칸과
+// 모바일용 요약 칸을 같이 두고 CSS로 보이는 쪽만 전환 ***(JS 분기 없이 한
+// 마크업으로 두 레이아웃 다 커버 - product-sales-table 규칙 참고).
+// 구형 {name, amount}만 있는 행도 안전(qty/channel 없으면 그 부분만 생략).
+function productSalesRowHtml(item, rank) {
+  const name = esc(item.name || item.product_id);
+  const channelHtml = item.channel ? channelIconLabel(item.channel) : "-";
+  const qtyText = item.qty != null ? `${fmt(item.qty)}개` : "-";
+  const amountText = `₩${fmt(item.amount)}`;
+  const mobileMetaParts = [qtyText !== "-" ? qtyText : null, amountText, item.channel ? channelIconLabel(item.channel) : null].filter(Boolean);
   return `
-    <div class="product-sales-card">
-      ${rank != null ? `<div class="product-sales-rank">${rank}</div>` : ""}
-      <div class="product-sales-body">
-        <div class="product-sales-name">${esc(item.name || item.product_id)}</div>
-        <div class="product-sales-meta">${metaParts.join(" · ")}${channelPart ? `<br>${channelPart}` : ""}</div>
-      </div>
+    <tr>
+      ${rank != null ? `<td class="ps-rank num">${rank}</td>` : ""}
+      <td class="ps-name">${name}</td>
+      <td class="ps-channel">${channelHtml}</td>
+      <td class="ps-qty num">${qtyText}</td>
+      <td class="ps-amount num">${amountText}</td>
+      <td class="ps-mobile-meta">${mobileMetaParts.join(" · ")}</td>
+    </tr>`;
+}
+
+function productSalesTableHtml(items, { showRank = false } = {}) {
+  if (!items || !items.length) return `<p style="color:var(--text-sub);font-size:13px">데이터 없음</p>`;
+  return `
+    <div class="table-wrap">
+      <table class="product-sales-table">
+        <thead><tr>
+          ${showRank ? '<th class="num"></th>' : ""}
+          <th>상품명</th><th>채널</th><th class="num">판매량</th><th class="num">매출</th><th class="ps-mobile-meta"></th>
+        </tr></thead>
+        <tbody>${items.map((t, i) => productSalesRowHtml(t, showRank ? i + 1 : null)).join("")}</tbody>
+      </table>
     </div>`;
 }
 
@@ -1285,7 +1308,18 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
       </p>
     </div>`;
   }
-  const needsCheck = b.status !== "OK";
+  // 2026-09-08 [사용자 지적] withdraw 보조 API 실패 하나만으로 브리핑 전체를
+  // "데이터 확인 필요"(심각한 오류)처럼 보여주지 않음 - 판매 sync/CANCEL/
+  // RETURN/mapping/매출금액이 실제로 문제없으면(=data_quality_flags에 그
+  // 항목 하나뿐이면) 별도의 가벼운 warning으로 분리하고 숫자는 정상 표시.
+  // 원문(내부 진단용 URL 등)은 data_quality_flags에 그대로 남아있지만 화면엔
+  // 절대 노출 안 함(짧은 안내 문구만).
+  const allFlags = b.data_quality_flags || [];
+  const withdrawFlags = allFlags.filter(f => f.startsWith("WITHDRAW_CHECK_UNAVAILABLE"));
+  const otherFlags = allFlags.filter(f => !f.startsWith("WITHDRAW_CHECK_UNAVAILABLE"));
+  const needsCheck = b.status !== "OK" && otherFlags.length > 0;
+  const withdrawOnlyWarning = withdrawFlags.length > 0 && otherFlags.length === 0;
+
   const cancelAmt = briefingAdjAmount(b.cancel_amount_estimated, b.cancel_amount_settled);
   const returnAmt = briefingAdjAmount(b.return_amount_estimated, b.return_amount_settled);
   const rate = b.cancel_return_rate != null ? `${(Number(b.cancel_return_rate) * 100).toFixed(1)}%` : "-";
@@ -1294,7 +1328,7 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
     : "-";
   const channelRows = Object.entries(b.channel_breakdown || {})
     .map(([ch, amt]) => `<tr><td>${esc(ch)}</td><td class="num">₩${fmt(amt)}</td></tr>`).join("");
-  const top5Cards = (b.top5 || []).map((t, i) => productSalesCardHtml(t, i + 1)).join("");
+  const top5Table = productSalesTableHtml(b.top5, { showRank: true });
 
   return `
     <div class="card" ${needsCheck ? 'style="border:2px solid var(--amber)"' : ""}>
@@ -1302,11 +1336,15 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
         <h2>${detailed ? "매출 브리핑 상세" : "어제 매출 브리핑"} · ${esc(b.date)}</h2>
         ${needsCheck
           ? '<span class="chip rejected">데이터 확인 필요</span>'
+          : withdrawOnlyWarning ? '<span class="chip progress">⚠️ 반품 철회 확인 지연</span>'
           : b.includes_estimated ? '<span class="chip progress">추정치 포함</span>' : '<span class="chip approved">확정</span>'}
       </div>
       ${needsCheck ? `<p style="color:var(--amber);font-size:12.5px;margin:0 0 8px">
         ⚠️ 동기화 중 일부 오류/매핑실패가 있어 아래 수치가 확정값이 아닐 수 있습니다.
-        ${(b.data_quality_flags || []).map(esc).join(" · ")}
+        ${otherFlags.map(esc).join(" · ")}
+      </p>` : ""}
+      ${withdrawOnlyWarning ? `<p style="color:var(--text-sub);font-size:12.5px;margin:0 0 8px">
+        ⚠️ 반품 철회 상태 확인 지연 · 매출·취소·반품 집계에는 영향 없음 · 추후 자동 재확인
       </p>` : ""}
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">총 판매수량</div><div class="stat-value">${fmt(b.gross_qty)}개</div></div>
@@ -1323,16 +1361,16 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
         <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">채널별 매출</h3>
           <table class="items-table"><tbody>${channelRows || '<tr><td colspan="2" style="color:var(--text-sub)">데이터 없음</td></tr>'}</tbody></table></div>
         <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">매출 TOP5</h3>
-          <div class="product-sales-list">${top5Cards || '<p style="color:var(--text-sub);font-size:13px">데이터 없음</p>'}</div></div>
+          ${top5Table}</div>
       </div>
       ${b.unmatched_count ? `<p style="font-size:12px;color:var(--text-sub);margin-top:8px">매핑 실패/수집 오류 ${fmt(b.unmatched_count)}건</p>` : ""}
       ${fullProductList ? `
       <h3 style="font-size:13px;color:var(--text-sub);margin:16px 0 6px">판매 상품 전체 (${fullProductList.length}종, 매출 내림차순)</h3>
-      <div class="product-sales-list">${fullProductList.map((item, i) => productSalesCardHtml(item, i + 1)).join("") ||
-        '<p style="color:var(--text-sub);font-size:13px">판매 데이터 없음</p>'}</div>
+      ${productSalesTableHtml(fullProductList)}
       ` : ""}
       ` : `
-      <div class="product-sales-list" style="margin-top:12px">${top5Cards}</div>
+      <h3 style="font-size:13px;color:var(--text-sub);margin:12px 0 6px">매출 TOP5</h3>
+      ${top5Table}
       `}
     </div>`;
 }
