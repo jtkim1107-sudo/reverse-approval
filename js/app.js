@@ -1226,12 +1226,33 @@ async function loadDailySalesBriefing(dateStr) {
   return data || null;
 }
 
+// 2026-09-08 [매출 이중집계 수정, 사용자 명시] 자동화(2026-08-31~) 이전 수기
+// 입력 습관이 남아있던 09-01~09-06에 자동 동기화(external_key 있음) 행과
+// 수기 입력(external_key=NULL) 행이 같은 (date,product_id,channel)에 함께
+// 존재해서 단순 SUM하면 실제 매출의 최대 2배로 잡히는 문제가 실측으로 확인됨
+// (Coupang 원본 대비 auto 행은 7일 전부 100% 일치, manual 행은 별도 수기
+// 추정치). *** external_key IS NULL을 무조건 제외하는 건 금지 *** - 자동화
+// 이전(2026-08-31 이전 등)의 정상 수기 매출까지 사라져 보이면 안 되므로,
+// "같은 그룹에 auto 행이 있을 때만" manual 행을 접음. sales DB 행 자체는
+// 전혀 안 건드림(DELETE/UPDATE 없음) - 화면 집계 시에만 적용.
+function dedupeAutoOverManualSales(rows) {
+  const autoGroups = new Set();
+  for (const r of rows) {
+    if (r.external_key) autoGroups.add(`${r.date}|${r.product_id}|${r.channel}`);
+  }
+  return rows.filter(r => {
+    if (r.external_key) return true;
+    return !autoGroups.has(`${r.date}|${r.product_id}|${r.channel}`);
+  });
+}
+
 // 2026-09-08 [PHASE 10 STEP 2] 매출내역 상세용 "그 날짜 판매상품 전체"를
 // (product_id, channel) 기준으로 집계 - daily_sales_briefing에 저장 안 하고
 // sales에서 화면 진입 시 직접 계산(새 DB 조회/컬럼 없음, 이미 로드된
 // erpProducts로 이름만 조인). 매출 내림차순 정렬.
 async function loadDailyProductBreakdown(dateStr) {
-  const { data } = await sb.from("sales").select("channel,product_id,qty,amount").eq("date", dateStr);
+  const { data: raw } = await sb.from("sales").select("date,channel,product_id,qty,amount,external_key").eq("date", dateStr);
+  const data = dedupeAutoOverManualSales(raw || []);
   if (!data || !data.length) return [];
   const byKey = {};
   for (const r of data) {
@@ -1249,6 +1270,19 @@ async function loadDailyProductBreakdown(dateStr) {
 // 취소/반품 금액은 SETTLED(확정)가 있으면 그 값, 없으면 ESTIMATED(추정) 사용 -
 // daily_sales_briefing.py의 net_amount 계산과 동일한 우선순위
 const briefingAdjAmount = (estimated, settled) => (settled != null ? Number(settled) : Number(estimated || 0));
+
+// 2026-09-08 [매출 3층 구조 정리, 사용자 명시] "주문매출"(sales/daily_sales_
+// briefing 기반, RG/MP paidAt 결제시점 기준)과 "쿠팡 실적매출"(쿠팡 앱/판매
+// 현황 기준 - 취소·반품·박스훼손 등 조정 포함), "정산매출"(settlement/revenue
+// 확정 기준)은 서로 다른 값일 수 있음이 실측으로 확인됨(2026-09-07: 주문매출
+// 53개/₩823,520 vs 쿠팡 실적매출 39개/₩588,170). *** 이번 단계는 라벨/설명만
+// 수정 - DB 컬럼 추가나 수치 변경 없음, 쿠팡 실적매출은 아직 자동/수동 기록
+// 안 함(별도 승인 필요) ***.
+const ORDER_REVENUE_NOTICE_HTML =
+  `<p style="font-size:11.5px;color:var(--text-sub);background:var(--bg-soft, rgba(0,0,0,.03));` +
+  `border-radius:6px;padding:6px 9px;margin:0 0 8px">` +
+  `📋 <b>주문매출</b>(결제시점 기준, 잠정) — 취소·반품·박스훼손 등 조정 미반영. ` +
+  `쿠팡 앱에서 확인하는 <b>실적매출</b>이나 정산상 <b>정산매출</b>과 다를 수 있습니다.</p>`;
 
 // 2026-09-08 [PHASE 9/10] 채널 표시 아이콘 - 알 수 없는 채널이면 아이콘 없이
 // 이름만(추측 없음).
@@ -1346,30 +1380,31 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
       ${withdrawOnlyWarning ? `<p style="color:var(--text-sub);font-size:12.5px;margin:0 0 8px">
         ⚠️ 반품 철회 상태 확인 지연 · 매출·취소·반품 집계에는 영향 없음 · 추후 자동 재확인
       </p>` : ""}
+      ${ORDER_REVENUE_NOTICE_HTML}
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">총 판매수량</div><div class="stat-value">${fmt(b.gross_qty)}개</div></div>
-        <div class="stat"><div class="stat-label">총 주문매출</div><div class="stat-value blue">₩${fmt(b.gross_amount)}</div></div>
+        <div class="stat"><div class="stat-label">총 주문매출(잠정)</div><div class="stat-value blue">₩${fmt(b.gross_amount)}</div></div>
         <div class="stat"><div class="stat-label">취소</div><div class="stat-value amber">${fmt(b.cancel_qty)}개 · ₩${fmt(cancelAmt)}</div></div>
         <div class="stat"><div class="stat-label">반품·환불</div><div class="stat-value amber">${fmt(b.return_qty)}개 · ₩${fmt(returnAmt)}</div></div>
         <div class="stat"><div class="stat-label">순판매수량</div><div class="stat-value">${fmt(b.net_qty)}개</div></div>
-        <div class="stat"><div class="stat-label">순매출</div><div class="stat-value green">₩${fmt(b.net_amount)}</div></div>
+        <div class="stat"><div class="stat-label">순매출(주문 기준)</div><div class="stat-value green">₩${fmt(b.net_amount)}</div></div>
         <div class="stat"><div class="stat-label">취소·반품률</div><div class="stat-value">${rate}</div></div>
         <div class="stat"><div class="stat-label">전일 대비</div><div class="stat-value">${dod}</div></div>
       </div>
       ${detailed ? `
       <div class="briefing-detail-grid">
-        <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">채널별 매출</h3>
+        <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">채널별 주문매출</h3>
           <table class="items-table"><tbody>${channelRows || '<tr><td colspan="2" style="color:var(--text-sub)">데이터 없음</td></tr>'}</tbody></table></div>
-        <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">매출 TOP5</h3>
+        <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">주문매출 TOP5</h3>
           ${top5Table}</div>
       </div>
       ${b.unmatched_count ? `<p style="font-size:12px;color:var(--text-sub);margin-top:8px">매핑 실패/수집 오류 ${fmt(b.unmatched_count)}건</p>` : ""}
       ${fullProductList ? `
-      <h3 style="font-size:13px;color:var(--text-sub);margin:16px 0 6px">판매 상품 전체 (${fullProductList.length}종, 매출 내림차순)</h3>
+      <h3 style="font-size:13px;color:var(--text-sub);margin:16px 0 6px">판매 상품 전체 (${fullProductList.length}종, 주문매출 내림차순)</h3>
       ${productSalesTableHtml(fullProductList)}
       ` : ""}
       ` : `
-      <h3 style="font-size:13px;color:var(--text-sub);margin:12px 0 6px">매출 TOP5</h3>
+      <h3 style="font-size:13px;color:var(--text-sub);margin:12px 0 6px">주문매출 TOP5</h3>
       ${top5Table}
       `}
     </div>`;
@@ -1380,7 +1415,7 @@ async function viewDashboard() {
   const [docs, prodRes, saleRes, buyRes, taskRes, costRes] = await Promise.all([
     fetchDocs(),
     sb.from("products").select("*").order("updated_at", { ascending: false }).limit(5),
-    sb.from("sales").select("amount,date"),
+    sb.from("sales").select("amount,date,product_id,channel,external_key"),
     sb.from("purchases").select("amount,date"),
     sb.from("tasks").select("assignee_id,status,due_date"),
     sb.from("purchase_costs").select("amount,date"),
@@ -1415,7 +1450,7 @@ async function viewDashboard() {
     briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: false });
   } catch (e) { console.error("매출 브리핑 카드:", e); }
 
-  const monthSales = (saleRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
+  const monthSales = dedupeAutoOverManualSales(saleRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
     .reduce((s, r) => s + Number(r.amount), 0);
   const monthBuys = (buyRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
     .reduce((s, r) => s + Number(r.amount), 0)
@@ -1455,7 +1490,7 @@ async function viewDashboard() {
         <div class="stat-value blue">₩${fmt(monthTotal)}</div>
       </div>
       <div class="stat" onclick="location.hash='#/sales'">
-        <div class="stat-label">이번 달 매출</div>
+        <div class="stat-label">이번 달 주문매출</div>
         <div class="stat-value blue">₩${fmt(monthSales)}</div>
       </div>
       <div class="stat" onclick="location.hash='#/purchases'">
@@ -2257,7 +2292,7 @@ async function loadErpBase() {
   erpSupplierList = spRes.data || [];
   erpProducts = prodRes.data || [];
   const buys = buyRes.data || [];
-  const sales = saleRes.data || [];
+  const sales = dedupeAutoOverManualSales(saleRes.data || []);
   const costs = costRes.data || [];
   erpChannelList = chRes.data || [];
   erpTransfers = trRes.data || [];
@@ -2469,7 +2504,7 @@ async function viewSales() {
     </div>
 
     <div class="card">
-      <div class="card-head"><h2>매출 내역</h2>
+      <div class="card-head"><h2>매출 내역 <span style="font-size:11.5px;font-weight:400;color:var(--text-sub)">(주문매출 · 결제시점 기준)</span></h2>
         <div style="display:flex;gap:8px;align-items:center">
           ${monthPicker()}
           <button class="btn sm secondary" onclick="exportErpCSV('sales')">CSV</button>
@@ -2565,6 +2600,20 @@ async function saveSales() {
     .map(([pid, q]) => `'${prodName(pid)}' 재고 ${fmt(erpStock[pid]?.stock ?? 0)} < 판매 ${fmt(q)}`);
   if (stockWarns.length && !confirm(
     `재고보다 많은 수량입니다.\n\n${stockWarns.join("\n")}\n\n그래도 저장할까요?`)) return;
+  // 2026-09-08 [매출 이중집계 수정, 사용자 명시 "삭제하지 말고 최소 안전장치"]
+  // 같은 date/product_id/channel에 이미 자동 동기화(external_key 있음) 행이
+  // 있으면 저장을 막지는 않되(수동입력 기능 자체는 유지) 경고함 - 09-01~09-06
+  // 사례처럼 같은 매출이 수기로 또 들어가는 걸 방지하는 최소한의 장치.
+  const pidList = Object.keys(qtyByPid);
+  if (pidList.length) {
+    const { data: existingAuto } = await sb.from("sales")
+      .select("product_id").eq("date", date).eq("channel", channel)
+      .in("product_id", pidList).not("external_key", "is", null);
+    const dupNames = [...new Set((existingAuto || []).map(r => prodName(r.product_id)))];
+    if (dupNames.length && !confirm(
+      `이 날짜/채널에 이미 자동 동기화된 매출이 있습니다: ${dupNames.join(", ")}\n\n` +
+      `중복 입력일 수 있습니다. 그래도 수동으로 저장할까요?`)) return;
+  }
   const btn = document.getElementById("btn-save-sales");
   btn.disabled = true;
   const { error } = await sb.from("sales").insert(recs);
