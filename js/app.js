@@ -6288,19 +6288,6 @@ async function saveTruckPrepCenter(prepId) {
   route();
 }
 
-async function saveTruckMetadataWeight(vendorItemId, productId, mappingId, prepPoiId) {
-  const input = document.getElementById(`tip-weight-${prepPoiId}`);
-  const weight = Number(input?.value);
-  if (!weight || weight <= 0 || !Number.isInteger(weight)) return toast("무게(g)를 1 이상 정수로 입력해 주세요");
-  const { error } = await sb.from("product_wing_metadata").insert({
-    product_id: productId, product_channel_mapping_id: mappingId || null,
-    vendor_item_id: vendorItemId, weight, source: "MANUAL",
-  });
-  if (error) return toast("저장에 실패했습니다: " + (error.message || ""));
-  toast("무게가 등록되었습니다 - 이후 이 상품의 모든 PO에서 자동 재사용됩니다. 다음 자동 확인 주기(최대 5분)에 자동으로 이어서 진행됩니다");
-  route();
-}
-
 function toggleTruckPrepDetail(poiId) {
   const el = document.getElementById(`tip-detail-${poiId}`);
   if (el) el.classList.toggle("hidden");
@@ -6309,13 +6296,10 @@ function toggleTruckPrepDetail(poiId) {
 // required_action -> 첫 화면에 보여줄 액션 UI. 개발자 용어(vendorItemId/
 // product_procurement/product_wing_metadata/PRE-FLIGHT exception)는 여기 없음 -
 // 전부 "상세보기" 토글 안에서만 보여줌(사용자 명시).
+// 2026-09-08 [TRUCK weight 자동조회, 사용자 명시] weight는 이제 WING에서 자동조회함
+// (product_wing_metadata 수동입력 UI 제거) - 백엔드가 required_action="ENTER_WEIGHT"를
+// 더 이상 내려주지 않으므로 그 분기/saveTruckMetadataWeight()도 함께 제거함.
 function truckPrepActionHtml(row, centerOptions) {
-  if (row.required_action === "ENTER_WEIGHT") {
-    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <input id="tip-weight-${esc(row.purchase_order_item_id)}" type="number" min="1" step="1" placeholder="무게(g)" style="width:90px">
-        <button class="btn sm" onclick="saveTruckMetadataWeight('${esc(row.vendor_item_id)}','${esc(row.product_id)}','${esc(row.channel_mapping_id)}','${esc(row.purchase_order_item_id)}')">무게 입력</button>
-      </div>`;
-  }
   if (row.required_action === "SELECT_CENTER") {
     return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <select id="tip-center-${esc(row.id)}"><option value="">센터 선택...</option>${centerOptions}</select>
