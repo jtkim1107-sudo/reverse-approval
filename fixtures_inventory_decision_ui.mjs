@@ -19,6 +19,11 @@ global.fmt = eval(fmtMatch[0].replace("const fmt = ", ""));
 const inventoryOutlookText = extractFn("inventoryOutlookText");
 const inventoryIncomingText = extractFn("inventoryIncomingText");
 
+const labelMatch = src.match(/const INCOMING_SOURCE_LABEL = \{[\s\S]*?\};/);
+global.INCOMING_SOURCE_LABEL = eval(`(${labelMatch[0].replace("const INCOMING_SOURCE_LABEL = ", "").replace(/;\s*$/, "")})`);
+const srcLabelFnMatch = src.match(/const inventoryIncomingSourceLabel = [^;]+;/);
+const inventoryIncomingSourceLabel = eval(`(${srcLabelFnMatch[0].replace("const inventoryIncomingSourceLabel = ", "").replace(/;\s*$/, "")})`);
+
 let failures = 0;
 function check(actual, expected, label) {
   const ok = actual === expected;
@@ -36,6 +41,12 @@ console.log("\n=== inventoryIncomingText ===");
 check(inventoryIncomingText({ incoming_qty: 0 }), "-", "입고예정 없음 -> -");
 check(inventoryIncomingText({ incoming_qty: 320, incoming_date: "2026-09-07" }), "+320 · 09/07", "[핵심] 09-11 등 임의 날짜 아니라 시스템 incoming_date 그대로 표시");
 check(inventoryIncomingText({ incoming_qty: 80, incoming_date: null }), "+80 · 날짜 확인필요", "PO는 있지만 확정일 없음 -> 날짜 확인필요(추정 안 함)");
+
+console.log("\n=== inventoryIncomingSourceLabel ===");
+check(inventoryIncomingSourceLabel("PO_DUE_DATE"), "발주서 예상입고일", "[핵심] PO_DUE_DATE - 사람이 확인한 예상입고일 표시");
+check(inventoryIncomingSourceLabel("INBOUND_PLAN"), "WING 예약 슬롯", "INBOUND_PLAN - WING 슬롯만 있을 때");
+check(inventoryIncomingSourceLabel("PO_ONLY"), "발주만 있음(입고일 미확정)", "PO_ONLY - 확정일 없음");
+check(inventoryIncomingSourceLabel(undefined), "-", "값 없으면 - 표시");
 
 console.log(`\n=== 결과: ${failures === 0 ? "전체 통과" : failures + "건 실패"} ===`);
 process.exit(failures === 0 ? 0 : 1);

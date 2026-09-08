@@ -3529,7 +3529,9 @@ function openInventoryDecisionDetail(productId) {
         ${poRows ? `<div class="table-wrap"><table class="items-table">
           <thead><tr><th>발주서</th><th>상태</th><th class="num">발주</th><th class="num">입고</th><th class="num">미입고</th></tr></thead>
           <tbody>${poRows}</tbody></table></div>` : `<p style="color:var(--text-sub);font-size:13px">유효한 기존 발주 없음</p>`}
-        <p style="font-size:13px;margin-top:6px">입고예정일: <b>${d.incoming_date || "확정 안 됨"}</b> ${d.incoming_source ? `(${esc(d.incoming_source)})` : ""}</p>
+        <p style="font-size:13px;margin-top:6px">현재 예상 입고일: <b>${d.incoming_date || "확정 안 됨"}</b> ${d.incoming_source ? `(${esc(inventoryIncomingSourceLabel(d.incoming_source))})` : ""}</p>
+        ${d.wing_slot_date ? `<p style="font-size:12.5px;color:var(--text-sub)">WING 예약 슬롯: ${d.wing_slot_date}${d.wing_slot_date !== d.incoming_date ? " (실제 ETA와 다름 — WING 제출 이력으로 그대로 보존)" : ""}</p>` : ""}
+        <button class="btn sm secondary" style="margin-top:6px" onclick="openIncomingRegisterModal('${d.product_id}')">📥 실제 발주/입고 정보 등록</button>
 
         <h4 style="font-size:13px;margin:14px 0 4px">예측</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
@@ -3553,6 +3555,166 @@ function openInventoryDecisionDetail(productId) {
         <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">닫기</button></div>
       </div>
     </div>`;
+}
+
+const INCOMING_SOURCE_LABEL = {
+  PO_DUE_DATE: "발주서 예상입고일", INBOUND_PLAN: "WING 예약 슬롯", PO_ONLY: "발주만 있음(입고일 미확정)", NONE: "-",
+};
+const inventoryIncomingSourceLabel = s => INCOMING_SOURCE_LABEL[s] || s || "-";
+
+const INCOMING_ORDER_SOURCES = ["ERP", "전화", "메신저", "기타"];
+
+// 2026-09-08 [실제 발주/입고예정 canonical 기록 경로, 사용자 명시] "ERP 밖에서
+// 이미 발주된 건"(또는 이미 있는 PO의 ETA가 실제로 바뀐 건)을 최소 입력으로
+// 등록하는 경로. *** 새 화면/새 API 없이 재고·발주 상세 안 모달 하나로 처리 ***
+// - 두 모드:
+//  1) "기존 발주 예상입고일 수정": open_po_refs 중 하나를 골라 purchase_orders.
+//     due_date만 갱신(WING 슬롯 inbound_plans.inbound_date는 절대 안 건드림 -
+//     get_open_po_and_inbound가 그 값을 wing_slot_date로 항상 따로 보존함).
+//  2) "새 발주 등록": 기존 PO가 하나도 없거나(블랙 사례) 그 발주와 무관한 별도
+//     외부발주 - 새 purchase_orders/purchase_order_items를 status="ordered"로
+//     바로 등록(전결 아님 - 이미 실제로 발주된 사실을 기록하는 것뿐이라 결재
+//     라인 자체가 의미 없음). drafter_id는 null로 남김(실제 발주자가 아니라
+//     ERP 밖 사실을 옮겨적는 것 - 사람을 지어내지 않음, PO-014 auto-draft와
+//     동일 컨벤션).
+// 두 모드 모두 저장 시 events(공용 일정, category="납품·입고")에 ETA 이력을
+// 한 줄 남김 - 이미 이 팀이 수동으로 쓰던 방식 그대로 재사용(새 이력 테이블
+// 만들지 않음).
+function openIncomingRegisterModal(productId) {
+  const d = (inventoryDecisionsCache?.decisions || []).find(x => x.product_id === productId);
+  if (!d) return;
+  const hasOpenPo = (d.open_po_refs || []).length > 0;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:520px;width:96vw">
+        <h3>📥 실제 발주/입고 정보 등록</h3>
+        <p style="font-size:12.5px;color:var(--text-sub);margin:-6px 0 10px">${esc(d.product_name || "")}${d.option_name ? " · " + esc(d.option_name) : ""} — WING 예약 슬롯은 절대 덮어쓰지 않고, "현재 예상 입고일"만 갱신해요.</p>
+        <div style="display:flex;gap:6px;margin-bottom:12px">
+          <button id="ir-tab-existing" class="btn sm ${hasOpenPo ? "" : "secondary"}" ${hasOpenPo ? "" : "disabled"} onclick="irSetMode('existing')">기존 발주 ETA 수정</button>
+          <button id="ir-tab-new" class="btn sm ${hasOpenPo ? "secondary" : ""}" onclick="irSetMode('new')">새 발주(ERP 밖 발주) 등록</button>
+        </div>
+
+        <div id="ir-mode-existing" class="${hasOpenPo ? "" : "hidden"}">
+          <div class="form-grid">
+            <div class="field full"><label>어떤 발주인가요?</label>
+              <select id="ir-po-select" onchange="irPoSelected()">
+                ${(d.open_po_refs || []).map(r => `<option value="${r.id}" data-due="${r.due_date || ""}">${esc(r.po_no)} (${esc(r.status)}, 미입고 ${fmt(r.remain)}개)</option>`).join("")}
+              </select></div>
+            <div class="field"><label>현재 예상 입고일 *</label><input id="ir-due" type="date"></div>
+            <div class="field"><label>확인 경로</label>
+              <select id="ir-source">${INCOMING_ORDER_SOURCES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></div>
+            <div class="field full"><label>메모</label><input id="ir-note" maxlength="150" placeholder="예) 물류 재조정으로 ETA 변경됐다고 확인함"></div>
+          </div>
+          <div class="modal-actions">
+            <button class="btn secondary" onclick="closeModal()">취소</button>
+            <button class="btn" id="btn-ir-existing" onclick="saveIncomingRegisterExisting('${productId}')">저장</button>
+          </div>
+        </div>
+
+        <div id="ir-mode-new" class="${hasOpenPo ? "hidden" : ""}">
+          <div class="form-grid">
+            <div class="field"><label>발주수량 *</label><input id="ir-qty" type="number" min="1" step="1" placeholder="예) 80"></div>
+            <div class="field"><label>발주일 *</label><input id="ir-date" type="date" value="${today()}"></div>
+            <div class="field"><label>예상 입고일 *</label><input id="ir-due2" type="date"></div>
+            <div class="field"><label>공급처 *</label>${supplierOptionsHtml(d.supplier_name).replace(/id="b-supplier"/, 'id="ir-supplier"')}</div>
+            <div class="field"><label>발주 source</label>
+              <select id="ir-source2">${INCOMING_ORDER_SOURCES.map(s => `<option value="${s}">${s}</option>`).join("")}</select></div>
+            <div class="field full"><label>메모</label><input id="ir-note2" maxlength="150" placeholder="예) 전화로 리파코에 직접 발주함"></div>
+          </div>
+          <p style="font-size:12px;color:var(--text-sub);margin-top:4px">단가는 기준단가(₩${fmt(d.purchase_cost || 0)})를 자동 적용해요. 결재 없이 바로 "발주완료(ordered)"로 등록돼요 — 이미 실제로 일어난 발주라서요.</p>
+          <div class="modal-actions">
+            <button class="btn secondary" onclick="closeModal()">취소</button>
+            <button class="btn" id="btn-ir-new" onclick="saveIncomingRegisterNew('${productId}')">저장</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  if (hasOpenPo) irPoSelected();
+}
+
+function irSetMode(mode) {
+  document.getElementById("ir-mode-existing").classList.toggle("hidden", mode !== "existing");
+  document.getElementById("ir-mode-new").classList.toggle("hidden", mode !== "new");
+  document.getElementById("ir-tab-existing").classList.toggle("secondary", mode !== "existing");
+  document.getElementById("ir-tab-new").classList.toggle("secondary", mode !== "new");
+}
+
+function irPoSelected() {
+  const sel = document.getElementById("ir-po-select");
+  const due = sel?.selectedOptions[0]?.dataset.due || "";
+  const dueInput = document.getElementById("ir-due");
+  if (dueInput) dueInput.value = due;
+}
+
+async function saveIncomingRegisterExisting(productId) {
+  const d = (inventoryDecisionsCache?.decisions || []).find(x => x.product_id === productId);
+  const poId = document.getElementById("ir-po-select").value;
+  const due = document.getElementById("ir-due").value;
+  if (!due) return toast("현재 예상 입고일을 선택해 주세요");
+  const source = document.getElementById("ir-source").value;
+  const note = document.getElementById("ir-note").value.trim();
+  const ref = (d?.open_po_refs || []).find(r => String(r.id) === String(poId));
+  const btn = document.getElementById("btn-ir-existing");
+  btn.disabled = true;
+
+  const stamp = `[${today()}] [${source}] 예상입고일 → ${due}${note ? ": " + note : ""}`;
+  const newMemo = ref?.memo ? `${ref.memo}\n${stamp}` : stamp;
+  const { error } = await sb.from("purchase_orders").update({ due_date: due, memo: newMemo }).eq("id", poId);
+  if (error) { btn.disabled = false; return toast("저장에 실패했습니다"); }
+
+  await sb.from("events").insert({
+    title: `${d?.product_name || ""} 입고 ETA 갱신`, start_date: due, category: "납품·입고",
+    memo: `${ref?.po_no || poId}: WING 예약 슬롯 ${d?.wing_slot_date || "-"} → 실제 ETA ${due} (${source})${note ? " - " + note : ""}`,
+    creator_id: me.id, created_by: me.name,
+  });
+
+  toast("예상 입고일을 갱신했습니다");
+  closeModal();
+  inventoryDecisionsCache = null;
+  route();
+}
+
+async function saveIncomingRegisterNew(productId) {
+  const d = (inventoryDecisionsCache?.decisions || []).find(x => x.product_id === productId);
+  const qty = numOf(document.getElementById("ir-qty").value);
+  const date = document.getElementById("ir-date").value;
+  const due = document.getElementById("ir-due2").value;
+  const supplier = document.getElementById("ir-supplier")?.value.trim() || "";
+  const source = document.getElementById("ir-source2").value;
+  const note = document.getElementById("ir-note2").value.trim();
+  if (qty <= 0 || !Number.isInteger(qty)) return toast("발주수량은 1 이상 정수로 입력해 주세요");
+  if (!date) return toast("발주일을 선택해 주세요");
+  if (!due) return toast("예상 입고일을 선택해 주세요");
+  if (!supplier) return toast("공급처를 선택해 주세요");
+  const unitCost = Number(d?.purchase_cost) || 0;
+  const btn = document.getElementById("btn-ir-new");
+  btn.disabled = true;
+
+  const memo = `[${source}] ERP 밖 실제발주 등록${note ? " - " + note : ""}`;
+  const { data: noData } = await sb.rpc("next_po_no");
+  const { data: po, error } = await sb.from("purchase_orders").insert({
+    po_no: noData || `리버스-발주-${today().slice(0, 4)}-${Date.now().toString().slice(-3)}`,
+    date, supplier, due_date: due, deliver_to: "쿠팡", freight_est: 0,
+    total: qty * unitCost, memo, status: "ordered",
+    drafter_id: null, approval_line: [], current_step: 0, ordered_at: new Date().toISOString(),
+  }).select("id").single();
+  if (error || !po) { btn.disabled = false; return toast("발주서 등록에 실패했습니다"); }
+
+  const { error: e2 } = await sb.from("purchase_order_items").insert({
+    po_id: po.id, product_id: productId, qty, unit_cost: unitCost, amount: qty * unitCost,
+  });
+  if (e2) { await sb.from("purchase_orders").delete().eq("id", po.id); btn.disabled = false; return toast("품목 저장에 실패했습니다"); }
+
+  await sb.from("events").insert({
+    title: `${d?.product_name || ""} 외부발주 등록`, start_date: due, category: "납품·입고",
+    memo: `${noData || po.id}: ERP 밖 실제발주 ${qty}EA, 발주일 ${date}, ETA ${due} (${source})${note ? " - " + note : ""}`,
+    creator_id: me.id, created_by: me.name,
+  });
+
+  toast("실제 발주 정보를 등록했습니다");
+  closeModal();
+  inventoryDecisionsCache = null;
+  route();
 }
 
 // 2026-09-08 [재고·발주 판단 엔진 통일, 사용자 명시] 기존 "재고현황"/"발주추천"
