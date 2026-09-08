@@ -5805,7 +5805,7 @@ function openPODetail(id) {
               <td style="width:110px;color:var(--text-sub)">거래처</td><td>${esc(p.supplier)}${sup?.pay_terms ? ` <span class="chip waiting">${esc(sup.pay_terms)}</span>` : ""}</td></tr>
           <tr><td style="color:var(--text-sub)">입고처</td><td>${p.deliver_to === "쿠팡" ? "쿠팡 (로켓그로스 직송)" : "자사창고"}</td>
               <td style="color:var(--text-sub)">기안</td><td>${esc(userName(p.drafter_id))}</td></tr>
-          <tr><td style="color:var(--text-sub)">예상 운송비</td><td>${p.freight_est ? "₩" + fmt(p.freight_est) : "—"}</td>
+          <tr><td style="color:var(--text-sub)">예상 운송비</td><td>${p.freight_est ? "₩" + fmt(p.freight_est) : "—"}<span id="po-freight-review"></span></td>
               <td style="color:var(--text-sub)">메모</td><td>${esc(p.memo) || "—"}</td></tr>
         </tbody></table></div>
 
@@ -5851,6 +5851,42 @@ function openPODetail(id) {
         </div>
       </div>
     </div>`;
+  loadPOFreightReview(p.id, p.freight_est);
+}
+
+// 2026-09-09 [운송비 freight_est 연결, 사용자 명시] TRUCK 자동입고가 이미 실제 WING
+// 슬롯·팔레트수로 산정해둔 운송비(/api/purchase-orders/freight-estimate, READ-ONLY)를
+// 모달이 뜬 뒤 비동기로 조회해서 보여줘요 - 자동으로 freight_est를 덮어쓰지 않고
+// 사람이 "적용" 버튼을 눌러야만 반영돼요(검토 화면 - 조용히 재무 필드를 바꾸지 않음).
+// 연결된 inbound_plan이 없는 일반 PO는 아무것도 안 보여줌(조용히 스킵).
+async function loadPOFreightReview(poId, currentFreightEst) {
+  const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
+  const jwt = session?.access_token;
+  if (!jwt) return;
+  let result;
+  try {
+    const resp = await fetch(`${LIVE_STOCK_API_BASE}/api/purchase-orders/freight-estimate?po_id=${encodeURIComponent(poId)}`,
+      { headers: { Authorization: `Bearer ${jwt}` } });
+    result = await resp.json();
+    if (!resp.ok) return;
+  } catch (e) { return; }
+  const el = document.getElementById("po-freight-review");
+  if (!el) return; // 모달이 이미 닫혔으면 아무것도 안 함
+  if (result.total_freight_est == null || result.plan_count === 0) return; // 연결된 TRUCK 자동입고 없음 - 조용히 스킵
+  if (Number(currentFreightEst) === Number(result.total_freight_est)) return; // 이미 반영돼 있음
+  const reasons = (result.groups || []).map(g => esc(g.selection_reason || g.center_name || "")).filter(Boolean).join(" / ");
+  el.innerHTML = ` <span class="chip waiting" style="display:inline-block;margin-top:4px">
+      🚚 TRUCK 자동선택 운송비 ₩${fmt(result.total_freight_est)}${reasons ? ` (${reasons})` : ""}
+      <a onclick="applyPOFreightEstimate('${poId}', ${result.total_freight_est})" style="color:var(--brand);cursor:pointer;font-weight:600;margin-left:4px">적용 →</a>
+    </span>`;
+}
+
+async function applyPOFreightEstimate(poId, amount) {
+  const { error } = await sb.from("purchase_orders").update({ freight_est: amount }).eq("id", poId);
+  if (error) return toast("운송비 반영에 실패했습니다: " + (error.message || ""));
+  toast(`예상 운송비 ₩${fmt(amount)}이 반영되었습니다`);
+  await loadPOs();
+  openPODetail(poId);
 }
 
 /* ---------- 발주서 문서 (인쇄·PDF·메일용 정식 양식) ---------- */
