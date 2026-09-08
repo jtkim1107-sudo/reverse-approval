@@ -252,6 +252,13 @@ a { text-decoration: none; color: inherit; }
 .stat .stat-value.red { color: var(--red); }
 .stat .stat-value.amber { color: var(--amber); }
 
+/* 2026-09-08 [매출 브리핑 상세] 채널별 매출 / TOP5 2열 - po-parties와 동일하게 좁은
+   화면에서는 1열로 접힘(390~430px 모바일에서 표가 눌리지 않도록) */
+.briefing-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 12px; }
+@media (max-width: 640px) {
+  .briefing-detail-grid { grid-template-columns: 1fr; gap: 12px; }
+}
+
 /* 테이블 */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }

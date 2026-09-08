@@ -158,6 +158,13 @@ const nowStr = () => {
     .format(new Date());
   return `${today()} ${t}`;
 };
+// 2026-09-08 [오전 7시 매출 브리핑] "어제"도 today()와 동일하게 KST 기준으로 계산
+// (기기 시간대에 의존하면 자정 근처에 하루 어긋날 수 있음 - today()와 같은 이유)
+const yesterday = () => {
+  const d = new Date(`${today()}T00:00:00+09:00`);
+  d.setDate(d.getDate() - 1);
+  return new Intl.DateTimeFormat("en-CA", { ...KST, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+};
 const localDT = ts => {
   const d = new Date(ts);
   if (isNaN(d)) return "";
@@ -1200,6 +1207,78 @@ async function saveTeamGoal(month) {
   route();
 }
 
+/* ---------- 매출 브리핑(오전 7시 자동 생성, daily_sales_briefing) ----------
+   2026-09-08 [취소/반품/환불 사후대사 + 오전 7시 브리핑] GCP 서버의
+   daily_sales_briefing_pipeline이 매일 06:30~07:00 사이에 채우는 테이블을
+   그대로 읽기만 함(ai_reports/viewAiReport와 동일한 "서버가 하루 1행 써두면
+   프론트는 읽기만" 패턴 재사용) - 이 화면에서 직접 계산/집계하지 않음.
+   *** 참고: 이 단계에서는 daily_sales_briefing_pipeline이 아직 GCP에서
+   시작되지 않아서(사용자 명시: 운영 스케줄 미활성화) 실제 데이터는 없고
+   빈 상태(placeholder)만 보임 - 코드/UI 구조만 미리 반영해둠. *** */
+async function loadDailySalesBriefing(dateStr) {
+  const { data } = await sb.from("daily_sales_briefing").select("*").eq("date", dateStr).maybeSingle();
+  return data || null;
+}
+
+// 취소/반품 금액은 SETTLED(확정)가 있으면 그 값, 없으면 ESTIMATED(추정) 사용 -
+// daily_sales_briefing.py의 net_amount 계산과 동일한 우선순위
+const briefingAdjAmount = (estimated, settled) => (settled != null ? Number(settled) : Number(estimated || 0));
+
+function briefingCardHtml(b, dateStr, { detailed = false } = {}) {
+  if (!b) {
+    return `<div class="card">
+      <div class="card-head"><h2>${detailed ? "매출 브리핑 상세" : "어제 매출 브리핑"}</h2></div>
+      <p style="color:var(--text-sub);font-size:13.5px">
+        ${esc(dateStr)} 브리핑이 아직 없습니다. <b>매일 아침 7시</b>에 자동으로 생성됩니다.
+      </p>
+    </div>`;
+  }
+  const needsCheck = b.status !== "OK";
+  const cancelAmt = briefingAdjAmount(b.cancel_amount_estimated, b.cancel_amount_settled);
+  const returnAmt = briefingAdjAmount(b.return_amount_estimated, b.return_amount_settled);
+  const rate = b.cancel_return_rate != null ? `${(Number(b.cancel_return_rate) * 100).toFixed(1)}%` : "-";
+  const dod = b.dod_change_pct != null
+    ? `<span style="color:${Number(b.dod_change_pct) >= 0 ? "var(--green)" : "var(--red)"}">${Number(b.dod_change_pct) >= 0 ? "▲" : "▼"} ${Math.abs(Number(b.dod_change_pct)).toFixed(1)}%</span>`
+    : "-";
+  const channelRows = Object.entries(b.channel_breakdown || {})
+    .map(([ch, amt]) => `<tr><td>${esc(ch)}</td><td class="num">₩${fmt(amt)}</td></tr>`).join("");
+  const top5Rows = (b.top5 || []).map((t, i) =>
+    `<tr><td>${i + 1}. ${esc(t.name || t.product_id)}</td><td class="num">₩${fmt(t.amount)}</td></tr>`).join("");
+
+  return `
+    <div class="card" ${needsCheck ? 'style="border:2px solid var(--amber)"' : ""}>
+      <div class="card-head">
+        <h2>${detailed ? "매출 브리핑 상세" : "어제 매출 브리핑"} · ${esc(b.date)}</h2>
+        ${needsCheck
+          ? '<span class="chip rejected">데이터 확인 필요</span>'
+          : b.includes_estimated ? '<span class="chip progress">추정치 포함</span>' : '<span class="chip approved">확정</span>'}
+      </div>
+      ${needsCheck ? `<p style="color:var(--amber);font-size:12.5px;margin:0 0 8px">
+        ⚠️ 동기화 중 일부 오류/매핑실패가 있어 아래 수치가 확정값이 아닐 수 있습니다.
+        ${(b.data_quality_flags || []).map(esc).join(" · ")}
+      </p>` : ""}
+      <div class="grid-stats">
+        <div class="stat"><div class="stat-label">총 판매수량</div><div class="stat-value">${fmt(b.gross_qty)}개</div></div>
+        <div class="stat"><div class="stat-label">총 주문매출</div><div class="stat-value blue">₩${fmt(b.gross_amount)}</div></div>
+        <div class="stat"><div class="stat-label">취소</div><div class="stat-value amber">${fmt(b.cancel_qty)}개 · ₩${fmt(cancelAmt)}</div></div>
+        <div class="stat"><div class="stat-label">반품·환불</div><div class="stat-value amber">${fmt(b.return_qty)}개 · ₩${fmt(returnAmt)}</div></div>
+        <div class="stat"><div class="stat-label">순판매수량</div><div class="stat-value">${fmt(b.net_qty)}개</div></div>
+        <div class="stat"><div class="stat-label">순매출</div><div class="stat-value green">₩${fmt(b.net_amount)}</div></div>
+        <div class="stat"><div class="stat-label">취소·반품률</div><div class="stat-value">${rate}</div></div>
+        <div class="stat"><div class="stat-label">전일 대비</div><div class="stat-value">${dod}</div></div>
+      </div>
+      ${detailed ? `
+      <div class="briefing-detail-grid">
+        <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">채널별 매출</h3>
+          <table class="items-table"><tbody>${channelRows || '<tr><td colspan="2" style="color:var(--text-sub)">데이터 없음</td></tr>'}</tbody></table></div>
+        <div><h3 style="font-size:13px;color:var(--text-sub);margin:0 0 6px">매출 TOP5</h3>
+          <table class="items-table"><tbody>${top5Rows || '<tr><td colspan="2" style="color:var(--text-sub)">데이터 없음</td></tr>'}</tbody></table></div>
+      </div>
+      ${b.unmatched_count ? `<p style="font-size:12px;color:var(--text-sub);margin-top:8px">매핑 실패/수집 오류 ${fmt(b.unmatched_count)}건</p>` : ""}
+      ` : ""}
+    </div>`;
+}
+
 /* ---------- 화면: 대시보드 ---------- */
 async function viewDashboard() {
   const [docs, prodRes, saleRes, buyRes, taskRes, costRes] = await Promise.all([
@@ -1232,6 +1311,14 @@ async function viewDashboard() {
     }
     teamHtml = celebrationHtml(cel) + teamCardHtml(st, g, hy, true) + questsHtml(st, g, hy);
   } catch (e) { console.error("팀 카드:", e); }
+
+  // 어제 매출 브리핑 카드 - 실패해도(테이블 아직 없음 등) 대시보드 나머지는 보여야 하므로 따로 감쌈
+  let briefingHtml = "";
+  try {
+    const yd = yesterday();
+    briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: false });
+  } catch (e) { console.error("매출 브리핑 카드:", e); }
+
   const monthSales = (saleRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
     .reduce((s, r) => s + Number(r.amount), 0);
   const monthBuys = (buyRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
@@ -1249,6 +1336,7 @@ async function viewDashboard() {
 
   return `
     ${teamHtml}
+    ${briefingHtml}
     <div class="grid-stats">
       <div class="stat" onclick="location.hash='#/inbox'">
         <div class="stat-label">내 결재 대기</div>
@@ -2241,7 +2329,15 @@ async function viewSales() {
   const byChannel = {};
   rows.forEach(r => { byChannel[r.channel || "기타"] = (byChannel[r.channel || "기타"] || 0) + Number(r.amount); });
 
+  // 어제 매출 브리핑 상세 카드 - 실패해도(테이블 아직 없음 등) 매출 입력 화면 나머지는 보여야 하므로 따로 감쌈
+  let briefingHtml = "";
+  try {
+    const yd = yesterday();
+    briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: true });
+  } catch (e) { console.error("매출 브리핑 상세 카드:", e); }
+
   return `
+    ${briefingHtml}
     <div class="card">
       <div class="card-head"><h2>매출 입력</h2>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
