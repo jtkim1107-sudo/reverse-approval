@@ -3745,9 +3745,15 @@ async function saveIncomingRegisterNew(productId) {
 // 2개 탭(각자 다른 계산: ERP 장부재고 vs BigQuery snapshot)을 하나로 합침 -
 // viewInventoryDecisions() 하나가 /api/inventory/decisions(단일 판단 엔진)만
 // 표시함. "입고계획"/"쿠팡입고"는 이번 범위 밖(그대로 유지).
+// 2026-09-08 [입고계획 HIDE, 사용자 명시] "plan" 탭 버튼만 목록에서 뺐어요 -
+// production record 0건, PO승인->계산 trigger 없음, worker 없음, 멀티-SKU WING
+// 제출 자체가 다른 곳(erp_inbound_bridge.build_preflight_input의 1개 상품
+// 가드)에서 막혀 있어 완성된 운영기능처럼 보여줄 수 없다는 조사 결과에 따른
+// 조치예요. viewStockFlow()의 "plan" 분기/viewShipmentPlans()/shipment_
+// execution_planner.py/관련 DB 테이블은 전부 그대로 남겨뒀어요(코드/route 삭제
+// 아님) - 이 배열에 한 줄만 다시 넣으면 즉시 복구됩니다.
 const STOCKFLOW_TABS = [
   ["stock", "📦 재고 · 발주"],
-  ["plan", "🚚 입고계획"],
   ["rginbound", "🚀 쿠팡입고"],
 ];
 
@@ -6171,18 +6177,39 @@ const rgChip = (map, val) => {
   return `<span class="chip ${cls}">${label}</span>`;
 };
 
-/* ==================== TRUCK 자동입고 준비대기 (2026-09-05 추가) ====================
+/* ==================== TRUCK 자동입고 준비대기 (2026-09-05 추가, 2026-09-08 백엔드
+   enrichment로 재구성) ====================
    truck_inbound_prep은 판단 SSOT가 아니라 "지금 왜 자동입고가 멈춰있는지"를
    보여주는 운영 상태 기록이에요(po_approved_truck_poll.py가 매 사이클 fresh
    재판단 - 여기서 사람이 값을 채워도 이 화면이 직접 prep_status를 바꾸지
    않습니다. 다음 poll cycle이 product_wing_metadata/coupang_centers를 다시
-   읽고 스스로 PLAN_CREATED로 넘길지 판단해요). */
-const TIP_STATUS_LABEL = {
-  NEEDS_METADATA: ["rejected", "⚖️ 무게 정보 필요"],
-  NEEDS_DESTINATION_CENTER: ["rejected", "🏢 입고센터 선택 필요"],
-  PROCUREMENT_DATA_MISSING: ["waiting", "📋 상품 조달정보 오류"],
-  PREFLIGHT_FAILED: ["waiting", "⚠️ WING 사전처리 실패"],
-};
+   읽고 스스로 PLAN_CREATED로 넘길지 판단해요).
+
+   2026-09-08 [TRUCK 준비대기 UX, 사용자 명시] 이 화면이 더 이상
+   product_channel_mapping을 직접 재조회하지 않아요 - 그 테이블이 이 로그인
+   계정에 RLS로 안 열려있어서(조사 확인) 항상 빈 결과가 나와 "매핑 없음"이라는
+   거짓 문구를 보여주던 문제가 있었어요. RLS를 여는 대신, 백엔드(SUPABASE_
+   ERP_EMAIL 세션)가 이미 정확히 판정해 저장해둔 truck_inbound_prep.prep_status를
+   그대로 신뢰하고, 화면표시에 필요한 vendor_item_id 등은 /api/truck-inbound-prep
+   응답(erp_inbound_bridge.fetch_truck_inbound_prep_display_rows())에서 이미
+   join된 값을 그대로 받아써요 - last_error_message 문자열을 파싱해서 문구/
+   액션을 재판정하지 않아요(reason_code/display_status/required_action이
+   전부 백엔드가 만든 canonical 값). */
+async function fetchTruckInboundPrep() {
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) return { ok: false, error: "로그인 세션이 없어요." };
+  try {
+    const resp = await fetch(`${LIVE_STOCK_API_BASE}/api/truck-inbound-prep`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => null);
+    if (!resp.ok) return { ok: false, error: body?.detail || body?.error || `HTTP ${resp.status}` };
+    return { ok: true, rows: body.rows || [] };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
 
 async function saveTruckPrepCenter(prepId) {
   const sel = document.getElementById(`tip-center-${prepId}`);
@@ -6194,8 +6221,8 @@ async function saveTruckPrepCenter(prepId) {
   route();
 }
 
-async function saveTruckMetadataWeight(vendorItemId, productId, mappingId, prepId) {
-  const input = document.getElementById(`tip-weight-${prepId}`);
+async function saveTruckMetadataWeight(vendorItemId, productId, mappingId, prepPoiId) {
+  const input = document.getElementById(`tip-weight-${prepPoiId}`);
   const weight = Number(input?.value);
   if (!weight || weight <= 0 || !Number.isInteger(weight)) return toast("무게(g)를 1 이상 정수로 입력해 주세요");
   const { error } = await sb.from("product_wing_metadata").insert({
@@ -6207,71 +6234,58 @@ async function saveTruckMetadataWeight(vendorItemId, productId, mappingId, prepI
   route();
 }
 
+function toggleTruckPrepDetail(poiId) {
+  const el = document.getElementById(`tip-detail-${poiId}`);
+  if (el) el.classList.toggle("hidden");
+}
+
+// required_action -> 첫 화면에 보여줄 액션 UI. 개발자 용어(vendorItemId/
+// product_procurement/product_wing_metadata/PRE-FLIGHT exception)는 여기 없음 -
+// 전부 "상세보기" 토글 안에서만 보여줌(사용자 명시).
+function truckPrepActionHtml(row, centerOptions) {
+  if (row.required_action === "ENTER_WEIGHT") {
+    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <input id="tip-weight-${esc(row.purchase_order_item_id)}" type="number" min="1" step="1" placeholder="무게(g)" style="width:90px">
+        <button class="btn sm" onclick="saveTruckMetadataWeight('${esc(row.vendor_item_id)}','${esc(row.product_id)}','${esc(row.channel_mapping_id)}','${esc(row.purchase_order_item_id)}')">무게 입력</button>
+      </div>`;
+  }
+  if (row.required_action === "SELECT_CENTER") {
+    return `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <select id="tip-center-${esc(row.id)}"><option value="">센터 선택...</option>${centerOptions}</select>
+        <button class="btn sm" onclick="saveTruckPrepCenter('${esc(row.id)}')">입고센터 선택</button>
+      </div>`;
+  }
+  return `<button class="btn sm secondary" onclick="toggleTruckPrepDetail('${esc(row.purchase_order_item_id)}')">확인</button>`;
+}
+
 async function renderTruckInboundPrepCard() {
-  const { data: prepRows } = await sb.from("truck_inbound_prep").select("*")
-    .neq("prep_status", "PLAN_CREATED").order("updated_at", { ascending: false });
-  if (!prepRows || !prepRows.length) return "";
+  const result = await fetchTruckInboundPrep();
+  if (!result.ok) {
+    return `<div class="card" style="border:2px solid var(--red)">
+      <h2 style="color:var(--red)">TRUCK 준비대기 현황을 불러오지 못했어요</h2>
+      <p style="font-size:13px;color:var(--text-sub);margin:8px 0 14px">${esc(result.error)}</p>
+    </div>`;
+  }
+  const prepRows = result.rows;
+  if (!prepRows.length) return "";
 
-  const poiIds = prepRows.map(p => p.purchase_order_item_id);
-  const [{ data: poiRows }, { data: centerRows }] = await Promise.all([
-    sb.from("purchase_order_items").select("id,po_id,product_id").in("id", poiIds),
-    sb.from("coupang_centers").select("id,center_name").order("center_name"),
-  ]);
-  const poiById = {}; (poiRows || []).forEach(x => { poiById[x.id] = x; });
-  const productIds = [...new Set((poiRows || []).map(x => x.product_id).filter(Boolean))];
-  const poIds = [...new Set((poiRows || []).map(x => x.po_id).filter(Boolean))];
-  const [{ data: productRows }, { data: mappingRows }, { data: poRows }] = (productIds.length || poIds.length) ? await Promise.all([
-    productIds.length ? sb.from("products").select("id,name").in("id", productIds) : Promise.resolve({ data: [] }),
-    productIds.length ? sb.from("product_channel_mapping").select("product_id,id,external_id").eq("channel", "rocket_growth").in("product_id", productIds) : Promise.resolve({ data: [] }),
-    poIds.length ? sb.from("purchase_orders").select("id,po_no").in("id", poIds) : Promise.resolve({ data: [] }),
-  ]) : [{ data: [] }, { data: [] }, { data: [] }];
-  const productById = {}; (productRows || []).forEach(x => { productById[x.id] = x; });
-  const mappingByProductId = {}; (mappingRows || []).forEach(x => { mappingByProductId[x.product_id] = x; });
-  const poById = {}; (poRows || []).forEach(x => { poById[x.id] = x; });
-
+  const { data: centerRows } = await sb.from("coupang_centers").select("id,center_name").order("center_name");
   const centerOptions = (centerRows || []).map(c => `<option value="${esc(c.id)}">${esc(c.center_name)}</option>`).join("");
 
-  const rows = prepRows.map(p => {
-    const poi = poiById[p.purchase_order_item_id] || {};
-    const product = productById[poi.product_id] || {};
-    const mapping = mappingByProductId[poi.product_id] || {};
-    const po = poById[poi.po_id] || {};
-    let [cls, label] = TIP_STATUS_LABEL[p.prep_status] || ["waiting", p.prep_status];
-    if (p.prep_status === "PREFLIGHT_FAILED" && p.last_error_code === "SafetyGateError") {
-      // 2026-09-05 [상태 의미 오류 수정] - 이건 실제 WING 실패가 아니라
-      // WING_INBOUND_PREFLIGHT_ENABLED가 꺼져 있어 create_inbound_plan()이
-      // 자체 안전장치(SafetyGateError)로 막힌 것. erp_inbound_bridge.
-      // _extract_error_fields()가 이 예외의 타입명을 last_error_code에 그대로
-      // 넣는다는 사실에 근거(추측 아님) - 실제 WING 실패와 같은 문구로 보이면
-      // 안 됨.
-      cls = "waiting";
-      label = "🔒 자동화 안전장치 OFF (WING 실패 아님)";
-    }
-
-    let actionHtml = "";
-    if (p.prep_status === "NEEDS_METADATA") {
-      actionHtml = mapping.external_id
-        ? `<div style="display:flex;gap:6px;align-items:center">
-             <code style="font-size:12px">vendorItemId: ${esc(mapping.external_id)}</code>
-             <input id="tip-weight-${esc(p.id)}" type="number" min="1" step="1" placeholder="무게(g)" style="width:90px">
-             <button class="btn sm" onclick="saveTruckMetadataWeight('${esc(mapping.external_id)}','${esc(poi.product_id)}','${esc(mapping.id)}','${esc(p.id)}')">저장</button>
-           </div>`
-        : `<small style="color:var(--text-sub)">vendorItemId(product_channel_mapping)가 없어 무게 입력 불가 - 채널 매핑을 먼저 등록하세요</small>`;
-    } else if (p.prep_status === "NEEDS_DESTINATION_CENTER") {
-      actionHtml = `<div style="display:flex;gap:6px;align-items:center">
-          <select id="tip-center-${esc(p.id)}"><option value="">센터 선택...</option>${centerOptions}</select>
-          <button class="btn sm" onclick="saveTruckPrepCenter('${esc(p.id)}')">저장</button>
-        </div>`;
-    } else {
-      actionHtml = `<small style="color:var(--text-sub)">${esc(p.last_error_message || "-")}</small>`;
-    }
-
-    return `<tr>
-        <td><b>${esc(product.name || "-")}</b><br><small style="color:var(--text-sub)">${esc(po.po_no || poi.po_id || "-")}</small></td>
-        <td><span class="chip ${cls}">${label}</span></td>
-        <td>${actionHtml}</td>
-      </tr>`;
-  }).join("");
+  const rows = prepRows.map(row => `
+    <tr>
+      <td><b>${esc(row.product_name || "-")}</b><br><small style="color:var(--text-sub)">${esc(row.po_no || row.purchase_order_item_id || "-")}</small></td>
+      <td><span class="chip waiting">${esc(row.display_status)}</span></td>
+      <td>${truckPrepActionHtml(row, centerOptions)}</td>
+    </tr>
+    <tr id="tip-detail-${esc(row.purchase_order_item_id)}" class="hidden">
+      <td colspan="3" style="background:var(--gray-bg);font-size:12px;color:var(--text-sub)">
+        reason_code: <code>${esc(row.reason_code)}</code>
+        ${row.vendor_item_id ? ` · vendorItemId: <code>${esc(row.vendor_item_id)}</code>` : ""}
+        ${row.detail?.last_error_code ? ` · last_error_code: <code>${esc(row.detail.last_error_code)}</code>` : ""}
+        ${row.detail?.last_error_message ? `<br>${esc(row.detail.last_error_message)}` : ""}
+      </td>
+    </tr>`).join("");
 
   return `
     <div class="card">
