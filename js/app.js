@@ -5521,7 +5521,7 @@ async function viewPurchaseOrders() {
   return `
     <div class="card">
       <div class="card-head"><h2>📦 발주서</h2>
-        <button class="btn" onclick="openPOModal()">＋ 발주서 작성</button></div>
+        <div><button class="btn secondary" id="btn-po-assist" onclick="openInventoryPOModal()">판매·재고로 발주서 작성</button> <button class="btn" onclick="openPOModal()">＋ 발주서 작성</button></div>
       <p style="font-size:13px;color:var(--text-sub)">
         발주 = 주문. <b>[입고 처리]</b>를 눌러야 재고에 반영됩니다.</p>
       ${waiting ? `<div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:9px;padding:10px 12px;margin-top:12px;font-size:13.5px">
@@ -5570,19 +5570,90 @@ async function viewPurchaseOrders() {
     </div>`;
 }
 
-function openPOModal() {
+// A fresh canonical inventory decision supplies quantities; this layer only
+// prepares an editable form. No PO, approval, WING request or notification here.
+function buildInventoryPOProposal(decisions, orderDate, products) {
+  const lines = [], blocked = [];
+  const seen = new Set();
+  for (const d of decisions) {
+    if (d.decision !== "ORDER_NOW" || d.shared_inventory?.role === "child") continue;
+    const product = products.find(p => p.id === d.product_id);
+    const qty = Number(d.recommended_order_qty_ea);
+    const cost = Number(d.purchase_cost);
+    const speed = Number(d.avg_daily_sales);
+    const stock = Number(d.live_stock);
+    let reason = "";
+    if (!product) reason = "ERP 품목 매핑 확인 필요";
+    else if (seen.has(d.product_id)) reason = "동일 상품의 중복 추천 확인 필요";
+    else if (d.supplier_name !== "리파코 주식회사") reason = "공급처 확인 필요";
+    else if ((d.data_quality_flags || []).length) reason = "데이터 확인 필요";
+    else if (Number(d.open_po_qty) > 0 || Number(d.incoming_qty) > 0 || (d.open_po_refs || []).length) reason = "기존 발주·입고 확인 필요";
+    else if (!["UNIT", "BOX", "PLT"].includes(d.order_unit)) reason = "발주단위 확인 필요";
+    else if (!Number.isSafeInteger(qty) || qty <= 0 || !Number.isFinite(cost) || cost <= 0) reason = "발주수량·단가 확인 필요";
+    else if (d.live_stock == null || !Number.isFinite(stock) || stock < 0 || !Number.isFinite(speed) || speed <= 0) reason = "판매속도·재고 확인 필요";
+    if (reason) { blocked.push({ product_id: d.product_id, name: d.product_name, reason }); continue; }
+    seen.add(d.product_id);
+    // Floor the depletion day so the desired date is never later than the
+    // user's seven-day buffer. A past date is exposed, never silently clamped.
+    const due = new Date(orderDate + "T00:00:00Z");
+    due.setUTCDate(due.getUTCDate() + Math.floor(stock / speed) - 7);
+    const dueDate = due.toISOString().slice(0, 10);
+    lines.push({ product_id: d.product_id, qty, unit_cost: cost,
+      dueDate, urgent: dueDate < orderDate, decision: d });
+  }
+  // Duplicate physical products must not produce even one ambiguous line.
+  const duplicates = new Set(blocked.filter(b => b.reason === "동일 상품의 중복 추천 확인 필요").map(b => b.product_id));
+  return { lines: lines.filter(l => !duplicates.has(l.product_id)), blocked };
+}
+
+async function openInventoryPOModal() {
+  const button = document.getElementById("btn-po-assist");
+  if (button) { button.disabled = true; button.textContent = "판매·재고 확인 중…"; }
+  try {
+    const result = await fetchInventoryDecisions(true);
+    if (!result.ok) return toast("발주안 계산 실패: " + result.error);
+    const proposal = buildInventoryPOProposal(result.decisions, today(), productPickList("buy"));
+    const checks = result.decisions.filter(d => d.decision === "DATA_CHECK").length;
+    if (!proposal.lines.length) {
+      const reasons = proposal.blocked.map(b => `${b.name}: ${b.reason}`).join(" / ");
+      return toast(reasons || `지금 발주할 품목이 없습니다. 데이터 확인 ${checks}건은 재고·발주 화면에서 확인해 주세요.`);
+    }
+    // If the user navigated away during the read, do not open an unexpected form.
+    if (!document.getElementById("btn-po-assist")) return;
+    openPOModal(proposal);
+  } finally {
+    if (button?.isConnected) { button.disabled = false; button.textContent = "판매·재고로 발주서 작성"; }
+  }
+}
+
+async function validateInventoryPOBeforeSave(items) {
+  const result = await fetchInventoryDecisions(true);
+  if (!result.ok) throw new Error("최신 재고 확인 실패: " + result.error);
+  const proposal = buildInventoryPOProposal(result.decisions, today(), productPickList("buy"));
+  for (const item of items) {
+    const fresh = proposal.lines.find(l => l.product_id === item.product_id);
+    if (!fresh || fresh.qty !== item.qty || fresh.unit_cost !== item.unit_cost) {
+      throw new Error("판매·재고 또는 발주 조건이 바뀌었습니다. 최신 발주안을 다시 작성해 주세요.");
+    }
+  }
+}
+
+function openPOModal(proposal = null) {
   const approvers = USERS.filter(u => u.id !== me.id && (Number(u.rank) || 0) > (Number(me.rank) || 0));
   const isJeongyeol = approvers.length === 0;   // 최상위가 기안하면 전결
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:820px;width:96vw">
         <h3>📦 발주서 작성</h3>
+        ${proposal ? `<p>최신 판매·재고와 기존 발주를 확인한 발주안입니다. 수량은 등록된 발주단위에 맞춘 추천값입니다.</p>
+          <div id="po-assist-summary">${proposal.lines.map(l => `<p>${esc(prodName(l.product_id))}: ${fmt(l.qty)}개 · 납품희망일 ${esc(l.dueDate)}${l.urgent ? " — 기준일 경과, 가능한 긴급 입고일 확인 필요" : ""}</p>`).join("")}
+          ${proposal.blocked.map(b => `<p>${esc(b.name)}: ${esc(b.reason)} (발주안 제외)</p>`).join("")}</div>` : ""}
         <div class="form-grid">
           <div class="field"><label>발주일 *</label><input id="po-date" type="date" value="${today()}"></div>
-          <div class="field"><label>납품희망일</label><input id="po-due" type="date" value="${addDaysStr(today(), 7)}"></div>
+          <div class="field"><label>납품희망일</label><input id="po-due" type="date" value=""></div>
           <div class="field"><label>거래처 *
             <a onclick="closeModal();location.hash='#/suppliers'" style="color:var(--brand);font-size:12px;cursor:pointer;font-weight:400">＋거래처 관리</a></label>
-            ${supplierOptionsHtml().replace(/id="b-supplier"/, 'id="po-supplier"')}</div>
+            ${supplierOptionsHtml("리파코 주식회사").replace(/id="b-supplier"/, 'id="po-supplier"')}</div>
           <div class="field"><label>입고처 *</label>
             <select id="po-deliver">
               <option value="쿠팡">쿠팡 (로켓그로스) — 공급처에서 바로 입고</option>
@@ -5590,7 +5661,7 @@ function openPOModal() {
             </select></div>
           <div class="field"><label>예상 운송비(원) ${vatTag("exp")}</label>
             <input id="po-freight" type="text" inputmode="numeric" class="comma" placeholder="0">
-            <p style="font-size:12px;color:var(--text-sub);margin-top:4px">우리가 운송업체에 직접 내는 금액입니다.</p></div>
+            <p style="font-size:12px;color:var(--text-sub);margin-top:4px">센터와 팔레트 수에 맞춘 견적을 입력하세요. 미확정은 빈칸으로 두세요.</p></div>
           ${isJeongyeol ? "" : `
           <div class="field full"><label>결재자 *</label>
             <select id="po-appr">${approvers.map(u =>
@@ -5612,7 +5683,24 @@ function openPOModal() {
         </div>
       </div>
     </div>`;
-  addPORow();
+  const rows = document.getElementById("po-rows");
+  rows.dataset.inventoryProposal = proposal ? "true" : "false";
+  if (proposal) {
+    for (const line of proposal.lines) {
+      addPORow();
+      const tr = rows.lastElementChild;
+      const picker = tr.querySelector(".po-prod");
+      picker.dataset.pid = line.product_id;
+      picker.value = productPickLabel(erpProducts.find(p => p.id === line.product_id), "buy");
+      tr.querySelector(".po-qty").value = line.qty;
+      tr.querySelector(".po-cost").value = fmt(line.unit_cost);
+    }
+    if (!proposal.lines.some(l => l.urgent)) {
+      document.getElementById("po-due").value = proposal.lines.map(l => l.dueDate).sort()[0];
+    }
+    document.getElementById("po-memo").value = "판매·재고 기반 발주안 / 납품희망일: 품절예상 7일 전 / 운송비: 센터·PLT 확인";
+    calcPOTotal();
+  } else addPORow();
 }
 
 function addPORow() {
@@ -5663,6 +5751,15 @@ async function savePO(isJeongyeol) {
   const btn = document.getElementById("btn-po-save");
   btn.disabled = true;
 
+  if (document.getElementById("po-rows").dataset.inventoryProposal === "true") {
+    try {
+      if (supplier !== "리파코 주식회사" || document.getElementById("po-deliver").value !== "쿠팡") throw new Error("자동 발주안은 리파코 / 쿠팡 로켓그로스 기준입니다.");
+      const dueDate = document.getElementById("po-due").value;
+      if (!dueDate || dueDate < today()) throw new Error("납품희망일을 확인해 주세요. 기준일이 지난 경우 가능한 긴급 입고일이 필요합니다.");
+      if (date !== today()) throw new Error("발주일은 발주 당일로 설정해 주세요.");
+      await validateInventoryPOBeforeSave(items);
+    } catch (e) { btn.disabled = false; return toast(e.message); }
+  }
   const { data: noData } = await sb.rpc("next_po_no");
   const line = isJeongyeol ? [] : [{ userId: document.getElementById("po-appr").value, status: "pending", date: "" }];
   const { data: po, error } = await sb.from("purchase_orders").insert({
