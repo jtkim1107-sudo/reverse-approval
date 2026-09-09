@@ -6691,6 +6691,48 @@ function rgActionsHtml(p, supersededIds) {
 // plan)일 때만 렌더되지만, 그 사이 다른 사람이 먼저 처리했을 수 있어서 여기서
 // 한 번 더 확인해요 - 최종 권한/상태 검증은 어차피 GCP 서버(JWT+profiles.
 // can_submit_wing_inbound+DB gate)가 다시 하므로, 이건 UX용 빠른 확인이에요.
+// 2026-09-09 [쿠팡 제출 "Failed to fetch" 원인 규명, 사용자 화면 오류 조사]
+// 실측 결과: 프런트가 부르는 POST /api/inbound-plans/{id}/submit 라우트는 운영
+// 서버(라우트 55개)에도 로컬 서버(61개)에도 *** 아예 존재하지 않아요 ***.
+// 그래서 브라우저가 Authorization 헤더 때문에 먼저 보내는 CORS preflight
+// (OPTIONS)가 405 + ACAO 헤더 없음으로 떨어지고, 요청은 서버에 도달조차 못한 채
+// fetch()가 TypeError("Failed to fetch")를 던져요. 즉 이 오류는 "통신 장애"도
+// "서버의 안전장치 거부"도 아니고 "제출 기능이 아직 서버에 연결되지 않음"이에요.
+//
+// 이 함수는 그 구분을 사용자가 화면에서 할 수 있게 만들어요(문구만 바꾸는 게
+// 아니라, 실패 종류를 실제로 판별하고 ERP 기록까지 재확인해서 알려줌):
+//   - fetch 자체가 throw   -> 요청이 서버에 도달 못 함 = 제출 안 나감(확정)
+//   - HTTP 4xx/5xx 응답     -> 서버가 판단해서 거부(안전장치/권한 등)
+// 응답을 못 받은 경우에도 ERP의 실제 submit_status/shipmentId를 다시 읽어서
+// "정말 미제출인지"를 근거로 보여주고, WING 실제 접수 확인 전에는 재시도하지
+// 말라고 명시해요(응답 유실 != 제출 실패, 야간 지시서 7번 원칙).
+async function reportSubmitTransportFailure(planId, err, label) {
+  let dbNote = "";
+  try {
+    const { data: after } = await sb.from("inbound_plans")
+      .select("submit_status,coupang_shipment_id,submit_attempted_at,internal_status")
+      .eq("id", planId).maybeSingle();
+    if (after) {
+      const never = after.submit_status === "NOT_SUBMITTED"
+        && !after.coupang_shipment_id && !after.submit_attempted_at;
+      dbNote = never
+        ? "\nERP 기록도 미제출(shipmentId 없음)이라 실제로 제출되지 않았습니다."
+        : `\n⚠️ ERP 기록은 submit_status=${after.submit_status}, shipmentId=${after.coupang_shipment_id || "없음"} 입니다. `
+          + "실제 접수 여부를 WING에서 먼저 확인하기 전에는 다시 제출하지 마세요(중복 제출 위험).";
+    }
+  } catch (_) {
+    dbNote = "\nERP 상태 재확인에도 실패했습니다. WING 실제 접수 여부를 먼저 확인하세요.";
+  }
+  const isNetwork = err instanceof TypeError;
+  const head = isNetwork
+    ? `${label} 요청이 서버에 도달하지 못했습니다(제출 실행 안 됨).`
+    : `${label} 처리 중 오류: ${err.message}`;
+  alert(head + dbNote + (isNetwork
+    ? "\n\n원인: 서버에 제출 endpoint가 연결되어 있지 않거나 통신이 차단됐습니다. "
+      + "서버가 거부한 것이 아니라 요청 자체가 전달되지 않은 상태입니다."
+    : ""));
+}
+
 async function submitRgInbound(planId) {
   if (!confirm("쿠팡(WING)에 실제로 입고신청을 제출합니다.\n제출 후에는 취소할 수 없습니다. 계속할까요?")) return;
 
@@ -6734,7 +6776,7 @@ async function submitRgInbound(planId) {
     }
     toast(body.ok ? "쿠팡 제출이 완료됐습니다" : `제출 결과 확인 필요: ${body.internal_status}`);
   } catch (e) {
-    toast(`제출 요청 중 오류: ${e.message}`);
+    await reportSubmitTransportFailure(planId, e, "쿠팡 제출");
     rowBtns.forEach(b => b.disabled = false);
     return;
   }
@@ -7441,7 +7483,7 @@ async function submitParcelPlan(planId) {
     }
     toast(body.ok ? "PARCEL 쿠팡 제출이 완료됐습니다" : `제출 결과 확인 필요: ${body.internal_status}`);
   } catch (e) {
-    toast(`제출 요청 중 오류: ${e.message}`);
+    await reportSubmitTransportFailure(planId, e, "PARCEL 쿠팡 제출");
     rowBtns.forEach(b => b.disabled = false);
     return;
   }
