@@ -7544,7 +7544,16 @@ async function renderVocReviews() {
   }
   const rows = data || [];
   if (!rows.length) {
-    return `<div class="card"><p class="empty">수집된 리뷰가 없습니다.</p></div>`;
+    // 2026-09-09 실측: Supabase RLS는 권한이 없으면 에러가 아니라 *200 + 빈 배열*을
+    // 돌려줘요. 그래서 "데이터가 없음"과 "내 계정이 못 읽음"이 화면에서 똑같이 보여요.
+    // 실제로 coupang_reviews에 19건이 있는데도 이 화면이 0건으로 보이는 상황이 있었어서,
+    // 둘을 단정하지 않고 두 가능성을 같이 안내해요(없는 걸 있다고도, 있는 걸 없다고도 안 함).
+    return `<div class="card">
+      <p class="empty">표시할 리뷰가 없습니다.</p>
+      <p style="font-size:12.5px;color:var(--text-sub);margin-top:8px">
+        아직 수집된 리뷰가 없거나, <b>이 계정에 coupang_reviews 조회 권한(RLS)이 없을 수</b> 있어요.
+        수집은 정상인데 화면만 비어 있다면 권한 쪽 문제입니다.
+      </p></div>`;
   }
 
   const withText = rows.filter(r => (r.content || "").trim());
@@ -7653,10 +7662,10 @@ async function renderVocInquiries() {
     return `
       <div class="card">
         <div class="card-head"><h2>고객문의</h2></div>
-        <p class="empty">수집된 문의가 없습니다.</p>
+        <p class="empty">표시할 문의가 없습니다.</p>
         <p style="font-size:12.5px;color:var(--text-sub);margin-top:8px">
-          문의는 <b>coupang_cs</b> 테이블에서 읽어요. 아직 0건인 상태이며,
-          쿠팡에 실제 문의가 등록되면 동기화(erp_cs_review_sync)가 채웁니다.<br>
+          문의는 <b>coupang_cs</b> 테이블에서 읽어요. 아직 수집된 문의가 없거나,
+          <b>이 계정에 조회 권한(RLS)이 없을 수</b> 있어요(RLS는 에러 없이 빈 결과를 돌려줘요).<br>
           ※ 답변 <b>등록</b> 기능은 아직 연결 전이에요 — 쿠팡 답변 등록 API가 구현되어 있지
           않아, 현재는 조회만 가능합니다.
         </p>
