@@ -6695,7 +6695,7 @@ const rgCanSubmitParcel = p =>
   p.transport_type === "PARCEL" && p.automation_state === "PENDING_HUMAN_APPROVAL" &&
   p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
 
-function rgActionsHtml(p, supersededIds) {
+function rgActionsHtml(p, supersededIds, proposals = {}) {
   if (rgCanDecide(p)) {
     return `<button class="btn sm green" onclick="decideRgInbound('${p.id}','APPROVED')">승인</button>
             <button class="btn sm danger" onclick="decideRgInbound('${p.id}','REJECTED')">거절</button>`;
