@@ -6645,10 +6645,26 @@ const rgCanPrepareRetry = (p, supersededIds) =>
 // "정말 WING에 접수 안 됐는지"는 브라우저가 알 수 없어서, 서버가
 // erp_replan_gate에서 실제 WING get_plan으로 다시 확인해요. 확인이 안 되면
 // 서버가 409로 막고 대체 계획을 만들지 않아요(중복 입고 방지).
+// 2026-09-10 [사용자 지적: "9월 11일 09:30 입고가 막혔는데 9월 12일부터만 잡으면
+// 늦어"] 날짜가 아니라 *** KST 슬롯 시각 - 최소 여유시간 *** 으로 판정해요. 서버
+// 제출 게이트(erp_submit_gate.MIN_BOOKING_LEAD_TIME=2h)와 같은 값 - 그 게이트가
+// 어차피 거부할 슬롯은 지금 이 순간 이미 '못 쓰는 슬롯'이에요. 서버 판정
+// (erp_replan_gate)이 최종 권한이고 여기는 버튼 표시용 미러예요.
+const RG_MIN_BOOKING_LEAD_MS = 2 * 60 * 60 * 1000;
 const rgTodayStr = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" });
-const rgIsSlotStale = p =>
-  p.submit_status === "NOT_SUBMITTED" && p.internal_status !== "CANCELLED" &&
-  !!p.inbound_date && String(p.inbound_date).slice(0, 10) < rgTodayStr();
+// "YYYY-MM-DD" + "HH:MM[:SS]" -> KST(UTC+9) 시각의 epoch ms. 시각이 없으면 null.
+const rgSlotEpochKst = (d, t) => {
+  if (!d || !t) return null;
+  const [hh, mm] = String(t).split(":");
+  const ms = Date.parse(`${String(d).slice(0, 10)}T${hh.padStart(2, "0")}:${(mm || "00").padStart(2, "0")}:00+09:00`);
+  return Number.isNaN(ms) ? null : ms;
+};
+const rgIsSlotStale = p => {
+  if (p.submit_status !== "NOT_SUBMITTED" || p.internal_status === "CANCELLED" || !p.inbound_date) return false;
+  const slotMs = rgSlotEpochKst(p.inbound_date, p.inbound_time);
+  if (slotMs !== null) return slotMs - Date.now() < RG_MIN_BOOKING_LEAD_MS;   // 지났거나 여유 2h 미만
+  return String(p.inbound_date).slice(0, 10) < rgTodayStr();                   // 시각 모르면 날짜만
+};
 const rgCanPrepareReplan = (p, supersededIds) => rgIsSlotStale(p) && !supersededIds.has(p.id);
 
 // PARCEL(BOX) 전용 - 2026-09-04 추가. TRUCK 조건(rgCanDecide/rgCanSubmit/
@@ -6698,7 +6714,12 @@ function rgActionsHtml(p, supersededIds) {
   // (_check_booking_time_sanity)에서 어차피 막혀요 - 사람에게 실패할 게 뻔한
   // 버튼을 보여주는 대신 다음 행동(대체 일정 잡기)을 보여줍니다.
   if (rgCanPrepareReplan(p, supersededIds)) {
-    return `<button class="btn sm secondary" onclick="openRgReplanModal('${p.id}')">🗓 대체 일정 잡기</button>`;
+    const pr = proposals[p.id];
+    const useProposal = pr && pr.kind === "PROPOSED" && pr.proposed
+      ? `<button class="btn sm" onclick="openRgReplanModal('${p.id}', {preselect: ${esc(JSON.stringify(pr.proposed))}})">✅ 제안대로 준비</button> `
+      : "";
+    return `${useProposal}<button class="btn sm secondary" onclick="openRgReplanModal('${p.id}')">🗓 직접 선택</button>
+            <button class="btn sm secondary" onclick="requestRgReplanProposal('${p.id}')">🤖 제안 받기</button>`;
   }
   if (rgCanSubmit(p) && !rgIsSuperseded(p, supersededIds)) {
     return `<button class="btn sm" onclick="submitRgInbound('${p.id}')">쿠팡 제출</button>`;
@@ -6802,7 +6823,18 @@ async function submitRgInbound(planId) {
     });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok) {
-      toast(`제출 실패: ${body.detail || resp.status}`);
+      const detail = String(body.detail || resp.status);
+      // 2026-09-10 [입고 재계획] 서버 제출 게이트가 "슬롯이 지났다/여유시간 부족"으로
+      // 거부했으면(erp_submit_gate._check_booking_time_sanity 문구) 그건 곧
+      // 재계획 대상이에요 - 실패 토스트만 띄우고 끝내지 않고 바로 대체 일정 모달로
+      // 이어줘요. 판정은 모달 안에서 서버(replan-slots)가 다시 해요.
+      if (resp.status === 409 && /이미 지난 시각|최소 여유시간/.test(detail)) {
+        toast("제출 불가: 예약 슬롯이 지났거나 여유시간이 부족합니다 — 대체 일정을 잡아주세요");
+        rowBtns.forEach(b => b.disabled = false);
+        await openRgReplanModal(planId);
+        return;
+      }
+      toast(`제출 실패: ${detail}`);
       rowBtns.forEach(b => b.disabled = false);
       return route();
     }
@@ -6890,7 +6922,8 @@ function pickRgRetrySlot(index) {
   const slots = JSON.parse(box?.dataset.slots || "[]");
   _rgRetrySelectedSlot = slots[index] || null;
   const btn = document.getElementById("rg-retry-confirm");
-  if (btn) btn.disabled = !_rgRetrySelectedSlot;
+  // 2026-09-10: 서버 플래그로 차단(dataset.gated)된 버튼은 슬롯을 골라도 켜지 않음
+  if (btn) btn.disabled = !_rgRetrySelectedSlot || btn.dataset.gated === "1";
 }
 
 async function confirmRgRetry(planId) {
@@ -6938,7 +6971,7 @@ async function confirmRgRetry(planId) {
    슬롯 렌더/선택 함수(renderRgRetrySlots, pickRgRetrySlot)는 그대로 재사용해요 -
    같은 응답 형태(slots_by_center/own_center_fc_code)라서 두 벌로 나누면 한쪽만
    고쳐지는 사고가 나요. */
-async function openRgReplanModal(planId) {
+async function openRgReplanModal(planId, opts = {}) {
   const { data: { session } } = await sb.auth.getSession();
   const jwt = session?.access_token;
   if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); return; }
@@ -6977,14 +7010,127 @@ async function openRgReplanModal(planId) {
       return;
     }
     renderRgRetrySlots(body);
+    // 자동 제안이 있으면 그 슬롯을 미리 선택해요(사람이 바꿀 수 있음). 목록에 없으면
+    // (그 사이 사라짐) 선택하지 않고 알려요 - 모달의 목록이 최종 근거예요.
+    if (opts.preselect) {
+      const slots = JSON.parse(box.dataset.slots || "[]");
+      const idx = slots.findIndex(s => s.edd === opts.preselect.edd && s.booking_time === opts.preselect.booking_time);
+      if (idx >= 0) {
+        const radio = box.querySelector(`input[name="rg-retry-slot"][value="${idx}"]`);
+        if (radio) { radio.checked = true; pickRgRetrySlot(idx); }
+        box.insertAdjacentHTML("afterbegin", `<div style="margin-bottom:8px"><span class="chip approved">자동 제안</span> ${esc(opts.preselect.edd)} ${esc(opts.preselect.booking_time.slice(0,2))}:${esc(opts.preselect.booking_time.slice(2,4))} 슬롯이 선택돼 있어요 — 다른 슬롯으로 바꿔도 됩니다.</div>`);
+      } else {
+        box.insertAdjacentHTML("afterbegin", `<div style="margin-bottom:8px"><span class="chip waiting">제안 슬롯 없음</span> 자동 제안된 ${esc(opts.preselect.edd)} ${esc(opts.preselect.booking_time)} 슬롯이 지금 목록에 없어요 — 아래에서 다시 골라주세요.</div>`);
+      }
+    }
+    rgApplyPreflightGateToModal();
   } catch (e) {
     const box = document.getElementById("rg-retry-slots");
     if (box) box.innerHTML = `<span class="chip rejected">조회 오류</span> ${esc(e.message)}`;
   }
 }
 
+// 서버 플래그(WING_INBOUND_PREFLIGHT_ENABLED)가 꺼져 있으면 초안 생성은 서버가
+// fail-closed로 막아요. 사람이 눌러보고 실패 토스트를 받는 대신, 지금 무엇이
+// 가능하고 무엇이 차단인지 모달에 그대로 보여주고 버튼을 비활성화해요.
+function rgApplyPreflightGateToModal() {
+  const caps = window._rgCaps;
+  const btn = document.getElementById("rg-retry-confirm");
+  const box = document.getElementById("rg-retry-slots");
+  if (!caps || !box) return;
+  if (!caps.preflight_enabled) {
+    if (btn) { btn.disabled = true; btn.dataset.gated = "1"; btn.title = "서버 플래그 WING_INBOUND_PREFLIGHT_ENABLED가 꺼져 있어 초안 생성이 차단됨"; }
+    box.insertAdjacentHTML("beforeend", `<div style="margin-top:10px;padding:8px 10px;border:1px dashed var(--border);border-radius:8px;font-size:13px">
+      <span class="chip rejected">초안 생성 차단</span> 지금 서버에서 가능한 것: <b>판정 · 슬롯 조회 · 자동 제안 기록</b>까지입니다.<br>
+      대체 입고신청(PRE-FLIGHT) 생성은 서버 플래그 <code>WING_INBOUND_PREFLIGHT_ENABLED</code>가 꺼져 있어 <b>차단</b>돼 있어요 — 켜지기 전에는 이 버튼이 동작하지 않습니다.</div>`);
+  }
+}
+
+function pickRgRetrySlotGated(index) { pickRgRetrySlot(index); }
+
+// 자동 제안 요청 - 서버가 실제 WING 슬롯(읽기)을 조회해 같은 센터의 가장 빠른 슬롯을
+// 제안으로 기록해요. 대체 plan은 만들지 않아요(auto_prepare=false 고정).
+async function requestRgReplanProposal(planId) {
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); return; }
+  toast("대체 일정을 조회하는 중...");
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/replan-propose`, {
+      method: "POST", headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) { toast(`제안 실패: ${body.detail || resp.status}`); return; }
+    if (body.kind === "PROPOSED" && body.proposed) {
+      toast(`대체 일정 제안: ${body.proposed.edd} ${body.proposed.booking_time.slice(0,2)}:${body.proposed.booking_time.slice(2,4)} @${body.proposed.fc_code} — [제안대로 준비]로 이어가세요`);
+    } else {
+      toast(`제안 없음(${body.kind}): ${body.note || body.reason || ""}`);
+    }
+  } catch (e) {
+    toast(`제안 요청 중 오류: ${e.message}`);
+    return;
+  }
+  route();
+}
+
+async function loadRgProposals() {
+  try {
+    const { data, error } = await sb.from("inbound_plan_events")
+      .select("inbound_plan_id,detail,created_at").eq("event_type", "RECOVERY_CHECK")
+      .order("created_at", { ascending: false }).limit(300);
+    if (error) return {};
+    const out = {};
+    (data || []).forEach(r => {
+      const pr = r.detail && r.detail.replan_proposal;
+      if (pr && !out[r.inbound_plan_id]) out[r.inbound_plan_id] = { ...pr, recorded_at: r.created_at };
+    });
+    return out;
+  } catch (e) { return {}; }
+}
+
+async function loadRgCapabilities() {
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    const jwt = session?.access_token;
+    if (!jwt) return null;
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/capabilities`, { headers: { Authorization: `Bearer ${jwt}` } });
+    if (!resp.ok) return { error: `HTTP ${resp.status}` };
+    return await resp.json();
+  } catch (e) { return { error: e.message }; }
+}
+
+function rgCapabilitiesHtml(caps) {
+  if (!caps) return "";
+  if (caps.error) return `<div style="margin:6px 0 10px;font-size:12.5px;color:var(--text-sub)"><span class="chip waiting">기능 상태 확인 불가</span> ${esc(caps.error)}</div>`;
+  const chip = (ok, onText, offText) => ok ? `<span class="chip approved">${onText}</span>` : `<span class="chip rejected">${offText}</span>`;
+  const sess = caps.wing_session_ok
+    ? `<span class="chip approved">WING 세션 정상</span>`
+    : `<span class="chip rejected">WING 세션 만료 — 재로그인 필요</span>`;
+  return `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 10px;font-size:12.5px;color:var(--text-sub)">
+    <b style="margin-right:4px">지금 서버에서:</b>
+    ${chip(caps.preflight_enabled, "초안 생성(PRE-FLIGHT) 가능", "초안 생성(PRE-FLIGHT) 차단")}
+    ${chip(caps.submit_enabled, "최종 제출 가능", "최종 제출 차단")}
+    ${sess}
+    ${caps.replan_auto_prepare_enabled ? `<span class="chip approved">재계획 자동 준비 ON</span>` : `<span class="chip waiting">재계획: 제안까지 자동 · 생성은 사람 확인</span>`}
+    <span style="margin-left:auto">판정·슬롯 조회·제안은 항상 가능(읽기)</span>
+  </div>`;
+}
+
+function rgProposalNoteHtml(pr) {
+  if (!pr) return "";
+  const when = pr.recorded_at ? new Date(pr.recorded_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }) : "";
+  if (pr.kind === "PROPOSED" && pr.proposed) {
+    return `<br><small style="color:var(--text-sub)">🤖 자동 제안: <b>${esc(pr.proposed.edd)} ${esc(pr.proposed.booking_time.slice(0,2))}:${esc(pr.proposed.booking_time.slice(2,4))}</b> @${esc(pr.proposed.fc_code || "")} · 재승인 필요 <span style="opacity:.7">(${esc(when)})</span></small>`;
+  }
+  if (pr.kind === "AUTO_PREPARED") {
+    return `<br><small style="color:var(--text-sub)">🤖 자동 준비됨 → 대체 plan ${esc(String(pr.replacement_plan_id || "").slice(0,8))} (재승인 대기)</small>`;
+  }
+  return `<br><small style="color:var(--text-sub)">🤖 제안 ${esc(pr.kind || "")}: ${esc(pr.note || pr.auto_prepare_error || "")} <span style="opacity:.7">(${esc(when)})</span></small>`;
+}
+
 async function confirmRgReplan(planId) {
   if (!_rgRetrySelectedSlot) return;
+  if (window._rgCaps && !window._rgCaps.preflight_enabled) { toast("초안 생성이 서버 플래그로 차단돼 있어요(WING_INBOUND_PREFLIGHT_ENABLED 꺼짐)"); return; }
   const slot = _rgRetrySelectedSlot;
   const timeLabel = `${slot.booking_time.slice(0, 2)}:${slot.booking_time.slice(2, 4)}`;
   if (!confirm(`대체 일정(${slot.edd} ${timeLabel})으로 새 입고신청을 준비합니다.\n\n· 쿠팡 최종 제출이 아닙니다\n· 대체 계획은 다시 승인해야 제출할 수 있습니다\n\n계속할까요?`)) return;
@@ -7413,6 +7559,13 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
   const retryByOriginId = {};
   plans.forEach(x => { if (x.retry_of_plan_id) retryByOriginId[x.retry_of_plan_id] = x; });
 
+  // 2026-09-10 [자동 재계획] 스캔/제안 API가 남긴 최신 제안(inbound_plan_events의
+  // RECOVERY_CHECK · detail.replan_proposal)과, 서버의 실제 기능 상태(플래그·WING 세션)를
+  // 같이 읽어요. 제안은 RLS상 로그인 사용자 전원이 읽을 수 있고, 기능 상태는
+  // 서버가 돌려주는 값만 표시해요(화면이 추측하지 않음).
+  const [rgProposals, rgCaps] = await Promise.all([loadRgProposals(), loadRgCapabilities()]);
+  window._rgCaps = rgCaps;
+
   const rows = [];
   plans.forEach(p => {
     const items = itemsByPlan[p.id] || [];
@@ -7445,13 +7598,13 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
         <td>${esc(p.destination_center_raw || "-")}</td>
         <td>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}${
           rgCanPrepareReplan(p, supersededIds)
-            ? `<br><small style="color:var(--danger,#c0392b)">⚠️ 예정일 경과 · 미제출</small>` : ""}</td>
+            ? `<br><small style="color:var(--danger,#c0392b)">⚠️ 슬롯 만료(여유 2h 미만) · 미제출</small>${rgProposalNoteHtml(rgProposals[p.id])}` : ""}</td>
         <td>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
         <td>${rgChip(RG_APPROVAL_CHIP, p.approval_status)}</td>
         <td>${rgSubmitStatusHtml(p)}</td>
         <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
         <td>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
-        <td style="white-space:nowrap">${i === 0 ? rgActionsHtml(p, supersededIds) : ""}</td>
+        <td style="white-space:nowrap">${i === 0 ? rgActionsHtml(p, supersededIds, rgProposals) : ""}</td>
       </tr>`));
   });
 
@@ -7470,6 +7623,7 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
         <h2>🚀 쿠팡 로켓그로스 입고관리</h2>
         <button class="btn sm" onclick="openParcelCreateModal()">＋ 수동 택배 입고</button>
       </div>
+      ${rgCapabilitiesHtml(rgCaps)}
       <p style="font-size:13px;color:var(--text-sub)">
         쿠팡 WING 로켓그로스 자동 입고신청(PRE-FLIGHT) 진행 상태예요. 위 <b>발주서 → 입고 처리</b>(자사창고에
         실제로 도착한 수량을 직접 세어 입력하는 기능)와는 별개의 흐름입니다 — 여기는 쿠팡 시스템에 전자적으로
