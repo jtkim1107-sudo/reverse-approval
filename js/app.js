@@ -502,6 +502,7 @@ const routes = {
   doc: { title: "문서 상세", render: viewDocDetail },
   shipmentplans: { title: "입고 물류 최적화", render: viewShipmentPlans },
   stockflow: { title: "재고 · 발주 · 입고", render: viewStockFlow },
+  voc: { title: "리뷰 · 고객문의", render: viewVoc },
 };
 
 // 날짜가 바뀌면 화면 기본 날짜도 따라 옮김 (PWA는 며칠씩 안 닫고 쓰기 때문)
@@ -7488,6 +7489,216 @@ async function submitParcelPlan(planId) {
     return;
   }
   route();
+}
+
+/* ---------- 리뷰 · 고객문의(VOC) ----------
+   2026-09-09 [리뷰/Q&A 화면 연동, 사용자 요청]
+   데이터 출처(새로 만든 수집 경로 없음 - 기존 파이프라인 결과를 읽기만 함):
+     리뷰: review_pipeline.py(WING 수집) -> 구글시트 REVIEWS
+           -> erp_cs_review_sync.py -> Supabase coupang_reviews
+     문의: coupang_client.get_inquiries() -> erp_cs_review_sync.py -> Supabase coupang_cs
+   다른 화면들과 동일하게 sb(Supabase)를 직접 읽어요(백엔드 새 endpoint 없음).
+
+   *** 표시 원칙(백엔드 coupang_review_analysis.py와 동일하게 맞춤) ***
+   본문이 없는 리뷰(별점만 남긴 리뷰)를 '중립'으로 세지 않고 "본문없음"으로 따로
+   집계해요. 실측상 쿠팡 리뷰의 약 80%가 본문 없는 별점 리뷰라, 이걸 섞으면
+   감성 분포가 실제와 전혀 달라져요. */
+const VOC_POSITIVE_WORDS = ["좋아요", "좋습니다", "만족", "튼튼", "가볍", "편해", "편리", "저렴",
+  "잘받았", "재구매", "추천", "예뻐", "예쁘", "깔끔", "맘에", "마음에", "완벽"];
+const VOC_NEGATIVE_WORDS = ["별로", "불량", "파손", "깨져", "고장", "냄새", "약해", "얇아", "실망",
+  "환불", "반품", "느려", "늦게", "찌그", "흠집", "아쉬", "불편", "하자"];
+
+function vocSentiment(content) {
+  const text = (content || "").trim();
+  if (!text) return { key: "none", label: "본문없음", chip: "waiting", pos: [], neg: [] };
+  const pos = VOC_POSITIVE_WORDS.filter(w => text.includes(w));
+  const neg = VOC_NEGATIVE_WORDS.filter(w => text.includes(w));
+  if (pos.length && neg.length) return { key: "mixed", label: "혼합", chip: "progress", pos, neg };
+  if (pos.length) return { key: "positive", label: "긍정", chip: "approved", pos, neg: [] };
+  if (neg.length) return { key: "negative", label: "부정", chip: "rejected", pos: [], neg };
+  return { key: "unscored", label: "판단보류", chip: "waiting", pos: [], neg: [] };
+}
+
+const VOC_TABS = [["reviews", "⭐ 리뷰"], ["inquiries", "💬 고객문의"]];
+
+async function viewVoc(tab) {
+  tab = VOC_TABS.some(t => t[0] === tab) ? tab : "reviews";
+  const tabBar = `
+    <div class="card" style="padding:8px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      ${VOC_TABS.map(([k, label]) => `
+        <button class="btn sm ${tab === k ? "" : "secondary"}" onclick="location.hash='#/voc/${k}'">${label}</button>
+      `).join("")}
+      <span style="flex:1"></span>
+      <button class="btn sm secondary" onclick="route()">🔄 새로고침</button>
+    </div>`;
+  const body = tab === "reviews" ? await renderVocReviews() : await renderVocInquiries();
+  return tabBar + body;
+}
+
+async function renderVocReviews() {
+  const { data, error } = await sb.from("coupang_reviews")
+    .select("review_id,vendor_item_id,product_name,option_name,rating,content,written_at,collected_at")
+    .order("written_at", { ascending: false });
+  if (error) {
+    return `<div class="card"><p style="color:var(--red)">리뷰를 불러오지 못했습니다: ${esc(error.message)}</p></div>`;
+  }
+  const rows = data || [];
+  if (!rows.length) {
+    return `<div class="card"><p class="empty">수집된 리뷰가 없습니다.</p></div>`;
+  }
+
+  const withText = rows.filter(r => (r.content || "").trim());
+  const ratings = rows.map(r => Number(r.rating)).filter(n => Number.isFinite(n));
+  const avg = ratings.length ? (ratings.reduce((a, b) => a + b, 0) / ratings.length) : null;
+  const dist = {};
+  ratings.forEach(n => { dist[n] = (dist[n] || 0) + 1; });
+  const maxDist = Math.max(1, ...Object.values(dist));
+
+  // 상품별 집계 - 저평점 많은 순(사람이 먼저 봐야 할 것 위로)
+  const byProduct = {};
+  rows.forEach(r => {
+    const k = r.vendor_item_id || "(미상)";
+    byProduct[k] = byProduct[k] || { vid: k, name: r.product_name, n: 0, text: 0, low: 0, sum: 0, cnt: 0 };
+    const p = byProduct[k];
+    p.n++;
+    if ((r.content || "").trim()) p.text++;
+    const rt = Number(r.rating);
+    if (Number.isFinite(rt)) { p.sum += rt; p.cnt++; if (rt <= 3) p.low++; }
+  });
+  const products = Object.values(byProduct).sort((a, b) => (b.low - a.low) || (b.n - a.n));
+
+  const distRows = [5, 4, 3, 2, 1].map(star => {
+    const n = dist[star] || 0;
+    const pct = rows.length ? Math.round(n / rows.length * 100) : 0;
+    return `<div style="display:flex;align-items:center;gap:8px;margin:3px 0">
+      <span style="width:34px;font-size:13px">${star}점</span>
+      <div style="flex:1;background:var(--gray-bg);border-radius:4px;height:14px;overflow:hidden">
+        <div style="width:${n / maxDist * 100}%;height:100%;background:var(--brand)"></div>
+      </div>
+      <span style="width:64px;text-align:right;font-size:12px;color:var(--text-sub)">${n}건 (${pct}%)</span>
+    </div>`;
+  }).join("");
+
+  const textRate = Math.round(withText.length / rows.length * 100);
+
+  return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">총 리뷰</div><div class="stat-value">${fmt(rows.length)}건</div></div>
+      <div class="stat"><div class="stat-label">평균 평점</div>
+        <div class="stat-value blue">${avg != null ? avg.toFixed(2) : "-"}</div></div>
+      <div class="stat"><div class="stat-label">본문 있는 리뷰</div>
+        <div class="stat-value">${withText.length}건</div>
+        <small style="color:var(--text-sub);font-size:11px">전체의 ${textRate}% — 나머지는 별점만 남긴 리뷰예요</small></div>
+      <div class="stat"><div class="stat-label">저평점(3점 이하)</div>
+        <div class="stat-value amber">${ratings.filter(n => n <= 3).length}건</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>평점 분포</h2></div>
+      ${distRows}
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>상품별 리뷰</h2>
+        <span style="font-size:12px;color:var(--text-sub)">저평점이 많은 상품부터</span></div>
+      <div class="table-wrap rtable"><table>
+        <thead><tr><th>상품</th><th class="num">리뷰</th><th class="num">본문</th>
+          <th class="num">평균</th><th class="num">저평점</th></tr></thead>
+        <tbody>${products.map(p => `
+          <tr>
+            <td class="rt-title"><b>${esc(p.name || p.vid)}</b><br>
+              <small style="color:var(--text-sub)">${esc(p.vid)}</small></td>
+            <td class="num" data-label="리뷰">${p.n}</td>
+            <td class="num" data-label="본문">${p.text}</td>
+            <td class="num" data-label="평균">${p.cnt ? (p.sum / p.cnt).toFixed(1) : "-"}</td>
+            <td class="num" data-label="저평점">${p.low ? `<b style="color:var(--red)">${p.low}</b>` : "0"}</td>
+          </tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>리뷰 본문 (${withText.length}건)</h2></div>
+      ${withText.length ? withText.map(r => {
+        const s = vocSentiment(r.content);
+        return `
+        <div style="border-top:1px solid var(--line);padding:10px 0">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+            <b style="font-size:13px">${"★".repeat(Number(r.rating) || 0)}</b>
+            <span class="chip ${s.chip}">${s.label}</span>
+            <span style="font-size:12px;color:var(--text-sub)">${esc(r.written_at || "")}</span>
+            <span style="font-size:12px;color:var(--text-sub)">${esc(r.product_name || "")}</span>
+          </div>
+          <div style="font-size:13.5px;white-space:pre-wrap">${esc(r.content)}</div>
+          ${s.neg.length ? `<div style="font-size:12px;color:var(--red);margin-top:4px">부정 키워드: ${s.neg.map(esc).join(", ")}</div>` : ""}
+        </div>`;
+      }).join("") : `<p class="empty">본문이 있는 리뷰가 아직 없습니다.</p>`}
+      <p style="font-size:12px;color:var(--text-sub);margin-top:10px">
+        ※ 별점만 남기고 본문을 안 쓴 리뷰가 많아요(현재 ${100 - textRate}%). 본문 없는 리뷰는
+        감성 분류에서 제외되고 '본문없음'으로만 집계돼요 — 중립으로 계산하지 않아요.
+      </p>
+    </div>`;
+}
+
+async function renderVocInquiries() {
+  const { data, error } = await sb.from("coupang_cs")
+    .select("inquiry_id,source,vendor_item_id,product_name,content,status,inquiry_at,answered_at,order_id")
+    .order("inquiry_at", { ascending: false });
+  if (error) {
+    return `<div class="card"><p style="color:var(--red)">고객문의를 불러오지 못했습니다: ${esc(error.message)}</p></div>`;
+  }
+  const rows = data || [];
+  const unanswered = rows.filter(r => r.status === "unanswered");
+
+  if (!rows.length) {
+    return `
+      <div class="card">
+        <div class="card-head"><h2>고객문의</h2></div>
+        <p class="empty">수집된 문의가 없습니다.</p>
+        <p style="font-size:12.5px;color:var(--text-sub);margin-top:8px">
+          문의는 <b>coupang_cs</b> 테이블에서 읽어요. 아직 0건인 상태이며,
+          쿠팡에 실제 문의가 등록되면 동기화(erp_cs_review_sync)가 채웁니다.<br>
+          ※ 답변 <b>등록</b> 기능은 아직 연결 전이에요 — 쿠팡 답변 등록 API가 구현되어 있지
+          않아, 현재는 조회만 가능합니다.
+        </p>
+      </div>`;
+  }
+
+  const card = r => {
+    const isUn = r.status === "unanswered";
+    return `
+      <div style="border-top:1px solid var(--line);padding:10px 0">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+          <span class="chip ${isUn ? "waiting" : "approved"}">${isUn ? "미답변" : "답변완료"}</span>
+          <span class="chip progress">${r.source === "callcenter" ? "콜센터" : "상품 Q&A"}</span>
+          <span style="font-size:12px;color:var(--text-sub)">${esc(String(r.inquiry_at || "").slice(0, 16))}</span>
+          <span style="font-size:12px;color:var(--text-sub)">${esc(r.product_name || r.vendor_item_id || "")}</span>
+        </div>
+        <div style="font-size:13.5px;white-space:pre-wrap">${esc(r.content || "")}</div>
+      </div>`;
+  };
+
+  return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">전체 문의</div><div class="stat-value">${rows.length}건</div></div>
+      <div class="stat"><div class="stat-label">미답변</div>
+        <div class="stat-value ${unanswered.length ? "amber" : ""}">${unanswered.length}건</div></div>
+      <div class="stat"><div class="stat-label">답변완료</div>
+        <div class="stat-value">${rows.length - unanswered.length}건</div></div>
+    </div>
+    ${unanswered.length ? `
+    <div class="card">
+      <div class="card-head"><h2>미답변 문의 ${unanswered.length}건</h2>
+        <span style="font-size:12px;color:var(--red)">답변이 필요해요</span></div>
+      ${unanswered.map(card).join("")}
+      <p style="font-size:12px;color:var(--text-sub);margin-top:10px">
+        ※ 답변 <b>등록</b>은 아직 연결 전이에요(쿠팡 답변 등록 API 미구현). 현재는 조회만 가능하며,
+        답변은 쿠팡 WING에서 직접 남겨주세요.
+      </p>
+    </div>` : ""}
+    <div class="card">
+      <div class="card-head"><h2>전체 문의</h2></div>
+      ${rows.map(card).join("")}
+    </div>`;
 }
 
 /* ---------- 매입 거래처 ---------- */
