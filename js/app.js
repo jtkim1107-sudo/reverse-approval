@@ -6637,6 +6637,20 @@ const rgCanPrepareRetry = (p, supersededIds) =>
   p.submit_status === "SUBMIT_ATTEMPTED" && p.internal_status === "FAILED" &&
   rgErrorClassify(p).retryable && !supersededIds.has(p.id);
 
+// 2026-09-10 [입고 재계획] 승인이 늦어져 *** 제출조차 못 한 채 *** 입고예정일이
+// 지나버린 plan. 위 rgCanPrepareRetry(제출했는데 WING이 슬롯없음으로 거절)와는
+// 완전히 다른 상황이라 조건도 버튼도 따로 둬요.
+//
+// *** 이 함수는 버튼을 보여줄지만 정해요 - 판정 권한이 아니에요 ***
+// "정말 WING에 접수 안 됐는지"는 브라우저가 알 수 없어서, 서버가
+// erp_replan_gate에서 실제 WING get_plan으로 다시 확인해요. 확인이 안 되면
+// 서버가 409로 막고 대체 계획을 만들지 않아요(중복 입고 방지).
+const rgTodayStr = () => new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" });
+const rgIsSlotStale = p =>
+  p.submit_status === "NOT_SUBMITTED" && p.internal_status !== "CANCELLED" &&
+  !!p.inbound_date && String(p.inbound_date).slice(0, 10) < rgTodayStr();
+const rgCanPrepareReplan = (p, supersededIds) => rgIsSlotStale(p) && !supersededIds.has(p.id);
+
 // PARCEL(BOX) 전용 - 2026-09-04 추가. TRUCK 조건(rgCanDecide/rgCanSubmit/
 // rgCanPrepareRetry)은 위에서 이미 다 걸러지므로, 여기 두 조건은 transport_
 // type==='PARCEL'인 plan에서만 의미가 있어요(TRUCK plan은 automation_state
@@ -6678,6 +6692,13 @@ function rgActionsHtml(p, supersededIds) {
   // renderParcelApprovalCard()의 전용 승인/거절 버튼에서만 처리해요.
   if (rgCanSubmitParcel(p)) {
     return `<button class="btn sm" onclick="submitParcelPlan('${p.id}')">쿠팡 제출</button>`;
+  }
+  // 2026-09-10 [입고 재계획] "쿠팡 제출"보다 *** 먼저 *** 확인해요. 입고예정일이
+  // 이미 지난 slot은 승인 상태와 무관하게 제출해도 서버 게이트
+  // (_check_booking_time_sanity)에서 어차피 막혀요 - 사람에게 실패할 게 뻔한
+  // 버튼을 보여주는 대신 다음 행동(대체 일정 잡기)을 보여줍니다.
+  if (rgCanPrepareReplan(p, supersededIds)) {
+    return `<button class="btn sm secondary" onclick="openRgReplanModal('${p.id}')">🗓 대체 일정 잡기</button>`;
   }
   if (rgCanSubmit(p) && !rgIsSuperseded(p, supersededIds)) {
     return `<button class="btn sm" onclick="submitRgInbound('${p.id}')">쿠팡 제출</button>`;
@@ -6902,6 +6923,96 @@ async function confirmRgRetry(planId) {
       : `PRE-FLIGHT 결과 확인이 필요합니다: ${body.preflight_status}`);
   } catch (e) {
     toast(`재시도 요청 중 오류: ${e.message}`);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  closeModal();
+  route();
+}
+
+/* ==================== 입고 재계획 - 2026-09-10 추가 ====================
+   승인이 늦어져 제출조차 못 한 채 입고예정일이 지나버린 plan에 대체 일정을
+   잡아요. 위 재시도(openRgRetryModal)와 화면 구성은 같지만 엔드포인트가 달라요:
+     재시도 : GET/POST /api/inbound-plans/{id}/retry-slots · /retry
+     재계획 : GET/POST /api/inbound-plans/{id}/replan-slots · /replan
+   슬롯 렌더/선택 함수(renderRgRetrySlots, pickRgRetrySlot)는 그대로 재사용해요 -
+   같은 응답 형태(slots_by_center/own_center_fc_code)라서 두 벌로 나누면 한쪽만
+   고쳐지는 사고가 나요. */
+async function openRgReplanModal(planId) {
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); return; }
+
+  _rgRetrySelectedSlot = null;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>🗓 대체 입고 일정 잡기</h3>
+        <p style="font-size:13.5px;color:var(--text-sub);margin:4px 0 12px;line-height:1.7">
+          승인이 늦어져 <b>제출하지 못한 채 입고예정일이 지났습니다</b>. 새 일정을 고르면
+          그 슬롯으로 <b>대체 입고신청(PRE-FLIGHT)</b>을 준비합니다.<br>
+          · 서버가 먼저 <b>WING에 이미 접수됐는지 실제로 조회</b>합니다 — 접수돼 있거나 확인이 안 되면
+            <b>대체 계획을 만들지 않습니다</b>(중복 입고 방지).<br>
+          · 원본이 승인 상태였더라도 <b>승인은 복사되지 않습니다</b> — 대체 계획은 반드시 다시 승인해야 합니다.<br>
+          · 여기서 쿠팡에 <b>최종 제출되지 않습니다</b>.</p>
+        <div id="rg-retry-slots" style="font-size:13.5px;color:var(--text-sub)">대체 슬롯 조회 중...</div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="rg-retry-confirm" disabled onclick="confirmRgReplan('${planId}')">이 일정으로 대체 계획 준비</button>
+        </div>
+      </div>
+    </div>`;
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/replan-slots`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => ({}));
+    const box = document.getElementById("rg-retry-slots");
+    if (!box) return;                       // 조회 도중 모달을 닫았으면 아무것도 안 함
+    if (!resp.ok) {
+      // 409는 "지금 재계획 대상이 아님"(이미 접수됨/확인 불가 등)이라 서버가 준
+      // 이유를 그대로 보여줘요 - 여기서 임의로 재해석하지 않습니다.
+      box.innerHTML = `<span class="chip rejected">진행 불가</span> ${esc(body.detail || String(resp.status))}`;
+      return;
+    }
+    renderRgRetrySlots(body);
+  } catch (e) {
+    const box = document.getElementById("rg-retry-slots");
+    if (box) box.innerHTML = `<span class="chip rejected">조회 오류</span> ${esc(e.message)}`;
+  }
+}
+
+async function confirmRgReplan(planId) {
+  if (!_rgRetrySelectedSlot) return;
+  const slot = _rgRetrySelectedSlot;
+  const timeLabel = `${slot.booking_time.slice(0, 2)}:${slot.booking_time.slice(2, 4)}`;
+  if (!confirm(`대체 일정(${slot.edd} ${timeLabel})으로 새 입고신청을 준비합니다.\n\n· 쿠팡 최종 제출이 아닙니다\n· 대체 계획은 다시 승인해야 제출할 수 있습니다\n\n계속할까요?`)) return;
+
+  const btn = document.getElementById("rg-retry-confirm");
+  if (btn) btn.disabled = true;
+
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); if (btn) btn.disabled = false; return; }
+
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/replan`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ edd: slot.edd, booking_time: slot.booking_time }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(`대체 계획 준비 실패: ${body.detail || resp.status}`);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    toast(body.preflight_status === "PASSED"
+      ? "대체 입고신청이 준비됐습니다 — 승인 대기 상태예요(다시 승인해야 제출됩니다)"
+      : `대체 계획을 만들었지만 PRE-FLIGHT 확인이 필요합니다: ${body.preflight_status}`);
+  } catch (e) {
+    toast(`대체 계획 요청 중 오류: ${e.message}`);
     if (btn) btn.disabled = false;
     return;
   }
@@ -7332,7 +7443,9 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
         <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
         <td class="num">${fmt(it.pallet_count)}</td>
         <td>${esc(p.destination_center_raw || "-")}</td>
-        <td>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}</td>
+        <td>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}${
+          rgCanPrepareReplan(p, supersededIds)
+            ? `<br><small style="color:var(--danger,#c0392b)">⚠️ 예정일 경과 · 미제출</small>` : ""}</td>
         <td>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
         <td>${rgChip(RG_APPROVAL_CHIP, p.approval_status)}</td>
         <td>${rgSubmitStatusHtml(p)}</td>
