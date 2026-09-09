@@ -532,7 +532,15 @@ async function route() {
   // 재발화도 없음 - 그대로 이어서 렌더) 뒤로가기가 "#/inventory로 왔다가
   // 다시 튕겨나가는" 엔트리를 남기지 않고 #/inventory 이전 화면으로 곧장
   // 돌아가요(반복 루프 없음).
-  if (hash === "inventory" || hash.startsWith("inventory/")) {
+  // 2026-09-09 [옛 #/purchasereco도 동일 처리, 사용자 명시 "캐노니컬 발주추천
+  // 탭의 실제 route를 코드에서 확인한 뒤 redirect해"] - 코드 확인 결과
+  // STOCKFLOW_TABS에는 stock/rginbound 두 키뿐이고 별도 reco 탭은 없어요
+  // (2026-09-08에 재고현황+발주추천을 viewInventoryDecisions() 하나로 합침 -
+  // 추천발주 열이 그 표에 있음). viewStockFlow()도 모르는 탭 키는 "stock"으로
+  // fallback하므로, 발주추천의 캐노니컬 목적지는 #/stockflow/reco가 아니라
+  // #/stockflow/stock이에요.
+  if (hash === "inventory" || hash.startsWith("inventory/")
+      || hash === "purchasereco" || hash.startsWith("purchasereco/")) {
     history.replaceState(null, "", "#/stockflow/stock");
     hash = "stockflow/stock";
   }
