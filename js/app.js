@@ -7613,7 +7613,7 @@ async function viewVoc(tab) {
 
 async function renderVocReviews() {
   const { data, error } = await sb.from("coupang_reviews")
-    .select("review_id,vendor_item_id,product_name,option_name,rating,content,written_at,collected_at")
+    .select("review_id,vendor_item_id,product_id,product_name,option_name,rating,content,written_at,collected_at")
     .order("written_at", { ascending: false });
   if (error) {
     return `<div class="card"><p style="color:var(--red)">리뷰를 불러오지 못했습니다: ${esc(error.message)}</p></div>`;
@@ -7643,8 +7643,10 @@ async function renderVocReviews() {
   const byProduct = {};
   rows.forEach(r => {
     const k = r.vendor_item_id || "(미상)";
-    byProduct[k] = byProduct[k] || { vid: k, name: r.product_name, n: 0, text: 0, low: 0, sum: 0, cnt: 0 };
+    byProduct[k] = byProduct[k] || { vid: k, name: r.product_name, n: 0, text: 0, low: 0, sum: 0, cnt: 0,
+                                     unmapped: !r.product_id };
     const p = byProduct[k];
+    if (!r.product_id) p.unmapped = true;   // 한 건이라도 미매핑이면 상품 단위로 표시
     p.n++;
     if ((r.content || "").trim()) p.text++;
     const rt = Number(r.rating);
@@ -7666,7 +7668,25 @@ async function renderVocReviews() {
 
   const textRate = Math.round(withText.length / rows.length * 100);
 
+  // 2026-09-10 [사용자 명시: "ERP 상품에 매핑 완료된 것처럼 저장하지 마.
+  // 원천 상품 ID와 ERP 상품 ID를 구분하고 미매핑 상태를 표시해줘"]
+  // coupang_reviews.product_id는 *ERP 상품 id*이고, product_channel_mapping으로
+  // 매칭됐을 때만 채워져요. 매칭 실패해도 원본(vendor_item_id 포함)은 보존되며
+  // product_id가 NULL로 남아요 - 그 상태를 화면에서 구분해 보여줍니다.
+  const unmapped = rows.filter(r => !r.product_id);
+  const unmappedVids = [...new Set(unmapped.map(r => r.vendor_item_id))];
+  const unmappedNote = unmapped.length ? `
+    <div class="card" style="border-left:4px solid var(--amber,#d98324);padding:10px 14px;margin-bottom:12px">
+      <b style="font-size:13px">⚠️ ERP 상품에 매핑되지 않은 리뷰 ${unmapped.length}건</b>
+      <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
+        쿠팡 원천 데이터는 보존됐지만 ERP 상품과 연결되지 않았어요(product_channel_mapping 없음).
+        아래 목록에서 <span class="chip waiting">ERP 미매핑</span> 표시로 구분됩니다.<br>
+        미매핑 vendor_item_id: ${unmappedVids.map(v => `<code>${esc(String(v))}</code>`).join(", ")}
+      </div>
+    </div>` : "";
+
   return `
+    ${unmappedNote}
     <div class="grid-stats">
       <div class="stat"><div class="stat-label">총 리뷰</div><div class="stat-value">${fmt(rows.length)}건</div></div>
       <div class="stat"><div class="stat-label">평균 평점</div>
@@ -7691,7 +7711,7 @@ async function renderVocReviews() {
           <th class="num">평균</th><th class="num">저평점</th></tr></thead>
         <tbody>${products.map(p => `
           <tr>
-            <td class="rt-title"><b>${esc(p.name || p.vid)}</b><br>
+            <td class="rt-title"><b>${esc(p.name || p.vid)}</b>${p.unmapped ? ` <span class="chip waiting">ERP 미매핑</span>` : ""}<br>
               <small style="color:var(--text-sub)">${esc(p.vid)}</small></td>
             <td class="num" data-label="리뷰">${p.n}</td>
             <td class="num" data-label="본문">${p.text}</td>
