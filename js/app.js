@@ -7521,6 +7521,79 @@ function vocSentiment(content) {
 
 const VOC_TABS = [["reviews", "⭐ 리뷰"], ["inquiries", "💬 고객문의"]];
 
+// 2026-09-10 [사용자 명시: "수집 실패를 '데이터 0건'으로 보여주지 마"]
+// 실제로 있었던 일: GCP의 WING 세션이 만료돼 수집이 30분마다 401로 실패하는 동안
+// 이 화면은 그냥 "0건"만 보여줬어요. 그래서 수집 잡의 마지막 성공/실패를
+// sync_job_status에서 읽어 화면 맨 위에 상태 배너로 띄웁니다.
+function vocAgeText(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return null;
+  const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000);
+  if (h >= 24) return `${Math.floor(h / 24)}일 전`;
+  if (h >= 1) return `${h}시간 전`;
+  return `${Math.max(m, 0)}분 전`;
+}
+
+async function renderVocStatusBanner() {
+  let st = null, unavailable = false;
+  try {
+    const { data, error } = await sb.from("sync_job_status")
+      .select("*").eq("job_name", "review_voc_collect").maybeSingle();
+    if (error) unavailable = true; else st = data;
+  } catch (_) { unavailable = true; }
+
+  // 상태 테이블 자체를 못 읽는 경우: 상태를 '정상'으로 단정하지 않고 모른다고 표시.
+  if (unavailable) {
+    return `<div class="card" style="border-left:4px solid var(--text-sub);padding:10px 14px;margin-bottom:12px">
+      <b style="font-size:13px">수집 상태를 확인할 수 없습니다</b>
+      <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
+        sync_job_status를 읽지 못했어요(테이블 미적용 또는 권한). 아래 목록이 최신인지 보장할 수 없습니다.
+      </div></div>`;
+  }
+  if (!st) {
+    return `<div class="card" style="border-left:4px solid var(--text-sub);padding:10px 14px;margin-bottom:12px">
+      <b style="font-size:13px">아직 수집 기록이 없습니다</b>
+      <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
+        자동수집이 한 번도 성공/실패를 기록하지 않았어요.
+      </div></div>`;
+  }
+
+  const failing = (st.consecutive_failures || 0) > 0;
+  const relogin = st.error_kind === "RELOGIN_REQUIRED";
+  const successAge = vocAgeText(st.last_success_at);
+  const attemptAge = vocAgeText(st.last_attempt_at);
+
+  if (!failing) {
+    return `<div class="card" style="border-left:4px solid var(--green);padding:10px 14px;margin-bottom:12px">
+      <b style="font-size:13px">✅ 자동수집 정상</b>
+      <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
+        마지막 성공: ${st.last_success_at ? `${esc(new Date(st.last_success_at).toLocaleString("ko-KR"))} (${successAge})` : "기록 없음"}
+      </div></div>`;
+  }
+
+  const color = relogin ? "var(--red)" : "var(--amber, #d98324)";
+  const title = relogin ? "⚠️ WING 재로그인이 필요합니다" : "⚠️ 자동수집이 실패하고 있습니다";
+  const action = relogin
+    ? `<div style="font-size:12.5px;margin-top:6px">
+         쿠팡 WING 세션이 만료돼 수집이 멈췄어요. 재로그인 후 서버에 세션을 반영해야 다시 수집됩니다.
+       </div>`
+    : "";
+  return `<div class="card" style="border-left:4px solid ${color};padding:10px 14px;margin-bottom:12px">
+    <b style="font-size:13px;color:${color}">${title}</b>
+    <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
+      마지막 성공: ${st.last_success_at ? `${esc(new Date(st.last_success_at).toLocaleString("ko-KR"))} (${successAge})` : "기록 없음"}<br>
+      마지막 시도: ${st.last_attempt_at ? `${esc(new Date(st.last_attempt_at).toLocaleString("ko-KR"))} (${attemptAge})` : "-"}
+      · 연속 실패 <b>${st.consecutive_failures}</b>회
+    </div>
+    ${action}
+    ${st.last_error ? `<div style="font-size:11.5px;color:var(--text-sub);margin-top:6px;word-break:break-all">${esc(String(st.last_error).slice(0, 200))}</div>` : ""}
+    <div style="font-size:12.5px;color:${color};margin-top:6px">
+      아래 목록은 <b>마지막 성공 시점의 데이터</b>예요. 그 이후 리뷰·문의는 반영되지 않았습니다.
+    </div>
+  </div>`;
+}
+
 async function viewVoc(tab) {
   tab = VOC_TABS.some(t => t[0] === tab) ? tab : "reviews";
   const tabBar = `
@@ -7531,8 +7604,11 @@ async function viewVoc(tab) {
       <span style="flex:1"></span>
       <button class="btn sm secondary" onclick="route()">🔄 새로고침</button>
     </div>`;
-  const body = tab === "reviews" ? await renderVocReviews() : await renderVocInquiries();
-  return tabBar + body;
+  const [banner, body] = await Promise.all([
+    renderVocStatusBanner(),
+    tab === "reviews" ? renderVocReviews() : renderVocInquiries(),
+  ]);
+  return tabBar + banner + body;
 }
 
 async function renderVocReviews() {
@@ -7664,8 +7740,8 @@ async function renderVocInquiries() {
         <div class="card-head"><h2>고객문의</h2></div>
         <p class="empty">표시할 문의가 없습니다.</p>
         <p style="font-size:12.5px;color:var(--text-sub);margin-top:8px">
-          문의는 <b>coupang_cs</b> 테이블에서 읽어요. 아직 수집된 문의가 없거나,
-          <b>이 계정에 조회 권한(RLS)이 없을 수</b> 있어요(RLS는 에러 없이 빈 결과를 돌려줘요).<br>
+          문의는 <b>coupang_cs</b> 테이블에서 읽어요. <b>위 수집 상태를 먼저 확인하세요</b> —
+          수집이 실패 중이면 이 0건은 "문의가 없다"는 뜻이 아니라 "확인하지 못했다"는 뜻이에요.<br>
           ※ 답변 <b>등록</b> 기능은 아직 연결 전이에요 — 쿠팡 답변 등록 API가 구현되어 있지
           않아, 현재는 조회만 가능합니다.
         </p>
