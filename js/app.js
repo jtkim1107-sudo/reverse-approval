@@ -518,7 +518,24 @@ let routeSeq = 0;
 async function route() {
   if (!me) return;
   const seq = ++routeSeq;
-  const hash = location.hash.replace(/^#\//, "") || "dashboard";
+  let hash = location.hash.replace(/^#\//, "") || "dashboard";
+  // 2026-09-09 [옛 #/inventory 라우트 폐기, 사용자 명시 - "동일 기능의 화면이
+  // 두 개 존재해 서로 다른 재고·안전재고 값을 보여주면 안 된다"] purchase_
+  // recommendations 기반의 옛 화면(viewInventory, 2026-09-08 통합 이전)은
+  // GCP 배치가 안 돌아서 갱신이 멈춰 있고, 캐노니컬 판단 엔진(viewInventory
+  // Decisions, /api/inventory/decisions 기반 #/stockflow/stock)과 값이
+  // 어긋난 채로 계속 남아있었음(실측 확인 - 같은 상품이 두 값으로 보임).
+  // 대시보드 경고 링크는 이미 #/stockflow/stock으로 바꿨지만, 기존 북마크나
+  // 직접 URL 입력으로도 절대 이 화면에 다시 도달하지 않도록 라우터 레벨에서
+  // 즉시 리다이렉트해요. location.hash=로 새 엔트리를 쌓지 않고
+  // history.replaceState로 현재 엔트리를 그 자리에서 바꿔치기하므로(hashchange
+  // 재발화도 없음 - 그대로 이어서 렌더) 뒤로가기가 "#/inventory로 왔다가
+  // 다시 튕겨나가는" 엔트리를 남기지 않고 #/inventory 이전 화면으로 곧장
+  // 돌아가요(반복 루프 없음).
+  if (hash === "inventory" || hash.startsWith("inventory/")) {
+    history.replaceState(null, "", "#/stockflow/stock");
+    hash = "stockflow/stock";
+  }
   const [name, param] = hash.split("/");
   const r = routes[name] || routes.dashboard;
   syncTodayState(); // 앱을 켜둔 채 자정을 넘겨도 '오늘'이 어제로 굳지 않도록
@@ -764,12 +781,12 @@ function collectHygiene(st) {
   if (untracked.length) items.push({
     n: untracked.length,
     text: `이동 기록 없이 팔린 쿠팡 재고 ${fmt(untracked.reduce((s, [, x]) => s + x.coupangUntracked, 0))}개`,
-    href: "#/inventory",
+    href: "#/stockflow/stock",
   });
   // 위탁 상품(공급처 재고)과 연동 세트(낱개에서 파생)는 재고를 갖지 않으므로 마이너스 점검에서 제외
   const negStock = erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p)
     && ((erpStock[p.id]?.stock ?? 0) < 0 || (erpStock[p.id]?.inHouse ?? 0) < 0)).length;
-  add(negStock, `마이너스가 된 재고 ${negStock}종`, "#/inventory");
+  add(negStock, `마이너스가 된 재고 ${negStock}종`, "#/stockflow/stock");
   add(erpChannelList.filter(c => !Number(c.fee_rate)).length,
       `수수료율이 비어 있는 채널 ${erpChannelList.filter(c => !Number(c.fee_rate)).length}개`, "#/channels");
   // 연동 세트상품은 낱개 원가에서 자동 계산되므로 제외 (낱개에 원가가 없으면 낱개 쪽이 잡힌다)
