@@ -503,6 +503,7 @@ const routes = {
   shipmentplans: { title: "입고 물류 최적화", render: viewShipmentPlans },
   stockflow: { title: "재고 · 발주 · 입고", render: viewStockFlow },
   voc: { title: "리뷰 · 고객문의", render: viewVoc },
+  unmatched: { title: "누락 매출", render: viewUnmatchedSales },
 };
 
 // 날짜가 바뀌면 화면 기본 날짜도 따라 옮김 (PWA는 며칠씩 안 닫고 쓰기 때문)
@@ -1469,6 +1470,14 @@ async function viewDashboard() {
     teamHtml = celebrationHtml(cel) + teamCardHtml(st, g, hy, true) + questsHtml(st, g, hy);
   } catch (e) { console.error("팀 카드:", e); }
 
+  // 2026-09-10 [사용자 명시: "누락 기록 코드뿐 아니라 실제 화면 조회·미해결 건수·
+  // 마지막 수집 성공 시각까지 연결"] 매핑이 없어 ERP에 안 들어간 매출과 동기화
+  // 상태를 대시보드에 띄워요. 실패해도 대시보드 나머지는 그대로 보여야 하므로
+  // 별도 try로 감쌉니다.
+  let syncHealthHtml = "";
+  try { syncHealthHtml = await renderSyncHealthCard(); }
+  catch (e) { console.error("동기화 상태 카드:", e); }
+
   // 어제 매출 브리핑 카드 - 실패해도(테이블 아직 없음 등) 대시보드 나머지는 보여야 하므로 따로 감쌈
   let briefingHtml = "";
   try {
@@ -1493,6 +1502,7 @@ async function viewDashboard() {
 
   return `
     ${teamHtml}
+    ${syncHealthHtml}
     ${briefingHtml}
     <div class="grid-stats">
       <div class="stat" onclick="location.hash='#/inbox'">
@@ -7489,6 +7499,138 @@ async function submitParcelPlan(planId) {
     return;
   }
   route();
+}
+
+/* ---------- 동기화 상태 · 누락 매출 ----------
+   2026-09-10 [사용자 명시: "미매핑 매출을 조용히 건너뛰지 말고 누락 내역을 표시",
+   "수집 실패를 '데이터 0건'으로 보여주지 마"]
+
+   실제로 있었던 일: product_channel_mapping에 없는 상품의 매출은 sales에 안 들어가고
+   로그로만 남아서(정책상 맞는 동작 - 추측 매칭 금지) 화면 어디에도 안 보였어요.
+   실측 2026-09-01~09-09: 7개 vendor_item_id / 21건 / 369,120원이 그렇게 빠졌습니다.
+
+   데이터 출처(둘 다 백엔드가 기록, 여기서는 읽기만):
+     sales_sync_unmatched : 건너뛴 판매건(migrations/20260910a)
+     sync_job_status      : 잡별 마지막 성공/실패(migrations/20260910b) */
+function syncAgeText(iso) {
+  if (!iso) return null;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return null;
+  const h = Math.floor(ms / 3600000), m = Math.floor(ms / 60000);
+  if (h >= 24) return `${Math.floor(h / 24)}일 전`;
+  if (h >= 1) return `${h}시간 전`;
+  return `${Math.max(m, 0)}분 전`;
+}
+
+async function renderSyncHealthCard() {
+  const [unRes, stRes] = await Promise.all([
+    sb.from("sales_sync_unmatched").select("amount,vendor_item_id").is("resolved_at", null),
+    sb.from("sync_job_status").select("*"),
+  ]);
+
+  // 두 테이블 모두 못 읽으면(마이그레이션 미적용 등) 카드를 억지로 그리지 않아요.
+  // "문제 없음"으로 보이게 만드는 게 제일 위험하니까요.
+  if (unRes.error && stRes.error) return "";
+
+  const un = unRes.data || [];
+  const totalAmt = un.reduce((s, r) => s + Number(r.amount || 0), 0);
+  const vids = new Set(un.map(r => r.vendor_item_id)).size;
+  const jobs = stRes.data || [];
+  const byName = Object.fromEntries(jobs.map(j => [j.job_name, j]));
+
+  const jobLine = (key, label) => {
+    const j = byName[key];
+    if (!j) return `<div style="font-size:12.5px;color:var(--text-sub)">${label}: 기록 없음</div>`;
+    const failing = (j.consecutive_failures || 0) > 0;
+    const relogin = j.error_kind === "RELOGIN_REQUIRED";
+    const succ = j.last_success_at
+      ? `${new Date(j.last_success_at).toLocaleString("ko-KR")} (${syncAgeText(j.last_success_at)})` : "기록 없음";
+    return `<div style="font-size:12.5px;margin-top:2px">
+      ${failing ? (relogin ? "🔴" : "🟠") : "🟢"} <b>${label}</b>
+      <span style="color:var(--text-sub)">마지막 성공: ${esc(succ)}</span>
+      ${failing ? `<span style="color:var(--red)"> · 연속 실패 ${j.consecutive_failures}회${relogin ? " · WING 재로그인 필요" : ""}</span>` : ""}
+    </div>`;
+  };
+
+  const hasProblem = un.length > 0 || jobs.some(j => (j.consecutive_failures || 0) > 0);
+  const border = hasProblem ? "var(--red)" : "var(--green)";
+
+  return `
+    <div class="card" style="border-left:4px solid ${border};margin-bottom:14px">
+      <div class="card-head"><h2 style="font-size:15px">자동 수집 상태</h2>
+        ${un.length ? `<button class="btn sm secondary" onclick="location.hash='#/unmatched'">누락 매출 보기</button>` : ""}</div>
+      ${un.length ? `
+        <div style="font-size:13.5px;margin-bottom:6px">
+          ⚠️ 매핑이 없어 ERP에 반영되지 않은 매출 <b style="color:var(--red)">${un.length}건</b>
+          · <b>₩${fmt(totalAmt)}</b> · 상품 ${vids}종
+          <div style="font-size:12px;color:var(--text-sub);margin-top:2px">
+            product_channel_mapping에 없는 상품이라 건너뛴 건이에요. 매핑을 등록하면 다음 동기화에서 자동 반영됩니다.
+          </div>
+        </div>` : `<div style="font-size:13px;margin-bottom:6px">✅ 매핑 누락으로 빠진 매출 없음</div>`}
+      ${unRes.error ? `<div style="font-size:12px;color:var(--text-sub)">※ 누락 내역 테이블을 읽지 못했어요(20260910a 미적용 가능) - 누락이 없다는 뜻은 아닙니다.</div>` : ""}
+      ${jobLine("erp_sales_sync", "매출 동기화")}
+      ${jobLine("review_voc_collect", "리뷰 VOC 수집")}
+      ${stRes.error ? `<div style="font-size:12px;color:var(--text-sub);margin-top:4px">※ 동기화 상태 테이블을 읽지 못했어요(20260910b 미적용 가능).</div>` : ""}
+    </div>`;
+}
+
+async function viewUnmatchedSales() {
+  const { data, error } = await sb.from("sales_sync_unmatched")
+    .select("*").order("sale_date", { ascending: false }).limit(500);
+  if (error) {
+    return `<div class="card"><p style="color:var(--red)">누락 내역을 불러오지 못했습니다: ${esc(error.message)}</p>
+      <p style="font-size:12.5px;color:var(--text-sub)">migrations/20260910a_sales_sync_unmatched.sql이 아직 적용되지 않았을 수 있어요.</p></div>`;
+  }
+  const rows = data || [];
+  const open = rows.filter(r => !r.resolved_at);
+  const resolved = rows.filter(r => r.resolved_at);
+  const byVid = {};
+  open.forEach(r => {
+    byVid[r.vendor_item_id] = byVid[r.vendor_item_id] || { n: 0, amt: 0, dates: [] };
+    byVid[r.vendor_item_id].n++;
+    byVid[r.vendor_item_id].amt += Number(r.amount || 0);
+    byVid[r.vendor_item_id].dates.push(r.sale_date);
+  });
+
+  return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">미해결 누락</div>
+        <div class="stat-value ${open.length ? "red" : ""}">${open.length}건</div></div>
+      <div class="stat"><div class="stat-label">누락 금액</div>
+        <div class="stat-value amber">₩${fmt(open.reduce((s, r) => s + Number(r.amount || 0), 0))}</div></div>
+      <div class="stat"><div class="stat-label">해당 상품</div>
+        <div class="stat-value">${Object.keys(byVid).length}종</div></div>
+      <div class="stat"><div class="stat-label">해결됨</div>
+        <div class="stat-value">${resolved.length}건</div></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>상품별 누락 (미해결)</h2>
+        <span style="font-size:12px;color:var(--text-sub)">매핑 등록 시 다음 동기화에서 자동 반영</span></div>
+      ${Object.keys(byVid).length ? `<div class="table-wrap rtable"><table>
+        <thead><tr><th>vendor_item_id</th><th class="num">건수</th><th class="num">금액</th><th>날짜</th></tr></thead>
+        <tbody>${Object.entries(byVid).sort((a, b) => b[1].n - a[1].n).map(([vid, v]) => `
+          <tr><td class="rt-title"><b>${esc(vid)}</b></td>
+            <td class="num" data-label="건수">${v.n}</td>
+            <td class="num" data-label="금액">₩${fmt(v.amt)}</td>
+            <td data-label="날짜"><small>${esc([...new Set(v.dates)].sort().join(", "))}</small></td></tr>`).join("")}
+        </tbody></table></div>` : `<p class="empty">미해결 누락이 없습니다.</p>`}
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>전체 내역</h2></div>
+      <div class="table-wrap rtable"><table>
+        <thead><tr><th>판매일</th><th>주문/라인 키</th><th class="num">금액</th><th>상태</th><th>사유</th></tr></thead>
+        <tbody>${rows.length ? rows.map(r => `
+          <tr>
+            <td data-label="판매일">${esc(r.sale_date)}</td>
+            <td class="rt-title"><small>${esc(r.external_key)}</small></td>
+            <td class="num" data-label="금액">₩${fmt(Number(r.amount || 0))}</td>
+            <td data-label="상태">${r.resolved_at
+              ? `<span class="chip approved">해결됨</span>`
+              : `<span class="chip waiting">미해결</span>`}</td>
+            <td data-label="사유"><small style="color:var(--text-sub)">${esc(r.reason || "")}</small></td>
+          </tr>`).join("") : `<tr><td colspan="5" class="empty">내역이 없습니다</td></tr>`}
+        </tbody></table></div>
+    </div>`;
 }
 
 /* ---------- 리뷰 · 고객문의(VOC) ----------
