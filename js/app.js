@@ -1248,9 +1248,69 @@ async function saveTeamGoal(month) {
    *** 참고: 이 단계에서는 daily_sales_briefing_pipeline이 아직 GCP에서
    시작되지 않아서(사용자 명시: 운영 스케줄 미활성화) 실제 데이터는 없고
    빈 상태(placeholder)만 보임 - 코드/UI 구조만 미리 반영해둠. *** */
+// 접수일 기준 취소/반품 차감. 철회는 제외하고 행별 확정/추정 금액을 선택한다.
+function summarizeSalesAdjustments(rows) {
+  const out = { cancel_qty: 0, return_qty: 0, cancel_amount: 0, return_amount: 0,
+    includes_estimated: false, channel_amounts: {}, rows: [] };
+  for (const r of rows) {
+    if (r.amount_status === 'WITHDRAWN') continue;
+    if (!['CANCEL', 'RETURN'].includes(r.receipt_type)) throw new Error('알 수 없는 취소·반품 유형');
+    const settled = r.amount_status === 'SETTLED' && r.settled_adjustment_amount != null;
+    const amount = Number(settled ? r.settled_adjustment_amount : r.estimated_adjustment_amount);
+    const qty = Number(r.qty);
+    if (!Number.isFinite(amount) || !Number.isFinite(qty)) throw new Error('취소·반품 금액/수량 확인 필요');
+    const prefix = r.receipt_type === 'RETURN' ? 'return' : 'cancel';
+    out[`${prefix}_qty`] += qty;
+    out[`${prefix}_amount`] += amount;
+    out.includes_estimated ||= !settled;
+    const channel = r.channel || '기타';
+    out.channel_amounts[channel] = (out.channel_amounts[channel] || 0) + amount;
+    out.rows.push({ ...r, used_amount: amount });
+  }
+  return out;
+}
+
+async function loadSalesAdjustments(dateFrom, dateTo) {
+  const rows = [];
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await sb.from('sales_adjustments')
+      .select('id,date,channel,product_id,receipt_type,qty,estimated_adjustment_amount,settled_adjustment_amount,amount_status')
+      .gte('date', dateFrom).lte('date', dateTo).order('id').range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    if (!Array.isArray(data)) throw new Error('취소·반품 조회 결과 없음');
+    rows.push(...data);
+    if (data.length < pageSize) break;
+  }
+  return summarizeSalesAdjustments(rows);
+}
+
+function salesAdjustmentSummaryHtml(summary, grossAmount) {
+  if (!summary) return '<p role="alert">취소·반품 내역을 불러오지 못했습니다. 순매출은 확인할 수 없습니다.</p>';
+  return `<p style="font-size:12px;color:var(--text-sub)">취소·반품은 접수일 기준입니다. ${summary.includes_estimated ? '원주문 단가로 계산한 추정금액 포함.' : ''}</p>
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">취소</div><div class="stat-value amber">${fmt(summary.cancel_qty)}개 · ₩${fmt(summary.cancel_amount)}</div></div>
+      <div class="stat"><div class="stat-label">반품·환불</div><div class="stat-value amber">${fmt(summary.return_qty)}개 · ₩${fmt(summary.return_amount)}</div></div>
+      <div class="stat"><div class="stat-label">순매출(주문 − 취소 − 반품)</div><div class="stat-value green">₩${fmt(grossAmount - summary.cancel_amount - summary.return_amount)}</div></div>
+    </div>`;
+}
+
 async function loadDailySalesBriefing(dateStr) {
-  const { data } = await sb.from("daily_sales_briefing").select("*").eq("date", dateStr).maybeSingle();
-  return data || null;
+  const { data, error } = await sb.from("daily_sales_briefing").select("*").eq("date", dateStr).maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  try {
+    const adjustments = await loadSalesAdjustments(dateStr, dateStr);
+    // 저장된 브리핑과 차감 합계가 같은 경우에만 유형별 금액을 보완한다.
+    // 접수 내역이 이후 변경됐다면 서로 다른 시점의 값을 섞지 않는다.
+    const total = adjustments.cancel_amount + adjustments.return_amount;
+    const matches = Math.abs(Number(data.gross_amount) - Number(data.net_amount) - total) < 0.5
+      && Number(data.cancel_qty) === adjustments.cancel_qty && Number(data.return_qty) === adjustments.return_qty;
+    return { ...data, adjustment_summary: matches ? adjustments : null,
+      adjustment_display_error: matches ? null : '취소·반품 내역이 브리핑 생성 이후 변경되었습니다. 유형별 금액은 재집계가 필요합니다.' };
+  } catch (e) {
+    return { ...data, adjustment_summary: null, adjustment_display_error: '취소·반품 상세 조회 실패: 유형별 금액을 확인할 수 없습니다.' };
+  }
 }
 
 // 2026-09-08 [매출 이중집계 수정, 사용자 명시] 자동화(2026-08-31~) 이전 수기
@@ -1293,10 +1353,6 @@ async function loadDailyProductBreakdown(dateStr) {
     .map(e => ({ ...e, name: nameById[e.product_id] || e.product_id }))
     .sort((a, b) => b.amount - a.amount);
 }
-
-// 취소/반품 금액은 SETTLED(확정)가 있으면 그 값, 없으면 ESTIMATED(추정) 사용 -
-// daily_sales_briefing.py의 net_amount 계산과 동일한 우선순위
-const briefingAdjAmount = (estimated, settled) => (settled != null ? Number(settled) : Number(estimated || 0));
 
 // 2026-09-08 [매출 3층 구조 정리, 사용자 명시] "주문매출"(sales/daily_sales_
 // briefing 기반, RG/MP paidAt 결제시점 기준)과 "쿠팡 실적매출"(쿠팡 앱/판매
@@ -1381,8 +1437,9 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
   const needsCheck = b.status !== "OK" && otherFlags.length > 0;
   const withdrawOnlyWarning = withdrawFlags.length > 0 && otherFlags.length === 0;
 
-  const cancelAmt = briefingAdjAmount(b.cancel_amount_estimated, b.cancel_amount_settled);
-  const returnAmt = briefingAdjAmount(b.return_amount_estimated, b.return_amount_settled);
+  const cancelAmt = b.adjustment_summary?.cancel_amount;
+  const returnAmt = b.adjustment_summary?.return_amount;
+  const adjustmentMoney = amount => amount == null ? '금액 확인 필요' : `₩${fmt(amount)}`;
   const rate = b.cancel_return_rate != null ? `${(Number(b.cancel_return_rate) * 100).toFixed(1)}%` : "-";
   const dod = b.dod_change_pct != null
     ? `<span style="color:${Number(b.dod_change_pct) >= 0 ? "var(--green)" : "var(--red)"}">${Number(b.dod_change_pct) >= 0 ? "▲" : "▼"} ${Math.abs(Number(b.dod_change_pct)).toFixed(1)}%</span>`
@@ -1407,12 +1464,13 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
       ${withdrawOnlyWarning ? `<p style="color:var(--text-sub);font-size:12.5px;margin:0 0 8px">
         ⚠️ 반품 철회 상태 확인 지연 · 매출·취소·반품 집계에는 영향 없음 · 추후 자동 재확인
       </p>` : ""}
-      ${ORDER_REVENUE_NOTICE_HTML}
+      <p style="font-size:12px;color:var(--text-sub)">총 주문매출은 조정 전 금액이며, 순매출은 접수일 기준 취소·반품을 차감한 금액입니다. 쿠팡 실적매출·정산매출과는 다를 수 있습니다.</p>
+      ${b.adjustment_display_error ? `<p role="alert">${esc(b.adjustment_display_error)}</p>` : ''}
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">총 판매수량</div><div class="stat-value">${fmt(b.gross_qty)}개</div></div>
         <div class="stat"><div class="stat-label">총 주문매출(잠정)</div><div class="stat-value blue">₩${fmt(b.gross_amount)}</div></div>
-        <div class="stat"><div class="stat-label">취소</div><div class="stat-value amber">${fmt(b.cancel_qty)}개 · ₩${fmt(cancelAmt)}</div></div>
-        <div class="stat"><div class="stat-label">반품·환불</div><div class="stat-value amber">${fmt(b.return_qty)}개 · ₩${fmt(returnAmt)}</div></div>
+        <div class="stat"><div class="stat-label">취소</div><div class="stat-value amber">${fmt(b.cancel_qty)}개 · ${adjustmentMoney(cancelAmt)}</div></div>
+        <div class="stat"><div class="stat-label">반품·환불</div><div class="stat-value amber">${fmt(b.return_qty)}개 · ${adjustmentMoney(returnAmt)}</div></div>
         <div class="stat"><div class="stat-label">순판매수량</div><div class="stat-value">${fmt(b.net_qty)}개</div></div>
         <div class="stat"><div class="stat-label">순매출(주문 기준)</div><div class="stat-value green">₩${fmt(b.net_amount)}</div></div>
         <div class="stat"><div class="stat-label">취소·반품률</div><div class="stat-value">${rate}</div></div>
@@ -2493,6 +2551,12 @@ async function viewSales() {
   const { sales } = await loadErpBase();
   const rows = sales.filter(r => monthOf(r) === erpMonth);
   erpRowsCache = rows;
+  let adjustmentSummary = null;
+  try {
+    const [year, month] = erpMonth.split('-').map(Number);
+    const lastDay = new Date(year, month, 0).getDate();
+    adjustmentSummary = await loadSalesAdjustments(`${erpMonth}-01`, `${erpMonth}-${lastDay}`);
+  } catch (e) { console.error('월 취소·반품 조회 실패:', e); }
   const byChannel = {};
   rows.forEach(r => { byChannel[r.channel || "기타"] = (byChannel[r.channel || "기타"] || 0) + Number(r.amount); });
 
@@ -2545,7 +2609,8 @@ async function viewSales() {
           ${monthPicker()}
           <button class="btn sm secondary" onclick="exportErpCSV('sales')">CSV</button>
         </div></div>
-      ${erpSummaryCards(rows, "매출")}
+      ${erpSummaryCards(rows, "주문매출")}
+      ${salesAdjustmentSummaryHtml(adjustmentSummary, rows.reduce((sum, r) => sum + Number(r.amount || 0), 0))}
       ${Object.keys(byChannel).length ? `<p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">채널별: ${
         Object.entries(byChannel).map(([c, v]) => `${esc(c)} ₩${fmt(v)}`).join(" · ")}</p>` : ""}
       <div class="table-wrap"><table>
