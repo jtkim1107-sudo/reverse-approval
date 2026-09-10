@@ -8317,7 +8317,7 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
       <p style="font-size:13px;color:var(--text-sub)">
         쿠팡 WING 로켓그로스 자동 입고신청(PRE-FLIGHT) 진행 상태예요. 위 <b>발주서 → 입고 처리</b>(자사창고에
         실제로 도착한 수량을 직접 세어 입력하는 기능)와는 별개의 흐름입니다 — 여기는 쿠팡 시스템에 전자적으로
-        입고를 신청·승인·제출하는 상태만 보여줘요. 승인/거절만 여기서 처리하고, 실제 쿠팡 제출은 아직 연결 전입니다.</p>
+        입고를 신청·승인·제출하는 상태만 보여줘요. 실제 쿠팡 제출 경로도 연결돼 있으며, 서버의 최종 제출 스위치와 1PLT 적재 검증을 모두 통과한 계획만 제출할 수 있습니다.</p>
     </div>
     ${parcelApprovalCardHtml}
     ${truckPrepCardHtml}
