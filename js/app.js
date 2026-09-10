@@ -5356,7 +5356,7 @@ async function viewProfit() {
         <h2>${erpMonth} 공헌이익</h2>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           ${monthPicker()}
-          <button class="btn sm secondary" onclick="openAdModal()">＋ 광고비</button>
+          <button class="btn sm secondary" onclick="openAdModal()">＋ 수동 광고비</button>
           <button class="btn sm secondary" onclick="openFixedModal()">고정비 설정</button>
         </div>
       </div>
