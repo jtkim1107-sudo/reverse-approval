@@ -1566,12 +1566,13 @@ async function viewDashboard() {
     const dates = summary?.collected_dates || [];
     const shownDate = dates.includes(td) ? td : (dates[dates.length - 1] || td);
     const day = globalThis.SalesMonthlySummary?.forDate(summary, shownDate, { rgOnly: true });
-    const [state, todayState] = await Promise.all([
+    const [state, todayState, health] = await Promise.all([
       globalThis.SalesRefresh?.loadDayState(shownDate),
       shownDate === td ? null : globalThis.SalesRefresh?.loadDayState(td),
+      globalThis.SalesRefresh?.loadHealth(),
     ]);
     todaySalesHtml = globalThis.SalesRefresh?.todayCardHtml({
-      day, date: shownDate, today: td, state, todayState }) || "";
+      day, date: shownDate, today: td, state, todayState, health }) || "";
   } catch (e) { console.error("오늘 로켓그로스 판매현황 카드:", e); }
 
   // 어제 매출 브리핑 카드 - 실패해도(테이블 아직 없음 등) 대시보드 나머지는 보여야 하므로 따로 감쌈
@@ -2743,12 +2744,17 @@ async function viewSales() {
   const shownDate = collectedDates.includes(refreshDate)
     ? refreshDate : (collectedDates[collectedDates.length - 1] || refreshDate);
   let refreshState = null;
-  try { refreshState = await globalThis.SalesRefresh?.loadDayState(shownDate); }
-  catch (e) { console.error("판매통계 수집 이력 조회 실패:", e); }
+  let refreshHealth = null;
+  try {
+    [refreshState, refreshHealth] = await Promise.all([
+      globalThis.SalesRefresh?.loadDayState(shownDate),
+      globalThis.SalesRefresh?.loadHealth(),
+    ]);
+  } catch (e) { console.error("판매통계 수집 이력 조회 실패:", e); }
   const refreshDay = globalThis.SalesMonthlySummary?.forDate(monthlySummary, shownDate, { rgOnly: true });
   const refreshHtml = globalThis.SalesRefresh
     ? globalThis.SalesRefresh.statusLineHtml({ date: shownDate, state: refreshState,
-        hasData: !!refreshDay?.collected, today: today() })
+        hasData: !!refreshDay?.collected, today: today(), health: refreshHealth })
       + globalThis.SalesRefresh.dayLineHtml(refreshDay, shownDate)
     : "";
 
@@ -8567,15 +8573,36 @@ async function renderSyncHealthCard() {
     </div>`;
 }
 
+// 2026-09-11 [사용자 지시: "미매핑 상품이 총계에서 빠지면 안 된다"] 이 목록은 *주문 원장
+// (sales)* 에 매핑이 없어 빠진 판매건이에요(재고·원가 계산용). 로켓그로스 매출 총계는
+// 쿠팡 판매통계 순매출(sales_daily_statistics)이라 미매핑 옵션까지 이미 포함돼 있어서,
+// 여기 금액을 총계에 다시 더하거나 빼면 안 됩니다. 로켓그로스가 아닌 채널은 총계가
+// 주문 원장이라 실제로 빠져 있으므로 따로 표시해요.
+const UNMATCHED_BASIS_NOTE = `<div style="background:#f5f7fb;border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-bottom:12px;font-size:12.5px;line-height:1.6">
+  여기는 <b>주문 원장</b>(재고·원가 계산용)에 상품 매핑이 없어 들어가지 못한 판매건입니다.
+  <b>로켓그로스 매출 총계</b>는 쿠팡 판매통계 순매출 기준이라 미매핑 옵션도 <b>이미 포함</b>돼 있어요 —
+  아래 금액을 총계에 다시 더하거나 빼지 마세요. 매핑을 등록하면 다음 동기화에서 원장에 반영되고 '해결됨'으로 바뀝니다.</div>`;
+
 async function viewUnmatchedSales() {
   const { data, error } = await sb.from("sales_sync_unmatched")
     .select("*").order("sale_date", { ascending: false }).limit(500);
   if (error) {
+    const missing = /PGRST205|Could not find the table|does not exist/i.test(error.message || "");
+    if (missing) {
+      return `<div class="card">${UNMATCHED_BASIS_NOTE}
+        <p style="font-size:13.5px;margin:0 0 6px"><b>누락 내역 기록이 아직 운영 DB에 준비되지 않았어요.</b></p>
+        <p style="font-size:12.5px;color:var(--text-sub);margin:0">
+          마이그레이션 <code>20260910a_sales_sync_unmatched</code> 적용 전이라 목록을 보여줄 수 없습니다.
+          누락이 없다는 뜻이 아니며, 매출 총계에는 영향이 없습니다.</p></div>`;
+    }
     return `<div class="card"><p style="color:var(--red)">누락 내역을 불러오지 못했습니다: ${esc(error.message)}</p>
-      <p style="font-size:12.5px;color:var(--text-sub)">migrations/20260910a_sales_sync_unmatched.sql이 아직 적용되지 않았을 수 있어요.</p></div>`;
+      <p style="font-size:12.5px;color:var(--text-sub)">누락이 없다는 뜻은 아닙니다. 잠시 후 다시 열어 주세요.</p></div>`;
   }
   const rows = data || [];
   const open = rows.filter(r => !r.resolved_at);
+  // 동기화 초기 기록은 내부 코드(rocket_growth)일 수 있어 둘 다 로켓그로스로 봐요.
+  const isRgRow = r => [RG_CHANNEL_NAME, "rocket_growth"].includes(r.channel || "");
+  const openNonRg = open.filter(r => !isRgRow(r));
   const resolved = rows.filter(r => r.resolved_at);
   const byVid = {};
   open.forEach(r => {
@@ -8586,11 +8613,16 @@ async function viewUnmatchedSales() {
   });
 
   return `
+    ${UNMATCHED_BASIS_NOTE}
+    ${openNonRg.length ? `<div role="alert" style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:10px 12px;margin-bottom:12px;font-size:12.5px">
+      로켓그로스가 아닌 채널의 미해결 누락 <b>${openNonRg.length}건 · ₩${fmt(openNonRg.reduce((s, r) => s + Number(r.amount || 0), 0))}</b>은
+      주문 원장 기준 총계에서 빠져 있어요. 매핑을 등록해 주세요.</div>` : ""}
     <div class="grid-stats">
       <div class="stat"><div class="stat-label">미해결 누락</div>
         <div class="stat-value ${open.length ? "red" : ""}">${open.length}건</div></div>
-      <div class="stat"><div class="stat-label">누락 금액</div>
-        <div class="stat-value amber">₩${fmt(open.reduce((s, r) => s + Number(r.amount || 0), 0))}</div></div>
+      <div class="stat"><div class="stat-label">주문 원장 누락 금액</div>
+        <div class="stat-value amber">₩${fmt(open.reduce((s, r) => s + Number(r.amount || 0), 0))}</div>
+        <div style="font-size:11.5px;color:var(--text-sub)">로켓그로스분은 매출 총계에 포함됨</div></div>
       <div class="stat"><div class="stat-label">해당 상품</div>
         <div class="stat-value">${Object.keys(byVid).length}종</div></div>
       <div class="stat"><div class="stat-label">해결됨</div>

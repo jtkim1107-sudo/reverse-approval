@@ -228,6 +228,18 @@
       .join("");
   }
 
+  /* 2026-09-11 정산 대사 상태를 헤더에 명시해요. NOT_COMPARED 는 오류가 아니라
+     '정산 엑셀로 아직 비교하지 않음'이고, 매출값은 판매통계 그대로입니다. */
+  function reconBadge(options) {
+    const st = (options || []).map((o) => o.reconciliation_status);
+    if (!st.length) return "";
+    const mism = st.filter((x) => x === "RECONCILIATION_MISMATCH").length;
+    const comp = st.filter((x) => x === "MATCH" || x === "RECONCILIATION_MISMATCH").length;
+    if (mism) return `<div class="ss-muted">정산 대사 차이 ${mism}개 옵션 · 판매통계 값 유지</div>`;
+    if (comp) return `<div class="ss-muted">정산 대사 일치</div>`;
+    return `<div class="ss-muted">정산 대사: 비교 전(정산 엑셀 없음)</div>`;
+  }
+
   function render(payload) {
     const rg = payload.rocket_growth || {};
     const ready = payload.display_status === STATUS_OK;
@@ -246,6 +258,7 @@
             ? `<div class="ss-muted">최근 수집 ${esc(kstTime(payload.last_collected_at))}</div>`
             : ""
         }
+        ${ready ? reconBadge(payload.by_option) : ""}
       </header>
       ${statusBanner(payload)}
       ${reconciliationAlerts(payload.reconciliation_alerts)}

@@ -48,7 +48,7 @@
   function reasonText(error) {
     const e = String(error || "");
     if (!e) return "";
-    if (e.startsWith("SESSION_EXPIRED") || e.startsWith("NO_SESSION")) return "WING 세션 만료";
+    if (e.startsWith("SESSION_EXPIRED") || e.startsWith("NO_SESSION")) return "WING 세션 만료 · 세션 갱신 필요";
     if (e.startsWith("AUTH_BLOCKED")) return "쿠팡 보안(Akamai) 차단";
     if (e.startsWith("MAPPING_UNAVAILABLE")) return "상품 매핑 조회 실패";
     if (e.startsWith("DOWNLOAD_FAILED")) return "WING 응답 오류";
@@ -176,16 +176,94 @@
     }
   }
 
+  /* 2026-09-11 [사용자 지시: "실패하면 ERP 화면에 마지막 정상 수집 시각과 '세션 갱신
+     필요'를 명확히 표시"] GCP 가 알려주는 WING 세션 상태(값 없이 상태·시각만)와
+     날짜 무관 가장 최근 정상 수집 시각을 함께 읽어요. 못 읽으면 null - 화면은 그대로. */
+  async function loadHealth() {
+    const out = { session: null, last_success_at: null };
+    const jwt = await sessionJwt();
+    const tasks = [];
+    if (jwt) {
+      tasks.push(fetch(`${API_BASE}/api/sales-statistics/refresh-status`, {
+        credentials: "omit", headers: { Authorization: `Bearer ${jwt}` } })
+        .then((r) => (r.ok ? r.json() : null)).then((b) => { out.session = (b && b.session) || null; })
+        .catch(() => {}));
+    }
+    const sb = global.sb;
+    if (sb) {
+      tasks.push(Promise.resolve(sb.from("sales_statistics_collections").select("collected_at")
+        .eq("channel", "쿠팡 로켓그로스").eq("status", "OK")
+        .order("collected_at", { ascending: false }).limit(1))
+        .then(({ data }) => { out.last_success_at = (data && data[0] && data[0].collected_at) || null; })
+        .catch(() => {}));
+    }
+    await Promise.all(tasks);
+    return out;
+  }
+
+  function sessionBannerHtml(health) {
+    const s = health && health.session;
+    if (!s) return "";
+    const last = health.last_success_at ? kst(health.last_success_at, true) : "기록 없음";
+    if (s.needs_renewal) {
+      return `<div role="alert" class="sales-session-banner" style="border:1px solid #f2c0c0;background:#fdecec;color:#8c2020;border-radius:9px;padding:10px 12px;margin:0 0 10px;font-size:13px;line-height:1.55">
+        <b>세션 갱신 필요</b> · ${esc(s.message || "WING 세션이 만료됐어요")}
+        <div style="font-size:12px;margin-top:2px">마지막 정상 수집 ${esc(last)} · 새로고침과 06:20 자동 수집은 세션이 복구될 때까지 저장하지 않아요(0원 아님)</div></div>`;
+    }
+    if (s.warning) {
+      return `<div role="status" class="sales-session-banner" style="border:1px solid #f3cfa4;background:#fff4e8;color:#8a4b12;border-radius:9px;padding:8px 12px;margin:0 0 10px;font-size:12.5px">
+        ${esc(s.message || "세션 자동 연장 확인 필요")} · 마지막 정상 수집 ${esc(last)}</div>`;
+    }
+    return "";
+  }
+
+  function sessionOkText(health) {
+    const s = health && health.session;
+    if (!s || s.needs_renewal || s.warning || s.hours_left == null) return "";
+    return `<span>WING 세션 정상 (${Number(s.hours_left).toFixed(1)}시간 남음)</span>`;
+  }
+
   /* 날짜 하나의 수집 이력 → 화면 상태. 이력은 로그인 사용자에게 SELECT 만 열려 있어요. */
   async function loadDayState(date) {
     const sb = global.sb;
     if (!sb || !date) return { date, error: "no-client", rows: [] };
-    const { data, error } = await sb.from("sales_statistics_collections")
-      .select("collected_at,status,outcome,error,total_net_qty,total_net_amount")
-      .eq("sales_date", date).eq("channel", "쿠팡 로켓그로스")
-      .order("collected_at", { ascending: false }).limit(20);
-    if (error) return { date, error: error.message, rows: [] };
-    return summarizeHistory(date, data || []);
+    const [hist, stat] = await Promise.all([
+      sb.from("sales_statistics_collections")
+        .select("collected_at,status,outcome,error,total_net_qty,total_net_amount")
+        .eq("sales_date", date).eq("channel", "쿠팡 로켓그로스")
+        .order("collected_at", { ascending: false }).limit(20),
+      sb.from("sales_daily_statistics")
+        .select("reconciliation_status,reconciliation_qty_diff,reconciliation_amount_diff")
+        .eq("sales_date", date).eq("channel", "쿠팡 로켓그로스"),
+    ]);
+    if (hist.error) return { date, error: hist.error.message, rows: [] };
+    const out = summarizeHistory(date, hist.data || []);
+    out.recon = stat.error ? null : reconSummary(stat.data || []);
+    return out;
+  }
+
+  /* 2026-09-11 [사용자 지시: "정산 엑셀이 없는 새로고침은 NOT_COMPARED로 명확히 표시하되
+     오류나 0원으로 취급하지 마"] 옵션별 대사 상태 → 날짜 하나의 상태(서버와 같은 규칙).
+     매출값은 보지도 바꾸지도 않아요. */
+  function reconSummary(rows) {
+    if (!rows.length) return null;
+    const mism = rows.filter((r) => r.reconciliation_status === "RECONCILIATION_MISMATCH");
+    const comp = rows.filter((r) => ["MATCH", "RECONCILIATION_MISMATCH"].includes(r.reconciliation_status));
+    return {
+      status: mism.length ? "RECONCILIATION_MISMATCH" : comp.length ? "MATCH" : "NOT_COMPARED",
+      compared: comp.length, mismatch: mism.length, options: rows.length,
+      qty_diff: mism.reduce((t, r) => t + (Number(r.reconciliation_qty_diff) || 0), 0),
+      amount_diff: mism.reduce((t, r) => t + (Number(r.reconciliation_amount_diff) || 0), 0),
+    };
+  }
+
+  function reconText(recon) {
+    if (!recon) return "";
+    if (recon.status === "NOT_COMPARED") {
+      return `<span title="정산 엑셀이 들어오면 옵션별로 비교합니다">정산 대사: 비교 전(정산 엑셀 없음 · 매출은 판매통계 기준 그대로)</span>`;
+    }
+    if (recon.status === "MATCH") return `<span>정산 대사 일치 (${recon.compared}개 옵션)</span>`;
+    return `<span style="color:#8a4b12">정산 대사 차이 ${recon.mismatch}개 옵션 (${Number(recon.qty_diff).toLocaleString("ko-KR")}개 / ${won(recon.amount_diff)}) · 판매통계 값 유지, 임의 보정 없음</span>`;
   }
 
   function summarizeHistory(date, rows) {
@@ -200,7 +278,7 @@
   }
 
   /* 상태 한 줄. 데이터 기준일과 수집 시각을 분리해서 보여줘요. */
-  function statusLineHtml({ date, state, hasData, today }) {
+  function statusLineHtml({ date, state, hasData, today, health = null }) {
     const res = lastResults[date];
     const fresh = res && Date.now() - res.received_at < JUST_NOW_MS;
     const latest = state && state.latest;
@@ -241,8 +319,8 @@
         ${esc(kst(latest.collected_at, true))} 수집 실패 · ${esc(reasonText(latest.error))} ·
         ${hasData ? "기존 값을 그대로 보여주고 있어요" : "표시할 저장값이 없어요(0원 아님)"}</div>`;
     }
-    return `<div class="sales-refresh-status" style="font-size:12.5px;color:var(--text-sub);display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;margin:4px 0 10px">
-      ${chip}<span style="font-weight:600">${DATA_BASIS}</span>${parts.join("")}</div>${note}`;
+    return `${sessionBannerHtml(health)}<div class="sales-refresh-status" style="font-size:12.5px;color:var(--text-sub);display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;margin:4px 0 10px">
+      ${chip}<span style="font-weight:600">${DATA_BASIS}</span>${parts.join("")}${hasData ? reconText(state && state.recon) : ""}${sessionOkText(health)}</div>${note}`;
   }
 
   /* 매출 입력 탭: 새로고침 대상 날짜의 로켓그로스 값 한 줄(공통 집계 값). */
@@ -255,7 +333,7 @@
   }
 
   /* 대시보드 카드. 숫자는 공통 집계(SalesMonthlySummary.forDate)가 준 값만 씁니다. */
-  function todayCardHtml({ day, date, today, state, todayState = null, source = "dashboard" }) {
+  function todayCardHtml({ day, date, today, state, todayState = null, source = "dashboard", health = null }) {
     const has = !!(day && day.collected);
     // 오늘 값이 없어 다른 기준일을 보여줄 때, 오늘 수집을 시도했다가 실패했다면 그것도 알려요.
     let todayNote = "";
@@ -281,7 +359,7 @@
     return `<div class="card" id="rg-today-sales-card" style="margin-bottom:14px">
       <div class="card-head"><h2 style="font-size:15px">오늘 로켓그로스 판매현황</h2>
         ${buttonHtml({ date: today, source, label: "새로고침" })}</div>
-      ${statusLineHtml({ date: has ? day.date : (date || today), state, hasData: has, today })}
+      ${statusLineHtml({ date: has ? day.date : (date || today), state, hasData: has, today, health })}
       ${todayNote ? `<div role="alert" style="font-size:12.5px;margin:-4px 0 8px;color:#8a4b12">${esc(todayNote)}</div>` : ""}
       ${body}
       <p style="font-size:11.5px;color:var(--text-sub);margin:4px 0 0">기준: 쿠팡 판매통계 순매출(전체 거래 − 취소·반품) · 쿠팡 자체 집계 지연이 있을 수 있어요</p>
@@ -290,6 +368,7 @@
 
   global.SalesRefresh = {
     click, isBusy, buttonHtml, statusLineHtml, todayCardHtml, dayLineHtml, loadDayState,
+    loadHealth, sessionBannerHtml, reconSummary, reconText,
     summarizeHistory, reasonText, resultHeadline, requestRefresh, kst,
     DATA_BASIS, BTN_CLASS, _lastResults: lastResults,
   };

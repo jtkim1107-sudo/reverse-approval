@@ -143,6 +143,50 @@ const json = (status, body) => ({ status, json: async () => body });
   check(win.fetchCalls.filter(c => c.url.endsWith("/refresh")).length === 1, "대체 수집도 클릭 1회 = 요청 1회");
 }
 
+// ── 3-C. 세션 상태 배너 (2026-09-11: 세션 갱신 필요 + 마지막 정상 수집 시각) ─────
+{
+  const { R } = makeEnv({ respond: () => json(200, {}) });
+  const st = R.summarizeHistory("2026-09-11", []);
+  const last = "2026-09-10T15:40:00+00:00";                    // = 09-11 00:40 KST
+  let h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11",
+    health: { last_success_at: last, session: { state: "SESSION_EXPIRED", needs_renewal: true, warning: false,
+      message: "세션 갱신 필요 - WING 세션이 만료돼 수집을 멈췄어요. 기존 매출은 그대로 유지됩니다." } } });
+  check(h.includes("세션 갱신 필요") && h.includes('role="alert"'), "만료 → '세션 갱신 필요' 경고 배너", h.slice(0, 200));
+  check(h.includes("마지막 정상 수집 09. 11. 00:40 KST"), "마지막 정상 수집 시각(KST) 표시", h.slice(0, 400));
+  check(h.includes("0원 아님"), "저장하지 않아도 0원이 아님을 안내");
+  h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11",
+    health: { last_success_at: last, session: { state: "OK", hours_left: 8, needs_renewal: false, warning: true,
+      message: "세션 자동 연장이 2회 연속 실패했어요(AUTH_BLOCKED). 아직 8시간 남아 수집은 가능합니다." } } });
+  check(h.includes("연속 실패") && !h.includes("세션 갱신 필요"), "연장 실패지만 여유 있음 → 주의 문구(갱신 필요 아님)");
+  h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11",
+    health: { last_success_at: last, session: { state: "OK", hours_left: 11.94, needs_renewal: false, warning: false } } });
+  check(h.includes("WING 세션 정상 (11.9시간 남음)") && !h.includes("sales-session-banner"), "정상 → 짧은 상태만");
+  h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11", health: null });
+  check(!h.includes("sales-session-banner"), "세션 상태를 못 읽으면 배너 없이 기존 표시");
+  const card = R.todayCardHtml({ day: null, date: "2026-09-11", today: "2026-09-11", state: st,
+    health: { last_success_at: last, session: { state: "NO_SESSION", needs_renewal: true, message: "세션 갱신 필요" } } });
+  check(card.includes("세션 갱신 필요"), "대시보드 카드에도 같은 배너");
+}
+
+// ── 3-D. 정산 대사 표시 (NOT_COMPARED 는 오류·0원이 아님) ────────────────────
+{
+  const { R } = makeEnv({ respond: () => json(200, {}) });
+  const nc = R.reconSummary([{ reconciliation_status: "NOT_COMPARED" }, { reconciliation_status: "NOT_COMPARED" }]);
+  check(nc.status === "NOT_COMPARED", "정산 없음 → NOT_COMPARED");
+  const t = R.reconText(nc);
+  check(t.includes("비교 전") && t.includes("판매통계 기준 그대로") && !/오류|실패|₩0/.test(t), "NOT_COMPARED 문구: 비교 전 · 오류·0원 아님", t);
+  const mm = R.reconSummary([{ reconciliation_status: "MATCH" },
+    { reconciliation_status: "RECONCILIATION_MISMATCH", reconciliation_qty_diff: -1, reconciliation_amount_diff: -11900 }]);
+  const tm = R.reconText(mm);
+  check(mm.status === "RECONCILIATION_MISMATCH" && tm.includes("-1개") && tm.includes("임의 보정 없음"), "차이: 기록만 · 보정 없음", tm);
+  check(R.reconText(R.reconSummary([{ reconciliation_status: "MATCH" }])).includes("일치"), "MATCH → 일치");
+  const st = { ...R.summarizeHistory("2026-09-10", []), recon: nc };
+  const line = R.statusLineHtml({ date: "2026-09-10", state: st, hasData: true, today: "2026-09-11" });
+  check(line.includes("정산 대사: 비교 전"), "상태 줄에 대사 상태 표시");
+  const lineNoData = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: false, today: "2026-09-11" });
+  check(!lineNoData.includes("정산 대사"), "값이 없는 날엔 대사 문구를 붙이지 않음");
+}
+
 // ── 4. 대시보드 카드 / 매출 입력 값 일치 (같은 공통 집계) ─────────────────
 {
   const { win, R } = makeEnv({ respond: () => json(200, {}) });
@@ -194,6 +238,11 @@ const json = (status, body) => ({ status, json: async () => body });
   check(head.includes("SalesRefresh.buttonHtml") && head.indexOf("buttonHtml") < head.indexOf("</h2>"), "‘매출 내역’ 제목 옆 새로고침 버튼");
   check(sales.includes("monthlySalesRowsHtml(monthlySummary)"), "상품별·날짜별 집계 행 유지(주문 단건 나열로 되돌리지 않음)");
   check(indexSrc.indexOf("sales_refresh.js") > -1 && indexSrc.indexOf("sales_refresh.js") < indexSrc.indexOf("js/app.js"), "index.html 에 모듈 등록(app.js 앞)");
+  const un = body("async function viewUnmatchedSales()", "/* ---------- 리뷰");
+  check(un.includes("${UNMATCHED_BASIS_NOTE}") && appSrc.includes("미매핑 옵션도 <b>이미 포함</b>"), "누락 화면: 로켓그로스는 총계에 포함됨을 명시");
+  check(/PGRST205\|Could not find the table/.test(un) && un.includes("누락이 없다는 뜻이 아니며"), "누락 화면: 테이블 미적용을 오류·'누락 없음'으로 오인하지 않게");
+  check(un.includes('"rocket_growth"') && un.includes("isRgRow"), "누락 화면: 내부 코드 rocket_growth 도 로켓그로스로 인식");
+  check(!/net_amount\s*[-+]=/.test(un), "누락 화면: 총계를 더하거나 빼지 않음");
   for (const bad of ["sb_secret", "service_role", "SUPABASE_SECRET", "wing_session", "KEYCLOAK", "JSESSIONID"]) {
     check(!refreshSrc.includes(bad), `프런트 모듈에 '${bad}' 없음`);
   }
