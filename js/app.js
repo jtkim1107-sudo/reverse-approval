@@ -2494,6 +2494,53 @@ async function loadErpBase() {
   return { buys, sales, costs };
 }
 
+// 2026-09-11 [사용자 지시: "재고 발주 화면의 판매량 집계 전면 수정"] 판매량·판매속도는
+// 서버 inventory_sales_basis 하나에서 와요(RG 판매통계 NET + MP 주문−조정, KST 오늘 제외
+// 완료일 7·30일, 수집 완결성). 목록과 상세 모달은 *같은 필드*(sales_7d/sales_30d/
+// avg_daily_sales)를 보여주고, 상세에만 검산 내역을 덧붙여요.
+function inventoryVelocityText(d) {
+  const b = d.sales_basis;
+  if (d.avg_daily_sales == null) {
+    return b && b.covered_days_30d != null && b.covered_days_30d < 30 ? `데이터 부족 ${b.covered_days_30d}/30일` : "-";
+  }
+  return `${Number(d.avg_daily_sales).toFixed(2)}${d.shared_inventory?.role === "child" ? "세트" : ""}/일`;
+}
+
+function inventorySalesBasisHtml(d, stockUnit) {
+  const b = d.sales_basis || null;
+  const q = n => (n == null ? "-" : fmt(n));
+  const w = k => (b && b[k] ? `${b[k][0].slice(5)}~${b[k][1].slice(5)}` : "");
+  const isPool = d.shared_inventory?.role === "base";
+  const main = `<div class="table-wrap"><table class="items-table"><tbody>
+      <tr><td>최근 7일 / 30일 <small style="color:var(--text-sub)">${esc(w("window_7d"))} / ${esc(w("window_30d"))} · 오늘 제외</small></td>
+        <td class="num">${q(d.sales_7d)}${stockUnit} / ${q(d.sales_30d)}${stockUnit}</td></tr>
+      <tr><td>일평균 판매속도 <small style="color:var(--text-sub)">최근 30일 순판매 ÷ 30</small></td>
+        <td class="num">${d.avg_daily_sales != null ? Number(d.avg_daily_sales).toFixed(2) + stockUnit + "/일"
+          : (b && b.covered_days_30d < 30 ? `데이터 부족(${b.covered_days_30d}/30일 수집)` : "-")}</td></tr>
+    </tbody></table></div>`;
+  if (!b) return main;
+  const chan = n => `로켓그로스 ${q(b[`rg_qty_${n}d`])} · 마켓플레이스 ${q(b[`mp_qty_${n}d`])}`
+    + (b[`mp_adjust_qty_${n}d`] ? ` (주문 ${q(b[`mp_order_qty_${n}d`])} − 조정 ${q(b[`mp_adjust_qty_${n}d`])})` : "");
+  const opts = Object.entries(b.option_qty_30d || {}).map(([o, n]) => `${esc(o)} ${q(n)}`).join(" · ");
+  const today = b.today || {};
+  const flags = (b.flags || []).map(f => `<li>${esc(f.split(":").slice(1).join(":").trim() || f)}</li>`).join("");
+  return main + `
+    <div class="table-wrap" style="margin-top:6px"><table class="items-table"><tbody>
+      ${isPool ? `<tr><td colspan="2" style="font-size:12px;color:var(--text-sub)">위 값은 공유재고 풀 전체를 DB의 세트 구성수량(set_qty)으로 환산한 합이에요. 아래는 이 옵션이 속한 ERP 상품 자체 판매예요.</td></tr>` : ""}
+      <tr><td>최근 7일 채널별</td><td class="num">${chan(7)} = ${q(b.sales_qty_7d)}</td></tr>
+      <tr><td>최근 30일 채널별</td><td class="num">${chan(30)} = ${q(b.sales_qty_30d)}</td></tr>
+      <tr><td>7일 평균 <small style="color:var(--text-sub)">7일 순판매 ÷ 7 · 참고</small></td>
+        <td class="num">${b.velocity_7d != null ? Number(b.velocity_7d).toFixed(2) + "/일" : `데이터 부족(${b.covered_days_7d}/7일)`}</td></tr>
+      <tr><td>수집 완료</td><td class="num">7일 ${b.covered_days_7d}/7 · 30일 ${b.covered_days_30d}/30${b.wing_zero_days ? ` (판매 0 확인 ${b.wing_zero_days}일 포함)` : ""}</td></tr>
+      <tr><td>오늘 진행 중 <small style="color:var(--text-sub)">7·30일에 미포함</small></td>
+        <td class="num">${today.rg_qty != null ? q(today.rg_qty) + stockUnit : "미수집"}</td></tr>
+      <tr><td>연결된 쿠팡 옵션(30일)</td><td class="num"><small>${opts || "-"}</small></td></tr>
+      <tr><td>기준 단위</td><td class="num"><small>${esc(b.unit_basis || "판매 옵션 수량")}</small></td></tr>
+    </tbody></table></div>
+    ${flags ? `<ul style="font-size:12px;color:#8a4b12;margin:6px 0 0;padding-left:18px">${flags}</ul>` : ""}
+    <p style="font-size:11.5px;color:var(--text-sub);margin:4px 0 0">기준: 로켓그로스는 쿠팡 판매통계 순판매(취소·반품 반영, 다시 빼지 않음), 마켓플레이스는 주문 − 조정. 발주 추천·재고 소진일도 이 판매속도를 씁니다.</p>`;
+}
+
 const tradeTypeOf = p => (p?.trade_type || "사입");
 const tradeTypeOfId = id => tradeTypeOf(erpProducts.find(p => p.id === id));
 
@@ -3806,7 +3853,7 @@ async function viewInventoryDecisions() {
     const meta = INVENTORY_DECISION_META[d.decision] || { label: d.decision, chip: "waiting" };
     const rowLabel = inventoryDecisionLabel(d);
     const stockText = inventoryStockText(d);
-    const velocityText = d.avg_daily_sales != null ? `${d.avg_daily_sales.toFixed(1)}${d.shared_inventory?.role === "child" ? "세트" : ""}/일` : "-";
+    const velocityText = inventoryVelocityText(d);
     const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개` : "-";
     const sharedBadge = inventorySharedInventoryBadge(d);
     const mobileMeta = [stockText, velocityText, inventoryIncomingText(d)].join(" · ");
@@ -3834,7 +3881,7 @@ async function viewInventoryDecisions() {
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${summaryChips}</div>
       <div class="table-wrap"><table class="inv-decision-table">
         <thead><tr>
-          <th>상품</th><th class="num idt-stock">현재재고</th><th class="idt-velocity">판매속도</th>
+          <th>상품</th><th class="num idt-stock">현재재고</th><th class="idt-velocity" title="최근 30일(오늘 제외) 순판매수량 ÷ 30">판매속도(30일)</th>
           <th class="idt-incoming">입고예정</th><th class="idt-outlook">재고전망</th><th>판정</th><th class="num idt-reco">추천발주</th>
         </tr></thead>
         <tbody>${rowsHtml || `<tr><td colspan="7" style="color:var(--text-sub)">데이터 없음</td></tr>`}</tbody>
@@ -3877,10 +3924,7 @@ function openInventoryDecisionDetail(productId) {
         </tbody></table></div>
 
         <h4 style="font-size:13px;margin:14px 0 4px">판매</h4>
-        <div class="table-wrap"><table class="items-table"><tbody>
-          <tr><td>최근 7일 / 30일</td><td class="num">${fmt(d.sales_7d)}${stockUnit} / ${fmt(d.sales_30d)}${stockUnit}</td></tr>
-          <tr><td>일평균 판매속도</td><td class="num">${d.avg_daily_sales != null ? d.avg_daily_sales.toFixed(2) + stockUnit : "-"}</td></tr>
-        </tbody></table></div>
+        ${inventorySalesBasisHtml(d, stockUnit)}
 
         <h4 style="font-size:13px;margin:14px 0 4px">기존 발주 / 입고</h4>
         ${isChild ? `<p style="color:var(--text-sub);font-size:13px">이 옵션은 별도 발주를 등록하지 않아요 — 발주/입고는 기준 상품(${esc(d.shared_inventory.base_product_name || "-")})에서 관리돼요.</p>`
