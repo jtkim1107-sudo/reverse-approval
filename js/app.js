@@ -779,8 +779,10 @@ function salesChainHtml(st) {
       <b style="color:${st.cmNet >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(st.cmNet)}</b>가 남았습니다
       ${st.monthGross ? `<span style="color:var(--text-sub)">(매출의 ${convRate.toFixed(1)}%)</span>` : ""}<br>
       <span style="color:var(--text-sub)">이 남은 돈이 아래 게이지를 채웁니다.</span>
-      ${st.adInfo && st.adInfo.state !== AdCosts.STATE.CONFIRMED && st.adInfo.state !== AdCosts.STATE.MANUAL_ONLY
-        ? `<br><span style="color:var(--amber)">광고비가 아직 확정되지 않아(공헌이익 탭 참고) 이 금액은 잠정입니다.</span>` : ""}
+      ${st.adInfo && st.adInfo.state === AdCosts.STATE.UNDETERMINED
+        ? `<br><span style="color:var(--amber)">정상 수집되지 않은 날의 광고비가 빠져 있어(공헌이익 탭 참고) 이 금액은 미확정입니다.</span>`
+        : st.adInfo && (st.adInfo.state === AdCosts.STATE.ROUNDING_DIFFERENCE || st.adInfo.state === AdCosts.STATE.PENDING_RECON)
+        ? `<br><span style="color:var(--amber)">쿠팡 광고비 반영 · ${AdCosts.cmBadge(st.adInfo).replace(/<[^>]+>/g, "")}</span>` : ""}
     </div>`;
 }
 
@@ -5279,8 +5281,9 @@ async function viewProfit() {
   // 2026-09-11 광고비 = 쿠팡 자동수집 + 계산에 포함된 수동 입력 (js/ad_costs.js)
   const ads = adRowsAll(adSrc);
   const adInfo = adMonthState(adSrc, erpMonth);
-  // 미확정(수집 없는 날) 또는 대사 불일치(일별 합 ≠ WING 구간 합계)면 공헌이익을 확정값으로 보이지 않게
-  const adUndet = adInfo.state === AdCosts.STATE.UNDETERMINED || adInfo.state === AdCosts.STATE.RECONCILIATION_NEEDED;
+  // 정상 수집이 없는 날이 있으면(미확정) 공헌이익을 확정값으로 보이지 않게. 2026-09-11 A안: 쿠팡 기간 합계와의
+  // 반올림 차이(ROUNDING_DIFFERENCE)는 일별 합계를 그대로 반영하고 "잠정 · N원 차이"만 표시해요.
+  const adUndet = adInfo.state === AdCosts.STATE.UNDETERMINED;
   const fixed = (fixRes.data || []).filter(f => f.active !== false);
   profitAdsCache = adSrc.manualRows;                  // 삭제 버튼은 수동 입력 행에만
   profitFixedCache = fixed;
@@ -5404,7 +5407,9 @@ async function viewProfit() {
               const undet = adUndet && label === "쿠팡 광고비";
               return `
             <tr><td style="padding-left:18px;color:var(--text-sub)">− ${label}${undet
-                ? ` <small style="color:var(--amber)">${adInfo.undeterminedDays.length ? `미확정 ${adInfo.undeterminedDays.length}일 제외` : "대사 불일치"}</small>` : ""}</td>
+                ? ` <small style="color:var(--amber)">미확정 ${adInfo.undeterminedDays.length}일 제외</small>`
+                : label === "쿠팡 광고비" && adInfo.state === AdCosts.STATE.ROUNDING_DIFFERENCE
+                ? ` <small style="color:var(--amber)">잠정 · 쿠팡 기간 합계와 ${fmt(Math.abs(adInfo.recon.diff))}원 차이</small>` : ""}</td>
               <td class="num">${undet ? `미확정 (확인된 ₩${fmt(v)})` : `₩${fmt(v)}`}</td>
               <td class="num">${t.revenue ? (v / t.revenue * 100).toFixed(1) : 0}%</td></tr>`; }).join("")}
           <tr style="border-top:2px solid var(--line)">

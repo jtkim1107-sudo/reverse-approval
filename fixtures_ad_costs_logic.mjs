@@ -182,12 +182,13 @@ const rangeRef = (month, start, end, amount, at = "2026-09-11T07:20:00+09:00") =
                 { ad_type: "PA", campaign_name: "구름목욕시간", clicks: 329, amount: 82073, billable_amount: 82073 }] };
   const mis = A.monthAds({ month: "2026-09", today: "2026-09-11", collections: colls, manualRows: [],
                            refs: [rangeRef("2026-09", "2026-09-01", "2026-09-10", 646490), settle] });
-  check(mis.state === A.STATE.RECONCILIATION_NEEDED, "일별 합 646,517 ≠ 구간 646,490 → 대사 불일치(확정 연결 안 함)", mis.state);
+  check(mis.state === A.STATE.ROUNDING_DIFFERENCE, "A안: 일별 합 646,517 ≠ 기간 646,490 → ROUNDING_DIFFERENCE(공헌이익 반영, 잠정)", mis.state);
   check(mis.recon.diff === 27 && mis.recon.dailySum === 646517, "차이 27원을 그대로 보여줌(보정 없음)", mis.recon);
-  check(mis.totals.net === 646517, "광고비 값 자체는 일별 원천 그대로(맞추려고 고치지 않음)", mis.totals);
-  check(A.cmBadge(mis).includes("공헌이익 미확정") && A.cmBadge(mis).includes("₩27"), "상단 배지: 대사 차이·공헌이익 미확정");
+  check(mis.totals.net === 646517, "A안: ERP 광고비 = 일별 합계 646,517 그대로(27원을 날짜·캠페인에 배분·보정하지 않음)", mis.totals);
+  check(mis.rows.filter((r) => r.source === "AUTO").reduce((s2, r) => s2 + r.net, 0) === 646517 && mis.rows.length === 10, "계산 행 10일 = 일별 원천값 그대로(차이 행을 만들지 않음)");
+  check(A.cmBadge(mis).includes("잠정 · 쿠팡 기간 합계와 27원 차이") && !A.cmBadge(mis).includes("미확정"), "상단 배지: '잠정 · 쿠팡 기간 합계와 27원 차이'(0원·미수집 처리 아님)", A.cmBadge(mis));
   const h = A.cardHtml(mis, []);
-  check(h.includes("대사 불일치 · 공헌이익 미연결") && h.includes("₩646,517") && h.includes("₩646,490") && h.includes("₩27 · 불일치"), "대사 패널: 일별 합·구간 합·차이");
+  check(h.includes("잠정 · 쿠팡 기간 합계와 27원 차이") && h.includes("₩646,517") && h.includes("₩646,490") && h.includes("₩27 · 반올림 차이") && h.includes("ROUNDING_DIFFERENCE"), "대사 패널: 일별 합·기간 합·차이(ROUNDING_DIFFERENCE)");
   check(h.includes("로켓그로스 정산 청구가능 광고비") && h.includes("₩608,233") && h.includes("부가세 ₩60,824 별도"), "정산 청구가능 광고비·부가세 별도 표시");
   check(h.includes("원터치 휴지통") && h.includes("₩172,041"), "캠페인별 광고비(정산 광고비 내역)");
   const matched = A.monthAds({ month: "2026-09", today: "2026-09-11", collections: colls, manualRows: [],
@@ -196,12 +197,12 @@ const rangeRef = (month, start, end, amount, at = "2026-09-11T07:20:00+09:00") =
   const older = A.monthAds({ month: "2026-09", today: "2026-09-11", collections: colls, manualRows: [],
     refs: [rangeRef("2026-09", "2026-09-01", "2026-09-10", 646517, "2026-09-11T07:00:00+09:00"),
            rangeRef("2026-09", "2026-09-01", "2026-09-10", 646490, "2026-09-11T08:00:00+09:00")] });
-  check(older.state === A.STATE.RECONCILIATION_NEEDED, "월 참고값은 가장 최근 수집을 씀", older.state);
+  check(older.state === A.STATE.ROUNDING_DIFFERENCE, "월 참고값은 가장 최근 수집을 씀", older.state);
   const hole = A.monthAds({ month: "2026-09", today: "2026-09-11", collections: colls.filter((c) => c.expense_date !== "2026-09-05"),
                             manualRows: [], refs: [rangeRef("2026-09", "2026-09-01", "2026-09-10", 646490)] });
   check(hole.state === A.STATE.UNDETERMINED && hole.recon.diff === null, "기간 안에 미확정 날짜가 있으면 대사하지 않고 미확정", hole.recon);
   const noref = A.monthAds({ month: "2026-09", today: "2026-09-11", collections: colls, manualRows: [] });
-  check(noref.state === A.STATE.RECONCILIATION_NEEDED, "구간 합계를 아직 못 받았으면 확정하지 않음", noref.state);
+  check(noref.state === A.STATE.PENDING_RECON && noref.totals.net === 646517 && A.cmBadge(noref).includes("대사 전"), "기간 합계를 아직 못 받았으면 일별 합계 반영 + '잠정 · 대사 전'", noref.state);
 }
 
 // ── 6. 브라우저 파일에 비밀값 없음 ─────────────────────────────────────────

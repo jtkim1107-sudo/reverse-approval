@@ -38,7 +38,10 @@
   const STATE = {
     CONFIRMED: "CONFIRMED",            // 자동수집 기간 전 날짜가 정상 수집됨
     UNDETERMINED: "UNDETERMINED",      // 정상 수집이 없는 날이 있음 → 공헌이익 미확정
-    RECONCILIATION_NEEDED: "RECONCILIATION_NEEDED",  // 일별 합계 ≠ WING 구간 합계 → 공헌이익에 확정 연결 안 함
+    // 2026-09-11 사용자 확정(A안): 일별 광고비 합계를 ERP 광고비·공헌이익에 그대로 쓰고,
+    // 쿠팡 기간 합계와의 차이는 날짜·캠페인에 배분하거나 보정하지 않고 차이 그대로 보존·표시해요.
+    ROUNDING_DIFFERENCE: "ROUNDING_DIFFERENCE",  // 일별 합 ≠ 쿠팡 기간 합계(반올림) → 공헌이익 반영, "잠정" 표시
+    PENDING_RECON: "PENDING_RECON",              // 쿠팡 기간 합계를 아직 못 받음 → 공헌이익 반영, "잠정" 표시
     MANUAL_ONLY: "MANUAL_ONLY",        // 자동수집 시작 전 달 - 수동 입력 기준
   };
 
@@ -107,9 +110,8 @@
    *   manualRows   ad_costs 행 (수동 입력)
    *   vatEnabled   부가세 계산 사용 여부(설정)
    *   manualVatIncluded  수동 입력 금액의 부가세 포함 여부(설정 expenseIncludesVat)
-   *   refs         ad_cost_monthly_refs 행 (월 대사·캠페인 상세). 사용자 지시 "일별 합계와 월 합계를
-   *                WING 과 대조해 정확히 일치할 때만 공헌이익에 연결" - 차이가 1원이라도 있으면
-   *                RECONCILIATION_NEEDED 로 두고 확정값처럼 보이지 않게 해요(맞추기 위한 보정 없음).
+   *   refs         ad_cost_monthly_refs 행 (월 대사·캠페인 상세). A안: 일별 합계를 쓰고, 쿠팡 기간
+   *                합계와 차이가 있으면 ROUNDING_DIFFERENCE 로 차이만 보존·표시(보정·배분 없음).
    * @returns {object} { rows, manual, days, state, totals, lastOkAt, lastFailure }
    *   rows: 계산에 넣을 행 [{date, channel, net, vat, amount, source, id}]
    */
@@ -217,7 +219,8 @@
 
     const state = !anyAuto ? STATE.MANUAL_ONLY
       : undetermined.length ? STATE.UNDETERMINED
-      : (!recon || !recon.matched) ? STATE.RECONCILIATION_NEEDED : STATE.CONFIRMED;
+      : !recon ? STATE.PENDING_RECON
+      : recon.matched ? STATE.CONFIRMED : STATE.ROUNDING_DIFFERENCE;
 
     const sum = (arr, k) => arr.reduce((s, r) => s + (Number(r[k]) || 0), 0);
     const autoRowsIn = rows.filter((r) => r.source === "AUTO");
@@ -297,8 +300,11 @@
     if (info.state === STATE.UNDETERMINED) {
       return `<div class="ad-cm-note ad-warn">광고비 미확정 ${info.undeterminedDays.length}일 · 공헌이익 미확정</div>`;
     }
-    if (info.state === STATE.RECONCILIATION_NEEDED) {
-      return `<div class="ad-cm-note ad-warn">광고비 대사 ${info.recon ? `차이 ${won(info.recon.diff)}` : "전"} · 공헌이익 미확정</div>`;
+    if (info.state === STATE.ROUNDING_DIFFERENCE) {
+      return `<div class="ad-cm-note ad-warn">잠정 · 쿠팡 기간 합계와 ${won(Math.abs(info.recon.diff)).replace("₩", "")}원 차이</div>`;
+    }
+    if (info.state === STATE.PENDING_RECON) {
+      return `<div class="ad-cm-note ad-warn">잠정 · 쿠팡 기간 합계 대사 전</div>`;
     }
     if (info.todayPending) return `<div class="ad-cm-note ad-muted">오늘 광고비는 내일 수집 후 반영</div>`;
     return "";
@@ -311,17 +317,19 @@
   function cardHtml(info, detailRows, opts = {}) {
     const t = info.totals;
     const stateChip = info.state === STATE.UNDETERMINED ? chip(["광고비 미확정", "warn"])
-      : info.state === STATE.RECONCILIATION_NEEDED ? chip(["대사 불일치 · 공헌이익 미연결", "warn"])
+      : info.state === STATE.ROUNDING_DIFFERENCE ? chip([`잠정 · 쿠팡 기간 합계와 ${won(Math.abs(info.recon.diff)).replace("₩", "")}원 차이`, "warn"])
+      : info.state === STATE.PENDING_RECON ? chip(["잠정 · 쿠팡 기간 합계 대사 전", "warn"])
       : info.state === STATE.MANUAL_ONLY ? chip(["수동 입력 기준", "muted"]) : chip(["정상 수집 · 대사 일치", "ok"]);
     const rc = info.recon, st = info.settlement;
     const reconPanel = info.days.some((x) => x.autoPeriod) ? `
       <div class="ad-recon">
         <div class="ad-recon-row"><span>일별 광고비 합계${rc ? ` (${esc(rc.periodStart.slice(5))}~${esc(rc.periodEnd.slice(5))})` : ""}</span><b>${rc ? won(rc.dailySum) : "—"}</b></div>
         <div class="ad-recon-row"><span>WING 구간 합계 (같은 기간 한 번에 조회 · 홈 '최근 7일' 위젯과 같은 계산)</span><b>${rc ? won(rc.rangeAmount) : "수집 전"}</b></div>
-        <div class="ad-recon-row"><span>차이</span><b class="${rc && rc.matched ? "" : "ad-warn-text"}">${rc ? (rc.allOk ? (rc.matched ? "0원 · 일치" : `${won(rc.diff)} · 불일치`) : "기간 안에 미확정 날짜 있음") : "—"}</b></div>
+        <div class="ad-recon-row"><span>차이 (ROUNDING_DIFFERENCE · 보정·배분하지 않음)</span><b class="${rc && rc.matched ? "" : "ad-warn-text"}">${rc ? (rc.allOk ? (rc.matched ? "0원 · 일치" : `${won(rc.diff)} · 반올림 차이`) : "기간 안에 미확정 날짜 있음") : "—"}</b></div>
         ${st ? `<div class="ad-recon-row"><span>로켓그로스 정산 청구가능 광고비(이 달, 로켓그로스 상품분) · 부가세 ${won(st.vat)} 별도</span><b>${won(st.billable)}</b></div>` : ""}
         <p class="ad-sub">일별 값은 쿠팡이 하루 단위로 알려 준 금액 그대로이고, 구간 합계는 쿠팡이 기간 전체를 한 번에 계산한 금액이에요.
-          쿠팡 쪽 반올림 단위가 달라 몇 원 차이가 날 수 있어요. 차이가 있으면 맞추려고 고치지 않고, 공헌이익에 확정값으로 연결하지 않습니다.</p>
+          쿠팡 쪽 반올림 단위가 달라 몇 원 차이가 날 수 있어요. 공헌이익에는 일별 합계를 쓰고, 차이는 특정 날짜·캠페인에
+          나누거나 고치지 않고 그대로 표시합니다(잠정).</p>
       </div>` : "";
     const failNote = info.lastFailure
       ? `<div class="ad-note ad-warn">최근 수집 실패 (${esc(info.lastFailure.date)}): ${esc(reasonText(info.lastFailure.error))}
@@ -411,7 +419,7 @@
       ${resNote}${autoErr}${undetNote}${failNote}${recon}${reconPanel}
       <div class="grid-stats" style="margin-top:10px">
         <div class="stat"><div class="stat-label">광고비 (공급가액)</div>
-          <div class="stat-value ${info.state !== STATE.CONFIRMED && info.state !== STATE.MANUAL_ONLY ? "amber" : ""}">${won(t.net)}${info.state === STATE.UNDETERMINED ? " <small>+ 미확정</small>" : info.state === STATE.RECONCILIATION_NEEDED ? " <small>잠정</small>" : ""}</div></div>
+          <div class="stat-value ${info.state !== STATE.CONFIRMED && info.state !== STATE.MANUAL_ONLY ? "amber" : ""}">${won(t.net)}${info.state === STATE.UNDETERMINED ? " <small>+ 미확정</small>" : (info.state === STATE.ROUNDING_DIFFERENCE || info.state === STATE.PENDING_RECON) ? " <small>잠정</small>" : ""}</div></div>
         <div class="stat"><div class="stat-label">부가세</div><div class="stat-value">${won(t.vat)}</div></div>
         <div class="stat"><div class="stat-label">자동수집</div><div class="stat-value">${won(t.autoNet)}</div></div>
         <div class="stat"><div class="stat-label">수동 입력(포함분)</div><div class="stat-value">${won(t.manualNet)}</div></div>
