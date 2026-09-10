@@ -4,7 +4,8 @@
 // 그대로 뽑아 실행해요(미러 아님 - 배포되는 코드 그대로).
 //   · 목록과 상세 모달이 같은 필드(sales_7d/sales_30d/avg_daily_sales)를 같은 값으로 보여줌
 //   · 30일 중 일부만 수집되면 평균 대신 '데이터 부족 n/30일'
-//   · 채널별(RG/MP) 합이 합계와 같게 표시, 오늘 진행 중은 별도
+//   · 발주 판매량·속도는 RG 판매통계 NET 만. MP 는 참고로 분리 표시하고 합계에 넣지 않음
+//     (MP 판매가 있어도 RG 표시값이 불변인지 별도 검증). 오늘 진행 중은 별도
 //   · 공유재고 풀 base 는 DB set_qty 환산 합임을 명시
 import { readFileSync } from "fs";
 const src = readFileSync(new URL("./js/app.js", import.meta.url), "utf8");
@@ -39,11 +40,19 @@ check(list === "7.03/일", "목록 판매속도 = 30일 기준", list);
 check(modal.includes("7.03개/일"), "상세 일평균 = 목록과 같은 값", modal.slice(0, 200));
 check(modal.includes("66개 / 211개"), "상세 7일/30일 = 같은 필드 값");
 check(modal.includes("09-04~09-10") && modal.includes("08-12~09-10") && modal.includes("오늘 제외"), "기간(KST 완료일) 표시");
-check(modal.includes("최근 30일 순판매 ÷ 30"), "계산식 표시");
+check(modal.includes("최근 30일 로켓그로스 순판매 ÷ 30"), "계산식 표시(RG 만)");
 
 console.log("=== 채널별 검산 · 오늘 · 옵션 · 단위 ===");
-check(modal.includes("로켓그로스 211 · 마켓플레이스 0 = 211"), "30일 채널별 합 = 합계");
-check(modal.includes("로켓그로스 66 · 마켓플레이스 0 = 66"), "7일 채널별 합 = 합계");
+check(modal.includes("로켓그로스 판매통계 순판매") && modal.includes("66 / 211"), "발주 기준 = RG 7일/30일");
+check(modal.includes("판매자배송") && modal.includes("참고 · 발주 계산 제외"), "MP 는 참고로 분리");
+
+console.log("=== MP 판매가 있어도 RG 표시값 불변(2026-09-11 정책) ===");
+const withMp = { ...d, sales_basis: { ...basis, mp_qty_7d: 5, mp_qty_30d: 20, mp_order_qty_30d: 21, mp_adjust_qty_30d: 1 } };
+const mm = strip(inventorySalesBasisHtml(withMp, "개"));
+check(inventoryVelocityText(withMp) === list, "목록 판매속도 불변(MP 무관)", inventoryVelocityText(withMp));
+check(mm.includes("66개 / 211개") && mm.includes("7.03개/일"), "상세 7일/30일·일평균 불변");
+check(mm.includes("5 / 20 (주문 21 − 조정 1)"), "MP 는 참고 칸에만(주문 − 조정)", mm.slice(mm.indexOf("판매자배송"), mm.indexOf("판매자배송") + 80));
+check(!mm.includes("= 216") && !mm.includes("= 71"), "RG+MP 합계를 만들지 않음");
 check(modal.includes("9.43/일"), "7일 평균(참고) = 7일 ÷ 7");
 check(modal.includes("7일 7/7 · 30일 30/30") && modal.includes("판매 0 확인 12일"), "수집 완료 일수 표시");
 check(modal.includes("오늘 진행 중") && modal.includes("3개"), "오늘은 따로(7·30일 미포함)");
