@@ -2590,7 +2590,7 @@ async function viewSales() {
   } catch (e) { console.error("매출 브리핑 상세 카드:", e); }
 
   return `
-    ${briefingHtml}
+    <div id="rg-sales-statistics-mount">${briefingHtml}</div>
     <div class="card">
       <div class="card-head"><h2>매출 입력</h2>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
