@@ -1528,6 +1528,11 @@ async function viewDashboard() {
   const myTasks = (taskRes.data || []).filter(t => t.assignee_id === me.id && t.status === "open").length;
   const products = prodRes.data || [];
   const nowMonth = today().slice(0, 7);   // erpMonth(전역)를 건드리면 사용자가 보던 달이 몰래 바뀜
+  const dashboardSales = await buildMonthlyNetSales(
+    nowMonth,
+    dedupeAutoOverManualSales(saleRes.data || []),
+    id => products.find(p => p.id === id)?.name || id,
+  );
 
   // 팀 카드 — 실패해도 대시보드 나머지는 보여야 하므로 따로 감싼다
   let teamHtml = "";
@@ -1563,8 +1568,8 @@ async function viewDashboard() {
     briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: false });
   } catch (e) { console.error("매출 브리핑 카드:", e); }
 
-  const monthSales = dedupeAutoOverManualSales(saleRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
-    .reduce((s, r) => s + Number(r.amount), 0);
+  const monthSales = dashboardSales.summary?.has_rg_statistics
+    ? dashboardSales.summary.total.net_amount : null;
   const monthBuys = (buyRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
     .reduce((s, r) => s + Number(r.amount), 0)
     + (costRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
@@ -1581,7 +1586,7 @@ async function viewDashboard() {
   return `
     ${teamHtml}
     ${syncHealthHtml}
-    ${briefingHtml}
+    <div id="rg-sales-statistics-mount">${briefingHtml}</div>
     <div class="grid-stats">
       <div class="stat" onclick="location.hash='#/inbox'">
         <div class="stat-label">내 결재 대기</div>
@@ -1604,8 +1609,9 @@ async function viewDashboard() {
         <div class="stat-value blue">₩${fmt(monthTotal)}</div>
       </div>
       <div class="stat" onclick="location.hash='#/sales'">
-        <div class="stat-label">이번 달 주문매출</div>
-        <div class="stat-value blue">₩${fmt(monthSales)}</div>
+        <div class="stat-label">이번 달 순매출</div>
+        <div class="stat-value blue">${monthSales == null ? "수집 대기" : `₩${fmt(monthSales)}`}</div>
+        <div style="font-size:11px;color:var(--text-sub);margin-top:3px">쿠팡 판매통계 NET 기준</div>
       </div>
       <div class="stat" onclick="location.hash='#/purchases'">
         <div class="stat-label">이번 달 매입</div>
@@ -2580,6 +2586,25 @@ async function loadMonthlySalesStatistics(month) {
   return data;
 }
 
+async function buildMonthlyNetSales(month, salesRows, productName = prodName) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const dateFrom = `${month}-01`;
+  const dateTo = `${month}-${String(new Date(year, monthNumber, 0).getDate()).padStart(2, "0")}`;
+  const [statisticsResult, adjustmentResult] = await Promise.allSettled([
+    loadMonthlySalesStatistics(month),
+    loadSalesAdjustments(dateFrom, dateTo),
+  ]);
+  if (statisticsResult.status !== "fulfilled") return { summary: null, error: statisticsResult.reason };
+  if (adjustmentResult.status !== "fulfilled") return { summary: null, error: adjustmentResult.reason };
+  const summary = globalThis.SalesMonthlySummary?.build({
+    month,
+    statisticsRows: statisticsResult.value,
+    salesRows,
+    adjustmentRows: adjustmentResult.value.rows || [],
+    productName,
+  });
+  return { summary, error: null };
+}
 function monthlySalesSummaryHtml(summary, error) {
   if (error || !summary?.has_rg_statistics) {
     return `<div role="alert" style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:12px;margin:8px 0 14px">
@@ -5605,43 +5630,52 @@ async function viewReport() {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     months.push(`${d.getFullYear()}-${pad2(d.getMonth() + 1)}`);
   }
-  const monthRows = months.map(m => {
-    const sale = sales.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
+  const summaries = await Promise.all(months.map(m => buildMonthlyNetSales(m, sales)));
+  const monthRows = months.map((m, index) => {
+    const summary = summaries[index].summary;
+    const sale = summary?.has_rg_statistics ? summary.total.net_amount : null;
     const goods = buys.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
     const extra = costs.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
     const buy = goods + extra;
-    return { m, sale, buy, goods, extra, diff: sale - buy };
+    return { m, sale, buy, goods, extra, diff: sale == null ? null : sale - buy };
   });
 
   // 이번 달 채널별 / 품목별
   const nowMonth = months[0];
-  const monthSales = sales.filter(r => monthOf(r) === nowMonth);
+  const currentSummary = summaries[0].summary?.has_rg_statistics ? summaries[0].summary : null;
+  const monthSales = currentSummary?.entries || [];
   const byChannel = {};
   monthSales.forEach(r => {
     const c = r.channel || "기타";
-    byChannel[c] = (byChannel[c] || 0) + Number(r.amount);
+    byChannel[c] = (byChannel[c] || 0) + Number(r.net_amount);
   });
   const byProduct = {};
   monthSales.forEach(r => {
-    if (!byProduct[r.product_id]) byProduct[r.product_id] = { qty: 0, amount: 0 };
-    byProduct[r.product_id].qty += Number(r.qty);
-    byProduct[r.product_id].amount += Number(r.amount);
+    const key = r.product_id || `unmatched:${r.product_name}`;
+    if (!byProduct[key]) byProduct[key] = { qty: 0, amount: 0, name: r.product_name };
+    byProduct[key].qty += Number(r.net_qty);
+    byProduct[key].amount += Number(r.net_amount);
   });
   const topProducts = Object.entries(byProduct)
     .sort((a, b) => b[1].amount - a[1].amount).slice(0, 5);
 
   // 이번 달 사입/위탁 매출 분리
-  const saipSales = monthSales.filter(r => tradeTypeOfId(r.product_id) === "사입")
-    .reduce((s, r) => s + Number(r.amount), 0);
-  const witakSales = monthSales.filter(r => tradeTypeOfId(r.product_id) === "위탁")
-    .reduce((s, r) => s + Number(r.amount), 0);
+  const classifiedSales = monthSales.filter(r => r.product_id);
+  const saipSales = classifiedSales.filter(r => tradeTypeOfId(r.product_id) === "사입")
+    .reduce((s, r) => s + Number(r.net_amount), 0);
+  const witakSales = classifiedSales.filter(r => tradeTypeOfId(r.product_id) === "위탁")
+    .reduce((s, r) => s + Number(r.net_amount), 0);
+  const unclassifiedSales = monthSales.filter(r => !r.product_id)
+    .reduce((s, r) => s + Number(r.net_amount), 0);
 
   return `
     <div class="grid-stats">
-      <div class="stat"><div class="stat-label">${nowMonth} 사입 매출</div>
-        <div class="stat-value blue">₩${fmt(saipSales)}</div></div>
-      <div class="stat"><div class="stat-label">${nowMonth} 위탁 매출</div>
-        <div class="stat-value amber">₩${fmt(witakSales)}</div></div>
+      <div class="stat"><div class="stat-label">${nowMonth} 사입 순매출</div>
+        <div class="stat-value blue">${currentSummary ? `₩${fmt(saipSales)}` : "수집 대기"}</div></div>
+      <div class="stat"><div class="stat-label">${nowMonth} 위탁 순매출</div>
+        <div class="stat-value amber">${currentSummary ? `₩${fmt(witakSales)}` : "수집 대기"}</div></div>
+      ${unclassifiedSales ? `<div class="stat"><div class="stat-label">${nowMonth} 미매핑 순매출</div>
+        <div class="stat-value">₩${fmt(unclassifiedSales)}</div></div>` : ""}
     </div>
     <div class="card">
       <h2>최근 6개월 매출 · 매입</h2>
@@ -5650,19 +5684,20 @@ async function viewReport() {
         <tbody>${monthRows.map(r => `
           <tr>
             <td><b>${r.m}</b></td>
-            <td class="num">₩${fmt(r.sale)}</td>
+            <td class="num">${r.sale == null ? "수집 대기" : `₩${fmt(r.sale)}`}</td>
             <td class="num">₩${fmt(r.buy)}${r.extra ? `<br><small style="color:var(--text-sub)">상품 ₩${fmt(r.goods)} + 택배·운송 ₩${fmt(r.extra)}</small>` : ""}</td>
-            <td class="num" style="font-weight:700;color:${r.diff >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(r.diff)}</td>
+            <td class="num" style="font-weight:700;color:${r.diff == null ? "var(--text-sub)" : r.diff >= 0 ? "var(--green)" : "var(--red)"}">${r.diff == null ? "—" : `₩${fmt(r.diff)}`}</td>
           </tr>`).join("")}
         </tbody>
       </table></div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ 매입 = 상품 매입 + 택배비·운송비. 차액은 단순 매출−매입입니다. (기간 내 재고 변동·경비 미반영)
+        ※ 매출은 로켓그로스 판매통계 NET + 판매자배송 주문−취소·반품 기준입니다. 판매통계 미수집 월은 주문 합계로 대신하지 않습니다.<br>
+        ※ 매입 = 상품 매입 + 택배비·운송비. 차액은 단순 순매출−매입입니다. (기간 내 재고 변동·경비 미반영)
       </p>
     </div>
 
     <div class="card">
-      <h2>${nowMonth} 채널별 매출</h2>
+      <h2>${nowMonth} 채널별 순매출</h2>
       <div class="table-wrap"><table>
         <thead><tr><th>채널</th><th class="num">매출액</th><th class="num">비중</th></tr></thead>
         <tbody>${Object.keys(byChannel).length ? Object.entries(byChannel)
@@ -5676,11 +5711,11 @@ async function viewReport() {
     </div>
 
     <div class="card">
-      <h2>${nowMonth} 품목별 매출 TOP 5</h2>
+      <h2>${nowMonth} 품목별 순매출 TOP 5</h2>
       <div class="table-wrap"><table>
         <thead><tr><th>품목</th><th class="num">판매 수량</th><th class="num">매출액</th></tr></thead>
         <tbody>${topProducts.length ? topProducts.map(([pid, v]) => `
-          <tr><td><b>${esc(prodName(pid))}</b></td>
+          <tr><td><b>${esc(v.name || prodName(pid))}</b></td>
             <td class="num">${fmt(v.qty)}</td><td class="num">₩${fmt(v.amount)}</td></tr>`).join("")
           : `<tr><td colspan="3" class="empty">이번 달 매출이 없습니다</td></tr>`}
         </tbody>
@@ -8712,7 +8747,23 @@ async function viewAiReport() {
       </p>
     </div>`;
   }
-  return reports.map((r, i) => `
+  const latestDate = String(reports[0].date || "").slice(0, 10);
+  const { sales } = await loadErpBase();
+  const aiSales = await buildMonthlyNetSales(latestDate.slice(0, 7), sales);
+  const latestSales = globalThis.SalesMonthlySummary?.forDate(aiSales.summary, latestDate);
+  const salesReference = latestSales?.collected ? `
+    <div class="card" style="border:2px solid var(--brand)">
+      <div class="card-head"><h2>📊 ${esc(latestDate)} AI 리포트 매출 기준</h2><span class="chip approved">쿠팡 판매통계 NET</span></div>
+      <div class="grid-stats">
+        <div class="stat"><div class="stat-label">순매출</div><div class="stat-value blue">₩${fmt(latestSales.net_amount)}</div></div>
+        <div class="stat"><div class="stat-label">순 판매수량</div><div class="stat-value">${fmt(latestSales.net_qty)}개</div></div>
+        <div class="stat"><div class="stat-label">취소·반품</div><div class="stat-value amber">₩${fmt(latestSales.cancel_amount)} · ${fmt(latestSales.cancel_qty)}개</div></div>
+      </div>
+      <p style="font-size:12px;color:var(--text-sub);margin-top:8px">아래 AI 문장은 생성 당시 기록이며, 매출 판단은 이 순매출 기준값을 사용합니다.</p>
+    </div>` : `
+    <div class="card"><b>${esc(latestDate)} 매출 수집 대기</b>
+      <p style="font-size:12px;color:var(--text-sub);margin-top:6px">주문 합계를 대신 표시하지 않습니다.</p></div>`;
+  return salesReference + reports.map((r, i) => `
     <div class="card" ${i === 0 ? 'style="border:2px solid var(--brand)"' : ""}>
       <div class="card-head">
         <h2>${i === 0 ? "🤖 최신 리포트 · " : ""}${esc(r.date)}</h2>

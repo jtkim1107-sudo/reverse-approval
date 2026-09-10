@@ -35,6 +35,14 @@ check(out.total, { net_qty: 23, net_amount: 238440 }, "월 전체 순매출 합�
 check(out.entries.length, 4, "날짜+상품+채널 단위 4행");
 check(out.entries.some(x => x.key === "2026-09-09|P3|쿠팡 판매자배송" && x.order_count === 2), true, "두 주문을 상품별 한 행으로 집계");
 check(out.entries.some(x => x.key === "2026-09-09|P1|쿠팡 로켓그로스" && x.net_qty === 25), true, "RG 주문원장과 RG 조정을 이중 반영하지 않음");
+check(win.SalesMonthlySummary.forDate(out, "2026-09-09"), {
+  date: "2026-09-09",
+  entries: out.entries.filter(x => x.date === "2026-09-09"),
+  net_qty: 21, net_amount: 214640,
+  gross_qty: 29, gross_amount: 354400,
+  cancel_qty: 8, cancel_amount: 139760,
+  collected: true,
+}, "AI 일자 기준도 월 집계와 같은 NET에서 계산");
 
 console.log(failures ? `실패 ${failures}건` : "전체 통과");
 process.exit(failures ? 1 : 0);

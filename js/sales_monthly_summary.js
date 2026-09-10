@@ -112,5 +112,18 @@
     };
   }
 
-  global.SalesMonthlySummary = { build, RG_CHANNEL };
+  function forDate(summary, date) {
+    if (!summary?.has_rg_statistics || !date) return null;
+    const entries = summary.entries.filter((row) => row.date === date);
+    const sum = (field) => entries.reduce((total, row) => total + n(row[field]), 0);
+    return {
+      date, entries,
+      net_qty: sum("net_qty"), net_amount: sum("net_amount"),
+      gross_qty: sum("gross_qty"), gross_amount: sum("gross_amount"),
+      cancel_qty: sum("cancel_qty"), cancel_amount: sum("cancel_amount"),
+      collected: summary.collected_dates.includes(date),
+    };
+  }
+
+  global.SalesMonthlySummary = { build, forDate, RG_CHANNEL };
 })(window);
