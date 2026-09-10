@@ -133,5 +133,15 @@ const xss = P.render({
 check(xss.includes("<script>bad()"), false, "옵션명이 이스케이프됨");
 check(xss.includes("&lt;img src=x"), true, "옵션 ID도 이스케이프됨");
 
+console.log("\n=== H. 인증 방식 ===");
+// 목적은 "프런트에 시크릿을 심지 않는 것"이지 "인증하지 않는 것"이 아니에요.
+// 사용자 Supabase 세션 JWT 를 그대로 재사용합니다(app.js 기존 방식과 동일).
+check(src.includes("sb.auth.getSession"), true, "[필수] 세션 JWT 를 Supabase 클라이언트에서 가져옴");
+check(src.includes("Authorization: `Bearer ${jwt}`"), true, "[필수] Authorization 헤더로 전송");
+check(/sb_secret_|service_role|SUPABASE_SERVICE|SUPABASE_SECRET/.test(src), false,
+  "[필수] 시크릿 키 문자열이 패널에 없음");
+check(/apikey/.test(src), false, "[필수] apikey 헤더를 직접 만들지 않음");
+check(src.includes('credentials: "omit"'), true, "쿠키는 보내지 않음");
+
 console.log(`\n=== 결과: ${failures === 0 ? "전체 통과" : failures + "건 실패"} ===`);
 process.exit(failures === 0 ? 0 : 1);

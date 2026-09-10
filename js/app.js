@@ -10,6 +10,7 @@
 const SUPA_URL = "https://lqdgoqlkfckifqyjhnon.supabase.co";
 const SUPA_KEY = "sb_publishable_MV6Ph9WOrv0nzVIvseXlLw_O5WhfQPv"; // publishable key (공개 가능)
 const sb = window.supabase.createClient(SUPA_URL, SUPA_KEY);
+window.sb = sb;   // 분리 모듈(js/sales_statistics_panel.js)이 세션 JWT를 재사용하려고 참조해요
 
 // 쿠팡 WING 실제 제출 backend (taltal-server, GCP Compute Engine). 이 프론트는
 // 여기로 "제출 요청"만 보내고(내 Supabase 로그인 세션 JWT를 그대로 실어서),

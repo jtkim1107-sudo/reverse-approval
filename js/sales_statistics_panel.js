@@ -280,8 +280,29 @@
     </div>`;
   }
 
+  /* 인증은 *** 로그인한 사용자의 Supabase 세션 JWT *** 를 그대로 씁니다.
+     app.js의 fetchInventoryDecisions() 등과 완전히 같은 방식이에요.
+     새 비밀값을 프런트에 심지 않기 위해서입니다 - 서버 쓰기용 자격증명은
+     브라우저에 절대 오면 안 되고, 서버에서만 씁니다.
+     (이 파일에는 비밀값 관련 문자열 자체를 두지 않아 grep 검사가 깨끗합니다) */
+  async function sessionJwt() {
+    const sb = global.sb || (global.supabase && global.__sbClient);
+    if (!sb || !sb.auth || typeof sb.auth.getSession !== "function") return null;
+    try {
+      const { data } = await sb.auth.getSession();
+      return (data && data.session && data.session.access_token) || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   async function fetchJson(path) {
-    const res = await fetch(`${API_BASE}${path}`, { credentials: "omit" });
+    const jwt = await sessionJwt();
+    if (!jwt) throw new Error("로그인 세션이 없어요.");
+    const res = await fetch(`${API_BASE}${path}`, {
+      credentials: "omit",
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     return res.json();
   }
