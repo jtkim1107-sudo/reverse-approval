@@ -1553,13 +1553,26 @@ async function viewDashboard() {
     teamHtml = celebrationHtml(cel) + teamCardHtml(st, g, hy, true) + questsHtml(st, g, hy);
   } catch (e) { console.error("팀 카드:", e); }
 
-  // 2026-09-10 [사용자 명시: "누락 기록 코드뿐 아니라 실제 화면 조회·미해결 건수·
-  // 마지막 수집 성공 시각까지 연결"] 매핑이 없어 ERP에 안 들어간 매출과 동기화
-  // 상태를 대시보드에 띄워요. 실패해도 대시보드 나머지는 그대로 보여야 하므로
-  // 별도 try로 감쌉니다.
-  let syncHealthHtml = "";
-  try { syncHealthHtml = await renderSyncHealthCard(); }
-  catch (e) { console.error("동기화 상태 카드:", e); }
+  // 2026-09-10 [사용자 지시: "`자동 수집 상태` 카드 전체를 대시보드에서 숨겨. 자동
+  // 수집 기능 자체와 상태 기록은 삭제하지 말고 화면에서만 제거해. 그 자리에 `오늘
+  // 로켓그로스 판매현황` 카드를 표시해."] renderSyncHealthCard()와 누락 매출 화면
+  // (#/unmatched)은 그대로 두고 대시보드에서 부르지만 않아요.
+  // 숫자는 위 dashboardSales(공통 집계 SalesMonthlySummary)에서만 꺼내므로 매출 입력
+  // 화면과 같은 값입니다. 오늘 값이 아직 없으면 가장 최근 수집일을 기준일과 함께 보여줘요.
+  let todaySalesHtml = "";
+  try {
+    const td = today();
+    const summary = dashboardSales.summary;
+    const dates = summary?.collected_dates || [];
+    const shownDate = dates.includes(td) ? td : (dates[dates.length - 1] || td);
+    const day = globalThis.SalesMonthlySummary?.forDate(summary, shownDate, { rgOnly: true });
+    const [state, todayState] = await Promise.all([
+      globalThis.SalesRefresh?.loadDayState(shownDate),
+      shownDate === td ? null : globalThis.SalesRefresh?.loadDayState(td),
+    ]);
+    todaySalesHtml = globalThis.SalesRefresh?.todayCardHtml({
+      day, date: shownDate, today: td, state, todayState }) || "";
+  } catch (e) { console.error("오늘 로켓그로스 판매현황 카드:", e); }
 
   // 어제 매출 브리핑 카드 - 실패해도(테이블 아직 없음 등) 대시보드 나머지는 보여야 하므로 따로 감쌈
   let briefingHtml = "";
@@ -1585,7 +1598,7 @@ async function viewDashboard() {
 
   return `
     ${teamHtml}
-    ${syncHealthHtml}
+    ${todaySalesHtml}
     <div id="rg-sales-statistics-mount">${briefingHtml}</div>
     <div class="grid-stats">
       <div class="stat" onclick="location.hash='#/inbox'">
@@ -2718,6 +2731,27 @@ async function viewSales() {
     briefingHtml = briefingCardHtml(briefing, yd, { detailed: true, fullProductList });
   } catch (e) { console.error("매출 브리핑 상세 카드:", e); }
 
+  // 2026-09-10 [사용자 지시: "`매출 내역` 제목 옆에 `판매현황 새로고침` 버튼", "수집
+  // 대상은 현재 선택한 날짜 또는 현재 월의 최신 판매일이며, 오늘 날짜를 조회할 수
+  // 있으면 오늘 판매현황까지"] 이번 달이면 오늘, 지난 달이면 그 달 마지막 날을
+  // GCP가 WING에서 다시 받아 옵니다. 값은 위 monthlySummary(공통 집계)에서만 꺼내요.
+  const refreshDate = erpMonth === today().slice(0, 7)
+    ? today() : `${erpMonth}-${String(lastDay).padStart(2, "0")}`;
+  // 표시 기준일: 새로고침 대상 날짜에 값이 없으면(자정 직후 등) 그 달의 가장 최근
+  // 수집일을 기준일과 함께 보여줘요 - 대시보드 카드와 같은 규칙입니다.
+  const collectedDates = (monthlySummary?.collected_dates || []).filter(d => d <= refreshDate);
+  const shownDate = collectedDates.includes(refreshDate)
+    ? refreshDate : (collectedDates[collectedDates.length - 1] || refreshDate);
+  let refreshState = null;
+  try { refreshState = await globalThis.SalesRefresh?.loadDayState(shownDate); }
+  catch (e) { console.error("판매통계 수집 이력 조회 실패:", e); }
+  const refreshDay = globalThis.SalesMonthlySummary?.forDate(monthlySummary, shownDate, { rgOnly: true });
+  const refreshHtml = globalThis.SalesRefresh
+    ? globalThis.SalesRefresh.statusLineHtml({ date: shownDate, state: refreshState,
+        hasData: !!refreshDay?.collected, today: today() })
+      + globalThis.SalesRefresh.dayLineHtml(refreshDay, shownDate)
+    : "";
+
   return `
     <div id="rg-sales-statistics-mount">${briefingHtml}</div>
     <div class="card">
@@ -2752,11 +2786,13 @@ async function viewSales() {
     </div>
 
     <div class="card">
-      <div class="card-head"><h2>매출 내역 <span style="font-size:11.5px;font-weight:400;color:var(--text-sub)">(날짜 · 상품별 순매출)</span></h2>
+      <div class="card-head"><h2>매출 내역 <span style="font-size:11.5px;font-weight:400;color:var(--text-sub)">(날짜 · 상품별 순매출)</span>
+          ${globalThis.SalesRefresh ? globalThis.SalesRefresh.buttonHtml({ date: refreshDate, source: "sales" }) : ""}</h2>
         <div style="display:flex;gap:8px;align-items:center">
           ${monthPicker()}
           <button class="btn sm secondary" onclick="exportErpCSV('sales')">CSV</button>
         </div></div>
+      ${refreshHtml}
       ${monthlySalesSummaryHtml(monthlySummary, monthlyStatisticsError)}
       <div class="table-wrap"><table>
         <thead><tr><th>판매일</th><th>상품</th><th>채널</th><th class="num">전체수량</th>

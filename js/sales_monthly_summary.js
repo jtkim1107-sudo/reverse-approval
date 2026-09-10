@@ -112,9 +112,12 @@
     };
   }
 
-  function forDate(summary, date) {
+  // rgOnly: 대시보드 '오늘 로켓그로스 판매현황'처럼 로켓그로스(판매통계 NET)만 볼 때.
+  // 따로 계산하지 않고 같은 entries에서 걸러 쓰므로 매출 입력 화면과 값이 같습니다.
+  function forDate(summary, date, { rgOnly = false } = {}) {
     if (!summary?.has_rg_statistics || !date) return null;
-    const entries = summary.entries.filter((row) => row.date === date);
+    const entries = summary.entries.filter((row) =>
+      row.date === date && (!rgOnly || row.source === "STATISTICS_NET"));
     const sum = (field) => entries.reduce((total, row) => total + n(row[field]), 0);
     return {
       date, entries,
