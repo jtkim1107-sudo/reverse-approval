@@ -24,6 +24,7 @@ check(report.includes("Promise.all(months.map(m => buildMonthlyNetSales"), "최�
 check(report.includes("판매통계 미수집 월은 주문 합계로 대신하지 않습니다"), "월별 리포트 fail-closed 안내");
 check(!report.includes("sales.filter(r => monthOf(r) === m).reduce"), "월별 리포트의 원 주문 직접 합산 제거");
 check(ai.includes("SalesMonthlySummary?.forDate") && ai.includes("쿠팡 판매통계 NET"), "AI 리포트에 같은 일자 NET 기준 표시");
+check(ai.includes("옛 주문 기준 문장") && ai.includes("현재 판단에는 상단 판매통계 NET 값을 사용"), "기존 AI 문장을 현재 순매출로 오인하지 않게 분리");
 check(helper.includes('adjustmentResult.status !== "fulfilled"'), "판매자배송 조정 조회 실패도 fail-closed");
 check(helper.includes("SalesMonthlySummary?.build"), "세 화면이 한 집계 구현을 공유");
 

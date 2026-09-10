@@ -8764,16 +8764,17 @@ async function viewAiReport() {
     <div class="card"><b>${esc(latestDate)} 매출 수집 대기</b>
       <p style="font-size:12px;color:var(--text-sub);margin-top:6px">주문 합계를 대신 표시하지 않습니다.</p></div>`;
   return salesReference + reports.map((r, i) => `
-    <div class="card" ${i === 0 ? 'style="border:2px solid var(--brand)"' : ""}>
+    <div class="card">
       <div class="card-head">
-        <h2>${i === 0 ? "🤖 최신 리포트 · " : ""}${esc(r.date)}</h2>
+        <h2>${i === 0 ? "🤖 최신 저장본 · " : ""}${esc(r.date)}</h2>
+        <span class="chip progress">옛 주문 기준 문장</span>
         ${r.anomalies
           ? `<span class="chip rejected">이상징후 ${r.anomalies}건</span>`
           : '<span class="chip approved">이상 없음</span>'}
       </div>
       <div style="white-space:pre-wrap;font-size:14px;line-height:1.8">${esc(r.content)}</div>
     </div>`).join("") + `
-    <p style="color:var(--text-sub);font-size:12px">※ 매일 아침 8시에 자동 생성됩니다. 최근 14일치가 보관됩니다.</p>`;
+    <p style="color:var(--text-sub);font-size:12px">※ 기존 저장 문장은 생성 당시 주문 기준 기록입니다. 현재 판단에는 상단 판매통계 NET 값을 사용합니다.</p>`;
 }
 
 /* ---------- 업무 지시 ---------- */
