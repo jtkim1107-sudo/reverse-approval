@@ -6068,6 +6068,12 @@ function openPODetail(id) {
           <tfoot><tr><td colspan="5"><b>합계</b></td><td class="num"><b>₩${fmt(p.total)}</b></td></tr></tfoot>
         </table></div>
 
+        <div id="po-load-fill-proposal"></div>
+
+        <div id="po-batch-load-fill-proposal" style="margin-top:8px">
+          <button class="btn sm secondary" onclick="loadPOBatchLoadFillProposal('${p.id}')">🚚 PO 전체 최적 적재 계획 보기</button>
+        </div>
+
         ${p.approval_line?.length ? `
           <h3 style="font-size:15px;margin:16px 0 8px">결재</h3>
           <div class="table-wrap"><table><tbody>${p.approval_line.map((s, i) => `
@@ -6095,6 +6101,7 @@ function openPODetail(id) {
       </div>
     </div>`;
   loadPOFreightReview(p.id, p.freight_est);
+  loadPOLoadFillProposal(p.id, items);
 }
 
 // 2026-09-09 [운송비 freight_est 연결, 사용자 명시] TRUCK 자동입고가 이미 실제 WING
@@ -6130,6 +6137,480 @@ async function applyPOFreightEstimate(poId, amount) {
   toast(`예상 운송비 ₩${fmt(amount)}이 반영되었습니다`);
   await loadPOs();
   openPODetail(poId);
+}
+
+// 2026-09-09 [발주 PLT 계산 규칙 3차 확정, 사용자 명시] "1PLT만 단독으로
+// 보내는 계획은 확정하지 말 것" 정책에서 시스템이 AI 추천 기준으로 계산한
+// "어떻게 채울지" 제안을 보여줘요(/api/purchase-order-items/load-fill-proposal,
+// READ-ONLY). 이 화면 자체는 아무것도 자동 반영하지 않아요 - 사람이 "승인"/
+// "거절" 버튼을 눌러야만 실제로 저장돼요(그리고 승인도 지금은 기능 플래그가
+// 꺼져 있어 501을 반환해요 - 준비는 됐지만 활성화는 안 함).
+//
+// 3차 수정(사용자 지적):
+//  - GENERAL_CONSOLIDATION은 더 이상 안 옴 - canonical PLT>=2 경로도 항상
+//    RESOLVED_SAME_PRODUCT_LOAD로 오고 qty_change_direction(increase/decrease/
+//    unchanged)이 항상 채워져요. "변경 없음"도 유효한 제안이라 승인 버튼을
+//    그대로 보여줘요(승인해도 실제로는 같은 수량이 재확정될 뿐).
+//  - is_estimate=True면 "실제 WING 확인 전"을 명확히 표시해요(운송자료 기반
+//    예상 차량/운송비/가상 슬롯일 뿐, 실제 WING 센터·슬롯 확인이 아님).
+//
+// 4차 수정(사용자 지적: "create와 approve가 원자적이지 않다" + "화면에 보이는
+// 제안과 저장된 run이 다를 수 있다"): 더 이상 GET이 계산한 결과를 화면에 직접
+// 그리지 않아요. *** /save가 반환한 saved.proposal이 화면 렌더링의 유일한
+// 원본 *** - GET은 오직 "1PLT일 때 어떤 후보가 있는지 미리 보여주는 용도"로만
+// 쓰고, 그 결과 자체를 카드로 그리지 않아요. canonical PLT>=2(자동 확정) 경로는
+// GET 대신 곧바로 /save를 호출해서 그 응답으로만 카드를 그리고, canonical
+// PLT==1(같은 상품 2PLT안/혼적안 중 선택 필요) 경로는 GET의 fill_options로 두
+// 후보를 보여준 뒤, 사람이 고른 선택을 그대로 /save(chosen_1plt_option)에
+// 실어 보내고 *** 그 /save 응답만 *** 카드로 그려요 - 즉 이 파일의 어떤
+// 경로도 GET 결과를 그대로 화면에 렌더링하지 않아요.
+const _loadFillProposalRuns = {}; // poItemId -> {run_id, proposal_hash}
+
+function _qtyChangeBadge(direction) {
+  if (direction === "increase") return '<span class="chip waiting" style="margin-left:4px">▲ 증량 제안</span>';
+  if (direction === "decrease") return '<span class="chip rejected" style="margin-left:4px">▼ 감소 제안(신중 검토)</span>';
+  if (direction === "unchanged") return '<span class="chip approved" style="margin-left:4px">변경 없음</span>';
+  return "";
+}
+
+function _loadFillProposalCardHtml(poId, poItemId, proposal, savedMeta) {
+  const planLine = proposal.plan
+    ? `${esc(proposal.plan.center_name || "센터 미정")} · ${esc(proposal.plan.vehicle_type)} 1대 · 운송비 ₩${fmt(proposal.plan.total_transport_cost)}`
+      + (proposal.plan.slot_date ? ` · ${esc(proposal.plan.slot_date)} ${esc(proposal.plan.slot_time || "")}` : "")
+    : "";
+
+  let body = "";
+  const title = "🚛 적재 제안";
+  let showDecisionButtons = false;
+  if (proposal.status === "RESOLVED_SAME_PRODUCT_LOAD") {
+    const plt = proposal.proposed_pallet_count;
+    body = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:13px;margin:8px 0">
+        <div><span style="color:var(--text-sub)">기존 발주수량</span> ${fmt(proposal.original_qty)}EA(${proposal.original_pallet_count}PLT)</div>
+        <div><span style="color:var(--text-sub)">제안 발주수량</span> <b>${fmt(proposal.proposed_qty)}EA(${plt}PLT)</b>${_qtyChangeBadge(proposal.qty_change_direction)}</div>
+        <div><span style="color:var(--text-sub)">판매속도</span> 일 ${proposal.avg_daily_sales ?? "—"}개</div>
+        <div><span style="color:var(--text-sub)">예상 재고일수(제안 반영 시)</span> ${proposal.projected_days_of_stock ?? "—"}일
+          ${proposal.is_excess_inventory ? '<span class="chip rejected" style="margin-left:4px">과잉재고 위험</span>' : '<span class="chip approved" style="margin-left:4px">적정</span>'}</div>
+      </div>
+      <div style="font-size:13px;color:var(--text-sub)">${planLine}</div>`;
+    showDecisionButtons = !!savedMeta;
+  } else if (proposal.status === "RESOLVED_MIXED_LOAD") {
+    const mp = proposal.mixed_product || {};
+    body = `
+      <div style="font-size:13px;margin:8px 0">
+        <b>합배송안: 2개 상품 · 1PLT씩 · 트럭 1대</b>
+        <table style="width:100%;margin-top:6px;font-size:13px"><tbody>
+          <tr><td style="color:var(--text-sub);width:90px">이 발주 품목</td><td>${fmt(proposal.original_qty)}EA(1PLT)</td></tr>
+          <tr><td style="color:var(--text-sub)">혼적 상품</td><td>${esc(mp.product_name || mp.product_id || "—")} · ${fmt(mp.qty)}EA(1PLT, 후보 자신의 단위 기준)
+            ${mp.supplier_name === "리파코 주식회사" ? '<span class="chip approved" style="margin-left:4px">같은 공급처</span>' : ""}</td></tr>
+        </tbody></table>
+      </div>
+      <div style="font-size:13px;color:var(--text-sub)">${planLine}</div>`;
+    showDecisionButtons = !!savedMeta;
+  }
+
+  const saveHashLine = savedMeta?.proposal_hash
+    ? `<div style="font-size:11px;color:var(--text-sub);margin-top:4px">제안 ID: ${esc((savedMeta.proposal_hash || "").slice(0, 12))}…</div>` : "";
+
+  return `
+    <div class="card" style="margin-top:12px;border:1px solid var(--brand);padding:12px" data-load-fill-card="${esc(poItemId)}">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:14px">${title}${proposal.is_estimate ? ' <span class="chip waiting" style="font-weight:400">⚠️ 실제 WING 확인 전(운송자료 기반 예상값)</span>' : ' <span class="chip approved" style="font-weight:400">실제 WING 슬롯 확인됨</span>'}</b>
+        <span id="load-fill-decision-area-${esc(poItemId)}">${showDecisionButtons ? `
+          <button class="btn sm" onclick="decidePOLoadFillProposal('${poId}','${poItemId}','approve')">승인</button>
+          <button class="btn sm ghost" onclick="decidePOLoadFillProposal('${poId}','${poItemId}','reject')">거절</button>` : ""}</span>
+      </div>
+      ${body}
+      ${saveHashLine}
+    </div>`;
+}
+
+// 2026-09-09 4차 수정(사용자 명시: "정확히 1PLT일 때만 같은 상품 증량 또는
+// 다른 상품 합배송 검토... 과잉재고 허용 기준이 확정되지 않았다면... 같은
+// 상품 2PLT안과 혼적안을 모두 발주 검토 화면에 제시해주세요") - 두 후보를
+// 전부 카드로 보여주고, 어느 쪽도 자동으로 고르지 않아요(버튼을 눌러야만
+// chosen_1plt_option과 함께 /save 호출 -> 그 응답만 화면에 그림).
+// 2026-09-10 [사용자 지시: "1PLT 차단은 사용자 정책, 과거 운송량은 실적, 차량
+// 최대 용량은 확인된 적재 규격으로 구분해서 표시해줘"]
+// 세 근거는 성격이 달라서 한 문장으로 뭉뚱그리면 안 돼요:
+//   정책 = 사용자가 정한 운영 규칙(1PLT 단독 출발 금지) - 데이터와 무관
+//   실적 = 실제 과거 운송 기록(운임의 유일한 출처)
+//   규격 = 사용자가 확인해준 차량 적재 한도(1톤 = 2PLT). 그 외 차종은 규격 미확인
+function _loadFillWaitingCardHtml(preview) {
+  const cand = (preview && preview.same_product_candidate) || {};
+  const veh = cand.vehicle_options || {};
+  const basis = cand.excess_inventory_judgment_basis || {};
+  const d2 = basis.days_of_stock_at_2plt ?? cand.days_of_stock_at_2plt;
+  const d1 = cand.days_of_stock_at_1plt;
+  return `
+    <div class="card" style="margin-top:12px;border:1px solid var(--brand);padding:12px">
+      <b style="font-size:14px">🚛 적재 보완 대기</b>
+      <div style="font-size:13px;color:var(--text-sub);margin-top:6px">
+        이 건은 <b>1PLT</b>라 지금 상태로는 출발 계획을 확정할 수 없어요. 아래 세 가지는 근거가 서로 다릅니다.
+      </div>
+      <table style="width:100%;margin-top:10px;font-size:12.5px;border-collapse:collapse">
+        <tr><td style="padding:4px 6px;white-space:nowrap"><span class="chip rejected">정책</span></td>
+            <td style="padding:4px 6px">사용자 정책: <b>1PLT 단독 출발 금지</b> — 요율이 있고 없고와 무관하게 차단됩니다.</td></tr>
+        <tr><td style="padding:4px 6px;white-space:nowrap"><span class="chip waiting">실적</span></td>
+            <td style="padding:4px 6px">과거 운송 실적 기준 2PLT 배차 비용 ${veh.total_cost != null ? `<b>${fmt(veh.total_cost)}원</b>` : "미산출"}
+              ${cand.additional_plt_cost != null ? `(1PLT 추가분 ${fmt(cand.additional_plt_cost)}원)` : ""}
+              — 과거 기록이며 <b>이번 건의 확정 견적이 아닙니다</b>.</td></tr>
+        <tr><td style="padding:4px 6px;white-space:nowrap"><span class="chip approved">규격</span></td>
+            <td style="padding:4px 6px">확인된 적재 규격: <b>1톤 = 최대 2PLT</b>(사용자 확인). 그 외 차종은 규격 미확인이며,
+              실적의 최대 적재량은 규격이 아니라 <b>관측치</b>입니다.</td></tr>
+      </table>
+      <div style="font-size:12.5px;color:var(--text-sub);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">
+        보완 방법 두 가지 중 하나가 충족돼야 진행됩니다 —
+        <b>①</b> 같은 상품 증량(2PLT): 현재 <b>수요 근거 없음</b>${d1 != null && d2 != null ? ` (1PLT ${d1}일치 → 2PLT ${d2}일치)` : ""} ·
+        <b>②</b> 다른 발주 필요 상품과 혼적: 현재 <b>후보 없음</b>.
+        <br>둘 다 없으면 <b>억지로 늘리지 않고 대기</b>합니다.
+      </div>
+    </div>`;
+}
+
+function _load1pltOptionsCardHtml(poId, poItemId, proposal) {
+  const fo = proposal.fill_options || {};
+  const same = fo.same_product_candidate;
+  const mixedList = fo.mixed_load_candidates || [];
+
+  let sameHtml = "";
+  if (same) {
+    const excess = same.excess_inventory_judgment_basis || {};
+    sameHtml = `
+      <div class="card" style="margin-top:8px;padding:10px;border:1px dashed var(--border)">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <b style="font-size:13px">같은 상품 2PLT 발주안</b>
+          ${same.eligible
+            ? `<button class="btn sm secondary" disabled title="예상 재고 53일 수준이라 자동 반영하지 않습니다">검토 후 반영</button>`
+            : `<span class="chip rejected">실을 차량 없음</span>`}
+        </div>
+        <div style="font-size:12.5px;color:var(--text-sub);margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:4px 12px">
+          <div>1PLT일 때 예상 재고일수: ${same.days_of_stock_at_1plt ?? "—"}일</div>
+          <div>2PLT일 때 예상 재고일수: ${same.days_of_stock_at_2plt ?? "—"}일</div>
+          <div>추가 1PLT 금액: ${same.additional_plt_cost != null ? "₩" + fmt(same.additional_plt_cost) : "—"}</div>
+          <div>2PLT 차량 운송비: ${same.vehicle_cost_at_2plt != null ? "₩" + fmt(same.vehicle_cost_at_2plt) : "—"}</div>
+          <div>단독 1PLT 운송: 불가(항상 2PLT 이상 필요)</div>
+          <div>과잉재고 기준: ${esc(excess.note || "미확정 - 참고용 숫자만 표시")}</div>
+        </div>
+        ${!same.eligible ? `<div style="font-size:12px;color:var(--text-sub);margin-top:4px">${esc(same.blocking_reason || "")}</div>` : ""}
+      </div>`;
+  }
+
+  const mixedHtml = mixedList.map(m => `
+    <div class="card" style="margin-top:8px;padding:10px;border:1px dashed var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:13px">혼적안: ${esc(m.product_name || m.product_id)}</b>
+        <button class="btn sm secondary" disabled>검토 후 반영</button>
+      </div>
+      <div style="font-size:12.5px;color:var(--text-sub);margin-top:6px">
+        ${fmt(m.mixed_qty)}EA(1PLT, 후보 자신의 단위 기준) · 공급처: ${esc(m.candidate_supplier_name || "—")}
+        ${m.candidate_purchase_cost != null ? ` · 매입원가 ₩${fmt(m.candidate_purchase_cost)}/개` : ""}
+      </div>
+    </div>`).join("");
+
+  return `
+    <div class="card" style="margin-top:12px;border:1px solid var(--brand);padding:12px">
+      <b style="font-size:14px">🚛 적재 제안 - 1PLT 채움 방법 선택 필요</b>
+      <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
+        이 발주 품목은 단독 1PLT로는 실을 수 없습니다. 아래 두 후보 중 하나를 골라 저장해주세요
+        (자동으로 고르지 않습니다 - 과잉재고 허용 기준이 아직 확정되지 않았습니다).
+      </div>
+      ${sameHtml}
+      ${mixedHtml || (!same ? '<div style="font-size:12.5px;color:var(--text-sub);margin-top:8px">계산 가능한 후보가 없습니다(같은 상품 증량도, 혼적할 다른 발주 필요 상품도 없음) - 사람이 직접 데이터를 보완해야 합니다.</div>' : "")}
+    </div>`;
+}
+
+async function loadPOLoadFillProposal(poId, items) {
+  const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
+  const jwt = session?.access_token;
+  if (!jwt || !items?.length) return;
+  const el = document.getElementById("po-load-fill-proposal");
+  if (!el) return;
+
+  for (const it of items) {
+    let preview;
+    try {
+      const resp = await fetch(
+        `${LIVE_STOCK_API_BASE}/api/purchase-order-items/load-fill-proposal?purchase_order_item_id=${encodeURIComponent(it.id)}`,
+        { headers: { Authorization: `Bearer ${jwt}` } });
+      preview = await resp.json();
+      if (!resp.ok || !preview.applicable) continue;
+    } catch (e) { continue; }
+    if (!document.getElementById("po-load-fill-proposal")) return; // 모달이 이미 닫혔으면 중단
+
+    delete _loadFillProposalRuns[it.id];
+
+    if (preview.status === "1PLT_FILL_OPTIONS") {
+      // *** GET 결과(preview) 자체는 여기서만 참고용으로 씀(선택지 목록을 보여줄
+      // 뿐, 승인 가능한 확정된 제안으로 렌더링하지 않음 - 요구사항 4) ***
+      el.insertAdjacentHTML("beforeend", _load1pltOptionsCardHtml(poId, it.id, preview));
+      continue;
+    }
+    if (preview.status !== "RESOLVED_SAME_PRODUCT_LOAD" && preview.status !== "RESOLVED_MIXED_LOAD") {
+      el.insertAdjacentHTML("beforeend", _loadFillWaitingCardHtml(preview));
+      continue;
+    }
+
+    // 운영에서는 읽기 전용 계산 결과만 보여줍니다. 저장·수량 변경은 별도 승인 후 진행합니다.
+    el.insertAdjacentHTML("beforeend", _loadFillProposalCardHtml(poId, it.id, preview, null));
+  }
+}
+
+async function _saveAndRenderLoadFillProposal(poId, poItemId, el, chosen1pltOption) {
+  const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
+  const jwt = session?.access_token;
+  if (!jwt) return toast("로그인이 필요합니다");
+  try {
+    const saveResp = await fetch(`${LIVE_STOCK_API_BASE}/api/purchase-order-items/load-fill-proposal/save`,
+      { method: "POST", headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ purchase_order_item_id: poItemId, chosen_1plt_option: chosen1pltOption || undefined }) });
+    if (!saveResp.ok) {
+      const errBody = await saveResp.json().catch(() => ({}));
+      return toast(errBody.detail || "제안 저장에 실패했습니다.");
+    }
+    const saved = await saveResp.json();
+    _loadFillProposalRuns[poItemId] = { run_id: saved.run_id, proposal_hash: saved.proposal_hash };
+    if (!document.getElementById("po-load-fill-proposal")) return; // 저장 중 모달이 닫혔으면 중단
+    // *** saved.proposal이 화면 렌더링의 유일한 원본(요구사항 4) *** - GET이
+    // 계산했던 결과(preview)는 여기서 절대 다시 쓰지 않음.
+    el.insertAdjacentHTML("beforeend", _loadFillProposalCardHtml(poId, poItemId, saved.proposal, saved));
+  } catch (e) {
+    toast("제안 저장 요청에 실패했습니다.");
+  }
+}
+
+async function chooseAndSave1pltOption(poId, poItemId, chosen1pltOption) {
+  const el = document.getElementById("po-load-fill-proposal");
+  if (!el) return;
+  await _saveAndRenderLoadFillProposal(poId, poItemId, el, chosen1pltOption);
+}
+
+async function decidePOLoadFillProposal(poId, poItemId, decision) {
+  const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
+  const jwt = session?.access_token;
+  if (!jwt) return toast("로그인이 필요합니다");
+  const saved = _loadFillProposalRuns[poItemId];
+  if (!saved || !saved.run_id) return toast("아직 저장되지 않았거나 저장에 실패했습니다(준비 중이거나 새로고침 필요).");
+  let reject_reason = null;
+  if (decision === "reject") {
+    reject_reason = prompt("거절 사유(선택)") || null;
+  }
+  try {
+    // 요구사항(4차): run_id뿐 아니라 화면이 마지막으로 저장했던 proposal_hash도
+    // 함께 보내서, 승인 RPC가 DB의 현재 proposal_hash와 일치하는지 재검증하게 함
+    // (오래된 화면으로 승인 버튼을 눌러도 서버가 거부).
+    const resp = await fetch(`${LIVE_STOCK_API_BASE}/api/purchase-order-items/load-fill-proposal/approve`,
+      { method: "POST", headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: saved.run_id, proposal_hash: saved.proposal_hash, decision, reject_reason }) });
+    const result = await resp.json();
+    if (!resp.ok) return toast(result.detail || "아직 저장할 수 없습니다(준비 중)");
+    // 요구사항(5차 재지적, 사용자 명시 문구 그대로): run_status=APPROVED를
+    // "검토 의사 기록"과 "실행 승인" 두 의미로 같이 쓰면 안 됨 - ESTIMATE
+    // 단계 승인(REVIEW_ACCEPTED)과 LIVE_PREFLIGHT 최종 승인(APPROVED)을
+    // 문구로도 명확히 구분해서 보여줌(둘 다 "승인되었습니다"로 뭉뚱그리지 않음).
+    const newStatus = result?.run?.run_status;
+    const slotMode = result?.run?.slot_mode;
+    let msg;
+    let chipHtml;
+    if (decision === "reject") {
+      msg = "제안이 거절되었습니다";
+      chipHtml = '<span class="chip rejected">거절됨</span>';
+    } else if (newStatus === "REVIEW_ACCEPTED") {
+      msg = "예상 적재안을 검토 승인했습니다. 실제 WING 슬롯 확인과 최종 승인이 남아 있습니다.";
+      chipHtml = '<span class="chip waiting">검토 승인(REVIEW_ACCEPTED) - 실제 발주수량 미반영</span>';
+    } else if (newStatus === "APPROVED" && slotMode === "LIVE_PREFLIGHT") {
+      msg = "실제 슬롯 기반 계획이 최종 승인되었습니다.";
+      chipHtml = '<span class="chip approved">최종 승인(APPROVED) - 실제 슬롯 확인 완료</span>';
+    } else if (newStatus === "APPROVED") {
+      msg = "제안이 승인되었습니다";
+      chipHtml = '<span class="chip approved">승인됨(APPROVED)</span>';
+    } else {
+      msg = "처리되었습니다";
+      chipHtml = "";
+    }
+    toast(msg);
+    // 전체 재로딩 전에도 이 카드에서 즉시 REVIEW_ACCEPTED/APPROVED 상태를
+    // 구분해서 보여줌(버튼을 상태 칩으로 교체).
+    const decisionArea = document.getElementById(`load-fill-decision-area-${poItemId}`);
+    if (decisionArea) decisionArea.innerHTML = chipHtml;
+    if (typeof openPODetail === "function") openPODetail(poId);
+  } catch (e) {
+    toast("요청에 실패했습니다");
+  }
+}
+
+// 2026-09-09 7차 [PO 단위 batch optimizer, 사용자 명시] "endpoint 연결 전에
+// 먼저 수정해주세요... 위 문제를 고친 뒤에 batch endpoint와 프런트를
+// 연결해주세요." 단건 카드(위)는 그대로 두고, PO 전체를 한 번에 최적화하는
+// *** 별도의 새 UI 영역 ***을 추가해요(단건 흐름과 완전히 병행). 여기도
+// 4차/6차의 핵심 원칙을 그대로 지켜요: GET 결과를 화면에 바로 그리지 않고
+// /save가 반환한 결과만 그리고(요구사항 4), batch_plan.applicable=false
+// (미배정 상품이 남음)면 저장 버튼을 아예 숨겨요(요구사항 6 - 부분 계획은
+// 참고용으로만 표시).
+const _batchLoadFillProposalRuns = {}; // poId -> {run_id, proposal_hash}
+
+function _batchLoadFillResolutionLabel(resolution) {
+  return {
+    DIRECT: "직접 배정", MIXED_PAIR: "같은 배치 내 짝짓기", MIXED_RECIPIENT: "외부 후보 도움받음",
+    MIXED_DONOR: "외부 후보(donor)", SELF_BUMP: "같은 상품 증량",
+  }[resolution] || resolution;
+}
+
+// 2026-09-09 7차 수정(사용자 명시: "UNCONFIRMED는 저장·승인 차단, 같은
+// 센터라도 슬롯이 다르면 승인만 차단") - 배지를 4가지 실제 상태로 명확히
+// 구분(None=상대 상품이 없는 DIRECT/SELF_BUMP라 배지 자체를 안 보여줌).
+const CENTER_STATUS_BADGE = {
+  UNCONFIRMED: '<span class="chip rejected" style="font-weight:400">센터 호환 미확인 - 저장 불가</span>',
+  CONFIRMED_COMPATIBLE_SLOT_MISMATCH: '<span class="chip rejected" style="font-weight:400">센터 확인 · 슬롯 불일치 - 승인 불가</span>',
+  CONFIRMED_COMPATIBLE: '<span class="chip approved" style="font-weight:400">센터·슬롯 확인됨</span>',
+  CONFIRMED_INCOMPATIBLE: '<span class="chip rejected" style="font-weight:400">센터 불일치</span>',
+};
+function _batchLoadFillProposalCardHtml(poId, batchPlan, savedMeta) {
+  if (!batchPlan) {
+    return `<div class="card" style="margin-top:8px;padding:12px;border:1px solid var(--brand)">
+      <div style="font-size:13px;color:var(--text-sub)">이 PO는 지금 batch 적재 제안 대상이 아닙니다.</div>
+    </div>`;
+  }
+  const rows = (batchPlan.product_results || []).map(pr => `
+    <tr>
+      <td>${esc(prodName(pr.product_id))}</td>
+      <td class="num">${fmt(pr.canonical_pallet_count)}PLT</td>
+      <td class="num"><b>${fmt(pr.proposed_pallet_count)}PLT</b></td>
+      <td>${esc(_batchLoadFillResolutionLabel(pr.resolution))}</td>
+      <td>${pr.center_compatibility_status ? (CENTER_STATUS_BADGE[pr.center_compatibility_status] || esc(pr.center_compatibility_status)) : "-"}</td>
+    </tr>`).join("");
+  const incompleteHtml = (batchPlan.incomplete_items || []).length
+    ? `<div style="font-size:12.5px;color:var(--red);margin-top:8px">
+        미배정 상품 ${batchPlan.incomplete_items.length}건이 있어 아직 저장할 수 없습니다:
+        ${batchPlan.incomplete_items.map(i => esc(prodName(i.product_id))).join(", ")}
+      </div>` : "";
+  // 7차 수정: search_capped·UNCONFIRMED로 막힌 경우도 백엔드가 이미 계산해 둔
+  // batchPlan.reasons를 그대로 보여줌(프론트가 판단 로직을 다시 만들지 않음 -
+  // 화면-백엔드 판단 불일치 방지). applicable=false인데 위 미배정 메시지만으론
+  // 이유가 다 안 보일 수 있어 별도로 노출.
+  const blockingReasons = !batchPlan.applicable
+    ? (batchPlan.reasons || []).filter(r => r.includes("탐색 한도") || r.includes("미확인(UNCONFIRMED)"))
+    : (!batchPlan.approvable ? (batchPlan.reasons || []).filter(r => r.includes("슬롯 시간이 서로 달라")) : []);
+  const blockingHtml = blockingReasons.length
+    ? `<div style="font-size:12.5px;color:var(--red);margin-top:8px">${blockingReasons.map(esc).join("<br>")}</div>` : "";
+  const centerNote = batchPlan.center_data_status === "UNCONFIRMED_NO_REAL_FC_MAPPING"
+    ? `<div style="font-size:12px;color:var(--text-sub);margin-top:4px">
+        ⚠️ 실제 WING 상품별 센터 매핑 데이터가 아직 없어 혼적 가능 여부는 전부 "예상"입니다
+        (실제 슬롯 확인 전까지 확정 아님).
+      </div>` : "";
+  // 2026-09-09 10차 [실제 운송자료 연결 여부, 사용자 명시: "현재 자료의
+  // 기준일과 지원센터 비율을 화면에 표시해"] - wing_center_slot_preflight.
+  // describe_transport_data_coverage()가 계산해서 batchPlan.transport_data_
+  // coverage로 넘겨주면(아직 실제 배선 전이라 지금은 항상 undefined) 그대로
+  // 보여줌 - "샘플 데이터"가 아니라 "실제 데이터인데 커버리지가 이만큼"이라는
+  // 걸 사람이 매번 볼 수 있게(계산 로직 검증 완료 ≠ 운영 데이터 연결 완료).
+  const coverage = batchPlan.transport_data_coverage;
+  const coverageNote = coverage
+    ? `<div style="font-size:12px;color:var(--text-sub);margin-top:4px">
+        📋 운송비 자료 기준일: ${esc(coverage.data_as_of)} · 지원 센터 ${fmt(coverage.supported_center_count)}/${fmt(coverage.total_center_count)}곳
+        (${(coverage.coverage_ratio * 100).toFixed(0)}%) - 나머지 ${fmt(coverage.unsupported_center_count)}곳은 운송비 미확인으로 자동선택에서 제외됩니다.
+      </div>` : "";
+  const saveHashLine = savedMeta?.proposal_hash
+    ? `<div style="font-size:11px;color:var(--text-sub);margin-top:4px">제안 ID: ${esc((savedMeta.proposal_hash || "").slice(0, 12))}…</div>` : "";
+  // 7차 수정(사용자 명시: "UNCONFIRMED/슬롯 불일치는 승인을 차단해") - 저장은
+  // 됐어도(savedMeta 존재) approvable=false면 승인 버튼을 아예 안 보여줌(거절
+  // 버튼은 그대로 - 사람이 이 제안을 거절하는 것 자체는 항상 가능해야 함).
+  const showApproveButton = !!savedMeta && batchPlan.approvable !== false;
+  const showDecisionButtons = !!savedMeta;
+
+  return `
+    <div class="card" style="margin-top:8px;padding:12px;border:1px solid var(--brand)">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <b style="font-size:14px">🚚 PO 전체 최적 적재 계획</b>
+        <span id="batch-load-fill-decision-area-${esc(poId)}">${showDecisionButtons ? `
+          ${showApproveButton ? `<button class="btn sm" onclick="decideBatchLoadFillProposal('${poId}','approve')">승인</button>` : ""}
+          <button class="btn sm ghost" onclick="decideBatchLoadFillProposal('${poId}','reject')">거절</button>` : ""}</span>
+      </div>
+      <div class="table-wrap" style="margin-top:8px"><table style="font-size:12.5px"><thead>
+        <tr><th>상품</th><th>계산 필요량</th><th>최종 제안량</th><th>해결 방식</th><th>센터 호환</th></tr>
+      </thead><tbody>${rows}</tbody></table></div>
+      <div style="font-size:13px;margin-top:8px">
+        차량 ${fmt(batchPlan.vehicle_plans?.length || 0)}대 · 총운송비 ₩${fmt(batchPlan.total_transport_cost || 0)}
+      </div>
+      ${centerNote}
+      ${coverageNote}
+      ${incompleteHtml}
+      ${blockingHtml}
+      ${saveHashLine}
+    </div>`;
+}
+
+async function loadPOBatchLoadFillProposal(poId) {
+  const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
+  const jwt = session?.access_token;
+  if (!jwt) return toast("로그인이 필요합니다");
+  const el = document.getElementById("po-batch-load-fill-proposal");
+  if (!el) return;
+  el.innerHTML = `<div style="font-size:13px;color:var(--text-sub)">전체 최적 적재 계획을 계산하는 중…</div>`;
+
+  let preview;
+  try {
+    const resp = await fetch(`${LIVE_STOCK_API_BASE}/api/purchase-orders/load-fill-proposal?purchase_order_id=${encodeURIComponent(poId)}`,
+      { headers: { Authorization: `Bearer ${jwt}` } });
+    preview = await resp.json();
+    if (!resp.ok || !preview.applicable) {
+      el.innerHTML = `<div style="font-size:13px;color:var(--text-sub)">${esc(preview?.reason || "이 PO는 batch 적재 제안 대상이 아닙니다.")}</div>`;
+      return;
+    }
+  } catch (e) {
+    el.innerHTML = `<div style="font-size:13px;color:var(--red)">계산 요청에 실패했습니다.</div>`;
+    return;
+  }
+  if (!document.getElementById("po-batch-load-fill-proposal")) return; // 모달이 이미 닫혔으면 중단
+
+  // 현재 운영 단계에서는 계산 결과만 표시합니다. 발주수량·WING 계획 변경은
+  // 실제 재고일수와 슬롯을 사람이 확인한 뒤 별도 승인 단계에서 처리합니다.
+  el.innerHTML = _batchLoadFillProposalCardHtml(poId, preview.batch_plan, null);
+}
+
+async function decideBatchLoadFillProposal(poId, decision) {
+  const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
+  const jwt = session?.access_token;
+  if (!jwt) return toast("로그인이 필요합니다");
+  const saved = _batchLoadFillProposalRuns[poId];
+  if (!saved || !saved.run_id) return toast("아직 저장되지 않았거나 저장에 실패했습니다(준비 중이거나 새로고침 필요).");
+  let reject_reason = null;
+  if (decision === "reject") {
+    reject_reason = prompt("거절 사유(선택)") || null;
+  }
+  try {
+    const resp = await fetch(`${LIVE_STOCK_API_BASE}/api/purchase-orders/load-fill-proposal/approve`,
+      { method: "POST", headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ batch_run_id: saved.run_id, proposal_hash: saved.proposal_hash, decision, reject_reason }) });
+    const result = await resp.json();
+    if (!resp.ok) return toast(result.detail || "아직 저장할 수 없습니다(준비 중)");
+    const newStatus = result?.run?.run_status;
+    const slotMode = result?.run?.slot_mode;
+    let msg;
+    let chipHtml;
+    if (decision === "reject") {
+      msg = "batch 제안이 거절되었습니다";
+      chipHtml = '<span class="chip rejected">거절됨</span>';
+    } else if (newStatus === "REVIEW_ACCEPTED") {
+      msg = "예상 적재안을 검토 승인했습니다. 실제 WING 슬롯 확인과 최종 승인이 남아 있습니다.";
+      chipHtml = '<span class="chip waiting">검토 승인(REVIEW_ACCEPTED) - 실제 발주수량 미반영</span>';
+    } else if (newStatus === "APPROVED" && slotMode === "LIVE_PREFLIGHT") {
+      msg = "실제 슬롯 기반 계획이 최종 승인되었습니다.";
+      chipHtml = '<span class="chip approved">최종 승인(APPROVED) - 실제 슬롯 확인 완료</span>';
+    } else if (newStatus === "APPROVED") {
+      msg = "batch 제안이 승인되었습니다(PO 전체 수량이 함께 반영됨)";
+      chipHtml = '<span class="chip approved">승인됨(APPROVED)</span>';
+    } else {
+      msg = "처리되었습니다";
+      chipHtml = "";
+    }
+    toast(msg);
+    const decisionArea = document.getElementById(`batch-load-fill-decision-area-${poId}`);
+    if (decisionArea) decisionArea.innerHTML = chipHtml;
+    if (typeof openPODetail === "function") openPODetail(poId);
+  } catch (e) {
+    toast("요청에 실패했습니다");
+  }
 }
 
 /* ---------- 발주서 문서 (인쇄·PDF·메일용 정식 양식) ---------- */

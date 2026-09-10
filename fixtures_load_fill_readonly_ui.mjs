@@ -1,0 +1,15 @@
+import fs from 'node:fs';
+const s=fs.readFileSync(new URL('./js/app.js',import.meta.url),'utf8');
+const ok=(v,m)=>{if(!v)throw new Error(m);console.log('OK',m)};
+ok(s.includes('id="po-load-fill-proposal"'),'PO 상세에 적재 제안 영역 존재');
+ok(s.includes('/api/purchase-order-items/load-fill-proposal?purchase_order_item_id='),'단건 읽기 API 연결');
+ok(s.includes('/api/purchase-orders/load-fill-proposal?purchase_order_id='),'PO 전체 읽기 API 연결');
+ok(s.includes('1PLT_FILL_OPTIONS'),'1PLT 선택지 렌더링');
+ok(s.includes('예상 재고일수'),'재고일수 표시');
+ok(s.includes('실제 WING 확인 전'),'예상값 구분');
+ok(s.includes('검토 후 반영'),'자동 수량 변경 차단');
+const batch=s.slice(s.indexOf('async function loadPOBatchLoadFillProposal'),s.indexOf('async function decideBatchLoadFillProposal'));
+ok(!batch.includes('/save'),'PO 전체 조회가 저장 API를 호출하지 않음');
+const item=s.slice(s.indexOf('async function loadPOLoadFillProposal'),s.indexOf('async function _saveAndRenderLoadFillProposal'));
+ok(!item.includes('/save'),'자동 로딩이 저장 API를 호출하지 않음');
+console.log('전체 통과');
