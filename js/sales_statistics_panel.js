@@ -106,6 +106,16 @@
     return Math.round(n).toLocaleString("ko-KR") + "원";
   }
 
+  // 2026-09-11 [사용자 지시: "최종 갱신 시각은 KST로 표시"] 서버 값(UTC ISO)을 그대로 쓰지 않아요.
+  function kstTime(ts) {
+    const d = new Date(ts);
+    if (isNaN(d)) return String(ts);
+    return new Intl.DateTimeFormat("ko-KR", {
+      timeZone: "Asia/Seoul", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(d) + " KST";
+  }
+
   function ea(n) {
     if (n == null) return "—";
     // 순매출은 음수가 정상이에요(반품이 판매보다 많은 날). 부호를 살립니다.
@@ -233,7 +243,7 @@
         <div class="ss-basis-badge">${esc(payload.basis_label || BASIS_LABEL)}</div>
         ${
           payload.last_collected_at
-            ? `<div class="ss-muted">최근 수집 ${esc(payload.last_collected_at)}</div>`
+            ? `<div class="ss-muted">최근 수집 ${esc(kstTime(payload.last_collected_at))}</div>`
             : ""
         }
       </header>
