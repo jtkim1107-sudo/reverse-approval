@@ -589,13 +589,15 @@ async function route() {
 // 한 달치 팀 상태를 모은다. sumCM/cmOfSale이 전역(erpProducts·erpChannelList)에 의존하므로 loadErpBase가 먼저.
 async function loadTeamMonth(month) {
   const { buys, sales } = await loadErpBase();
-  const [adRes, fixRes, goalRes, cashRes] = await Promise.all([
-    sb.from("ad_costs").select("*"),
+  const [adSrc, fixRes, goalRes, cashRes] = await Promise.all([
+    loadAdSources(),
     sb.from("fixed_costs").select("*"),
     sb.from("team_goals").select("*").eq("month", month).maybeSingle(),
     sb.from("cash_txns").select("date"),
   ]);
-  const ads = adRes.data || [];
+  // 2026-09-11 광고비는 자동수집 + 계산에 포함된 수동 입력(js/ad_costs.js) - 공헌이익 화면과 같은 목록
+  const ads = adRowsAll(adSrc);
+  const adInfo = adMonthState(adSrc, month);
   const fixed = (fixRes.data || []).filter(f => f.active !== false);
   const m = computeCmOfMonth(month, sales, ads, fixed);
 
@@ -630,8 +632,8 @@ async function loadTeamMonth(month) {
 
   // 경험치 = 지금까지 쌓아온 공헌이익 전체 (달이 바뀌어도 유지)
   const allSales = sales.filter(r => (r.date || "") <= td);
-  const lifetimeCm = sumCM(allSales).cm - expNet(ads.filter(a => String(a.date) <= td)
-    .reduce((s, a) => s + Number(a.amount), 0));
+  const lifetimeCm = sumCM(allSales).cm - ads.filter(a => String(a.date) <= td)
+    .reduce((s, a) => s + adNetOf(a), 0);
   const level = levelOf(Math.max(0, lifetimeCm));
   const paceTarget = dailyTarget * elapsed;           // 오늘까지 쌓였어야 할 매출
   const monthTarget = dailyTarget * lastDay;          // 이 달 전체 목표
@@ -640,7 +642,7 @@ async function loadTeamMonth(month) {
            goalNote: goalRes.data?.note || "",
            monthGross, todayGross, todayCm, paceTarget, monthTarget, hitDays, lifetimeCm, level,
            cov: { days, on: covOn, elapsed: days.length, rate: days.length ? covOn / days.length : 0 },
-           sales, buys, ads, fixed, ...m };
+           sales, buys, ads, adInfo, fixed, ...m };
 }
 
 // 게이지 축과 눈금 위치 계산
@@ -777,6 +779,8 @@ function salesChainHtml(st) {
       <b style="color:${st.cmNet >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(st.cmNet)}</b>가 남았습니다
       ${st.monthGross ? `<span style="color:var(--text-sub)">(매출의 ${convRate.toFixed(1)}%)</span>` : ""}<br>
       <span style="color:var(--text-sub)">이 남은 돈이 아래 게이지를 채웁니다.</span>
+      ${st.adInfo && st.adInfo.state !== AdCosts.STATE.CONFIRMED && st.adInfo.state !== AdCosts.STATE.MANUAL_ONLY
+        ? `<br><span style="color:var(--amber)">광고비가 아직 확정되지 않아(공헌이익 탭 참고) 이 금액은 잠정입니다.</span>` : ""}
     </div>`;
 }
 
@@ -1034,7 +1038,8 @@ function teamCardHtml(st, g, hy, compact) {
             ${st.todayGross >= st.dailyTarget ? "달성 🔥" : "₩" + fmt(st.dailyTarget - st.todayGross)}</div></div>` : ""}
         <div class="stat" onclick="location.hash='#/profit'">
           <div class="stat-label">지금까지 우리가 남긴 돈</div>
-          <div class="stat-value ${st.cmNet >= 0 ? "blue" : "red"}">₩${fmt(st.cmNet)}</div></div>
+          <div class="stat-value ${st.cmNet >= 0 ? "blue" : "red"}">₩${fmt(st.cmNet)}</div>
+          ${AdCosts.cmBadge(st.adInfo)}</div>
         ${st.fixTotal || st.target ? `<div class="stat" onclick="location.hash='#/team'">
           <div class="stat-label">${esc(g.nextLabel)}까지</div>
           <div class="stat-value ${g.remainAmt <= 0 ? "green" : "amber"}">
@@ -5190,6 +5195,38 @@ function sumCM(rows) {
        noCostRows: 0, noCostRevenue: 0, unknownChannels: new Set() });
 }
 
+/* ---------- 광고비 원천 (2026-09-11 쿠팡 광고비 자동수집) ----------
+   자동수집(ad_cost_collections 의 날짜별 정상 수집 합계)이 기본 원천이고, 수동 입력(ad_costs)은
+   자동수집 시작 전 날짜이거나 보정 사유가 있을 때만 계산에 들어갑니다(판정: js/ad_costs.js).
+   공헌이익·팀 목표·부가세 화면이 모두 이 목록을 써서 서로 숫자가 어긋나지 않아요. */
+async function loadAdSources() {
+  const [manRes, collRes, refRes] = await Promise.all([
+    sb.from("ad_costs").select("*").order("date", { ascending: false }),
+    sb.from("ad_cost_collections")
+      .select("expense_date,status,outcome,error,total_amount,vat_included,row_count,collected_at,source_type")
+      .gte("expense_date", AdCosts.AUTO_START_DATE)
+      .order("collected_at", { ascending: false }).limit(5000),
+    // 월 대사(WING 구간 합계)·캠페인 상세(로켓그로스 정산 광고비 내역) - 최신 행만 쓰므로 최근 것만
+    sb.from("ad_cost_monthly_refs")
+      .select("month,ref_type,period_start,period_end,amount,billable_amount,vat_amount,billed_amount,vat_included,campaigns,collected_at")
+      .order("collected_at", { ascending: false }).limit(200),
+  ]);
+  return { manualRows: manRes.data || [], manualError: manRes.error || null,
+           collections: collRes.data || [], refs: refRes.data || [],
+           autoError: collRes.error || refRes.error || null };
+}
+function adMonthState(src, month) {
+  return AdCosts.monthAds({ month, today: today(), collections: src.collections, manualRows: src.manualRows,
+                            refs: src.refs, vatEnabled: vatCfg.enabled, manualVatIncluded: vatCfg.expenseIncludesVat });
+}
+function adRowsAll(src) {
+  const months = new Set([...src.manualRows.map(a => String(a.date).slice(0, 7)),
+                          ...src.collections.map(c => String(c.expense_date).slice(0, 7))]);
+  return [...months].sort().flatMap(m => adMonthState(src, m).rows);
+}
+function adNetOf(a) { return a.net != null ? Number(a.net) : expNet(a.amount); }
+function adVatOf(a) { return a.vat != null ? Number(a.vat) : expVat(a.amount); }
+
 /* 한 달치 공헌이익 계산 — 공헌이익 화면과 팀 목표 화면이 같은 숫자를 쓰도록 공용화.
    두 화면의 값이 어긋나면 사용자가 어느 쪽도 믿지 않게 된다. */
 function computeCmOfMonth(month, sales, ads, fixed) {
@@ -5197,8 +5234,11 @@ function computeCmOfMonth(month, sales, ads, fixed) {
   const td = today();
   const rows = sales.filter(r => monthOf(r) === month && (r.date || "") <= td);
   const monthAds = ads.filter(a => String(a.date).slice(0, 7) === month && String(a.date) <= td);
-  const adGross = monthAds.reduce((s, a) => s + Number(a.amount), 0);
-  const adTotal = expNet(adGross);                    // 광고비도 공급가액 기준으로
+  // 2026-09-11 광고비 행은 원천 기준 공급가액(net)·부가세(vat)를 가지고 와요(자동수집은
+  // 쿠팡 원천의 부가세 포함 여부, 수동 입력은 설정 기준). 옛 형태 행은 설정 기준으로 나눕니다.
+  const adTotal = monthAds.reduce((s, a) => s + adNetOf(a), 0);   // 광고비도 공급가액 기준으로
+  const adVatSum = monthAds.reduce((s, a) => s + adVatOf(a), 0);
+  const adGross = adTotal + adVatSum;
   const fixTotal = fixed.reduce((s, f) => s + Number(f.amount), 0);
 
   const t = sumCM(rows);
@@ -5221,28 +5261,34 @@ function computeCmOfMonth(month, sales, ads, fixed) {
   monthAds.forEach(a => {
     const d = String(a.date);
     if (!dayMap[d]) dayMap[d] = { revenue: 0, gross: 0, cm: 0 };
-    dayMap[d].cm -= expNet(a.amount);
+    dayMap[d].cm -= adNetOf(a);
   });
   let acc = 0;
   const dayRows = Object.keys(dayMap).sort().map(d => { acc += dayMap[d].cm; return { d, ...dayMap[d], acc }; });
 
-  return { td, rows, monthAds, adGross, adTotal, adVat: adGross - adTotal, fixTotal,
+  return { td, rows, monthAds, adGross, adTotal, adVat: adVatSum, fixTotal,
            t, shipCharged, cmNet, cmRate, op, bepRate, dayRows, acc };
 }
 
 async function viewProfit() {
   const { sales } = await loadErpBase();
-  const [adRes, fixRes] = await Promise.all([
-    sb.from("ad_costs").select("*").order("date", { ascending: false }),
+  const [adSrc, fixRes] = await Promise.all([
+    loadAdSources(),
     sb.from("fixed_costs").select("*").order("created_at"),
   ]);
-  const ads = adRes.data || [];
+  // 2026-09-11 광고비 = 쿠팡 자동수집 + 계산에 포함된 수동 입력 (js/ad_costs.js)
+  const ads = adRowsAll(adSrc);
+  const adInfo = adMonthState(adSrc, erpMonth);
+  // 미확정(수집 없는 날) 또는 대사 불일치(일별 합 ≠ WING 구간 합계)면 공헌이익을 확정값으로 보이지 않게
+  const adUndet = adInfo.state === AdCosts.STATE.UNDETERMINED || adInfo.state === AdCosts.STATE.RECONCILIATION_NEEDED;
   const fixed = (fixRes.data || []).filter(f => f.active !== false);
-  profitAdsCache = ads;
+  profitAdsCache = adSrc.manualRows;                  // 삭제 버튼은 수동 입력 행에만
   profitFixedCache = fixed;
 
   const m = computeCmOfMonth(erpMonth, sales, ads, fixed);
   const { td, rows, monthAds, adTotal, fixTotal, t, shipCharged, cmNet, cmRate, op, bepRate, dayRows, acc } = m;
+  // 광고비가 미확정이면 공헌이익·영업이익을 확정값처럼 보이지 않게 - 숫자 대신 "미확정"과 근거를 보여줘요
+  const cmShown = v => adUndet ? "미확정" : `₩${fmt(v)}`;
   const maxAcc = Math.max(fixTotal, ...dayRows.map(x => Math.abs(x.acc)), 1);
 
   // BEP 달성 예상일
@@ -5283,7 +5329,7 @@ async function viewProfit() {
     const k = a.channel || "기타";
     if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, logi: 0, cm: 0, ad: 0 };
     // 상단 합계와 같은 기준(부가세 제외)으로 차감해야 두 숫자가 어긋나지 않음
-    const net = expNet(a.amount);
+    const net = adNetOf(a);
     byCh[k].ad += net;
     byCh[k].cm -= net;
   });
@@ -5317,11 +5363,13 @@ async function viewProfit() {
           ${vatCfg.enabled && t.outVat ? `<div style="font-size:12px;color:var(--text-sub);margin-top:2px">
             고객이 낸 돈 ₩${fmt(t.gross)} − 부가세 ₩${fmt(t.outVat)}</div>` : ""}</div>
         <div class="stat"><div class="stat-label">변동비 합계</div>
-          <div class="stat-value amber">₩${fmt(t.cost + t.fee + t.ship + t.logi + adTotal)}</div></div>
+          <div class="stat-value amber">₩${fmt(t.cost + t.fee + t.ship + t.logi + adTotal)}${adUndet ? " <small>+ 광고비 미확정</small>" : ""}</div></div>
         <div class="stat"><div class="stat-label">공헌이익</div>
-          <div class="stat-value" style="color:${cmNet >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(cmNet)}</div></div>
+          <div class="stat-value" style="color:${adUndet ? "var(--amber)" : cmNet >= 0 ? "var(--green)" : "var(--red)"}">${cmShown(cmNet)}</div>
+          ${adUndet ? `<div style="font-size:12px;color:var(--text-sub);margin-top:2px">확인된 광고비까지 뺀 잠정 ₩${fmt(cmNet)}</div>` : ""}
+          ${AdCosts.cmBadge(adInfo)}</div>
         <div class="stat"><div class="stat-label">공헌이익률</div>
-          <div class="stat-value ${cmRate >= 30 ? "blue" : "amber"}">${cmRate.toFixed(1)}%</div></div>
+          <div class="stat-value ${adUndet ? "amber" : cmRate >= 30 ? "blue" : "amber"}">${adUndet ? "미확정" : cmRate.toFixed(1) + "%"}</div></div>
       </div>
       ${vatCfg.enabled ? `<p style="font-size:12.5px;color:var(--text-sub);margin-top:10px">
         🧾 모든 금액은 <b>부가세를 뺀 공급가액</b> 기준입니다. 고객이 낸 부가세는 우리 이익이 아니라
@@ -5351,21 +5399,25 @@ async function viewProfit() {
         <tbody>
           <tr><td>매출액</td><td class="num"><b>₩${fmt(t.revenue)}</b></td><td class="num">100%</td></tr>
           ${[["상품원가", t.cost], ["판매수수료", t.fee], ["출고배송비", t.ship],
-             ["물류비 (로켓그로스 등)", t.logi], ["광고비", adTotal]]
-            .filter(([label, v]) => v > 0 || !label.startsWith("물류비")).map(([label, v]) => `
-            <tr><td style="padding-left:18px;color:var(--text-sub)">− ${label}</td>
-              <td class="num">₩${fmt(v)}</td>
-              <td class="num">${t.revenue ? (v / t.revenue * 100).toFixed(1) : 0}%</td></tr>`).join("")}
+             ["물류비 (로켓그로스 등)", t.logi], ["쿠팡 광고비", adTotal]]
+            .filter(([label, v]) => v > 0 || !label.startsWith("물류비")).map(([label, v]) => {
+              const undet = adUndet && label === "쿠팡 광고비";
+              return `
+            <tr><td style="padding-left:18px;color:var(--text-sub)">− ${label}${undet
+                ? ` <small style="color:var(--amber)">${adInfo.undeterminedDays.length ? `미확정 ${adInfo.undeterminedDays.length}일 제외` : "대사 불일치"}</small>` : ""}</td>
+              <td class="num">${undet ? `미확정 (확인된 ₩${fmt(v)})` : `₩${fmt(v)}`}</td>
+              <td class="num">${t.revenue ? (v / t.revenue * 100).toFixed(1) : 0}%</td></tr>`; }).join("")}
           <tr style="border-top:2px solid var(--line)">
             <td><b>= 공헌이익</b></td>
-            <td class="num"><b style="color:${cmNet >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(cmNet)}</b></td>
-            <td class="num"><b>${cmRate.toFixed(1)}%</b></td></tr>
+            <td class="num"><b style="color:${adUndet ? "var(--amber)" : cmNet >= 0 ? "var(--green)" : "var(--red)"}">${cmShown(cmNet)}</b>${adUndet
+              ? `<div style="font-size:12px;color:var(--text-sub)">잠정 ₩${fmt(cmNet)}</div>` : ""}</td>
+            <td class="num"><b>${adUndet ? "—" : cmRate.toFixed(1) + "%"}</b></td></tr>
           <tr><td style="padding-left:18px;color:var(--text-sub)">− 고정비 (월)</td>
             <td class="num">₩${fmt(fixTotal)}</td><td class="num">—</td></tr>
           <tr style="border-top:2px solid var(--line)">
             <td><b>= 영업이익</b></td>
-            <td class="num"><b style="color:${op >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(op)}</b></td>
-            <td class="num">${t.revenue ? (op / t.revenue * 100).toFixed(1) + "%" : "—"}</td></tr>
+            <td class="num"><b style="color:${adUndet ? "var(--amber)" : op >= 0 ? "var(--green)" : "var(--red)"}">${cmShown(op)}</b></td>
+            <td class="num">${adUndet ? "—" : t.revenue ? (op / t.revenue * 100).toFixed(1) + "%" : "—"}</td></tr>
         </tbody>
       </table></div>
       ${fixTotal ? `
@@ -5445,23 +5497,7 @@ async function viewProfit() {
         ※ 이익률 15% 미만은 주황색입니다. 많이 팔릴수록 손해인 상품을 여기서 잡아냅니다.</p>
     </div>
 
-    <div class="card">
-      <div class="card-head"><h2>${erpMonth} 광고비 내역</h2>
-        <button class="btn sm secondary" onclick="openAdModal()">＋ 광고비 입력</button></div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>일자</th><th>채널</th><th class="num">금액</th><th>메모</th><th>입력자</th><th></th></tr></thead>
-        <tbody>${monthAds.length ? monthAds.map(a => `
-          <tr>
-            <td>${esc(String(a.date))}</td>
-            <td>${esc(a.channel || "전체")}</td>
-            <td class="num"><b>₩${fmt(a.amount)}</b></td>
-            <td>${esc(a.memo)}</td>
-            <td>${esc(a.created_by)}</td>
-            <td><button class="btn sm danger" onclick="deleteErpRow('ad_costs','${a.id}')">삭제</button></td>
-          </tr>`).join("") : `<tr><td colspan="6" class="empty">${erpMonth} 광고비가 없습니다</td></tr>`}
-        </tbody>
-      </table></div>
-    </div>`;
+    ${AdCosts.cardHtml(adInfo, [], { autoError: adSrc.autoError })}`;
 }
 
 let profitAdsCache = [], profitFixedCache = [];
@@ -5481,8 +5517,7 @@ function vatPeriodOf(dateStr) {
 
 async function viewVat() {
   const { sales, buys, costs } = await loadErpBase();
-  const [adRes] = await Promise.all([sb.from("ad_costs").select("*")]);
-  const ads = adRes.data || [];
+  const ads = adRowsAll(await loadAdSources());
   const td = today();
   const year = erpMonth.slice(0, 4);
 
@@ -5504,7 +5539,7 @@ async function viewVat() {
     const buyVatSum = b.reduce((sum, r) => sum + buyVat(r.amount, prodOf(r.product_id)), 0);
     const buyNetSum = b.reduce((sum, r) => sum + buyNet(r.amount, prodOf(r.product_id)), 0);
     const costVat = c.reduce((sum, r) => sum + expVat(r.amount), 0);
-    const adVat = a.reduce((sum, r) => sum + expVat(r.amount), 0);
+    const adVat = a.reduce((sum, r) => sum + adVatOf(r), 0);
     // 판매수수료·출고배송비에 붙은 부가세도 공제 대상 — 커머스에서 금액이 가장 큰 항목
     const shipCharged = shipChargedRows(s);
     const feeShipVat = s.reduce((sum, r) => sum + cmOfSale(r, shipCharged).feeShipVat, 0);
@@ -5619,7 +5654,11 @@ function openAdModal() {
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal">
-        <h3>광고비 입력</h3>
+        <h3>수동 광고비 입력</h3>
+        <p style="font-size:12.5px;color:var(--text-sub);margin:-4px 0 10px">
+          쿠팡 광고비는 ${AdCosts.AUTO_START_DATE}부터 GCP가 자동수집해요. 그 이후 날짜에 수동으로 넣은 금액은
+          자동수집과 중복될 수 있어 <b>보정 사유를 적은 경우에만</b> 공헌이익에 더해지고,
+          사유가 없으면 "중복 확인 필요"로 표시되고 계산에서 빠집니다.</p>
         <div class="form-grid">
           <div class="field"><label>일자 *</label><input id="ad-date" type="date" value="${today()}"></div>
           <div class="field"><label>채널</label>
@@ -5628,6 +5667,8 @@ function openAdModal() {
             <p style="font-size:12px;color:var(--text-sub);margin-top:4px">
               ${vatCfg.expenseIncludesVat ? "광고비 청구서에 적힌 금액 그대로 입력하세요 (부가세 포함)." : "부가세를 뺀 금액으로 입력하세요."}</p></div>
           <div class="field full"><label>메모</label><input id="ad-memo" maxlength="100" placeholder="예) 쿠팡 광고 8월 1주차"></div>
+          <div class="field full"><label>보정 사유 (자동수집 기간에 별도로 더할 때만)</label>
+            <input id="ad-reason" maxlength="200" placeholder="예) 쿠팡 광고 크레딧 환급 - 9월 청구서 기준"></div>
         </div>
         <div class="modal-actions">
           <button class="btn secondary" onclick="closeModal()">취소</button>
@@ -5644,12 +5685,16 @@ async function saveAd() {
   if (amount <= 0) return toast("금액을 입력해 주세요");
   const btn = document.getElementById("btn-ad-save");
   btn.disabled = true;
-  const { error } = await sb.from("ad_costs").insert({
+  const reason = (document.getElementById("ad-reason")?.value || "").trim();
+  const row = {
     date, amount,
     channel: document.getElementById("ad-ch").value || null,
     memo: document.getElementById("ad-memo").value.trim(),
     created_by: me.name,
-  });
+  };
+  // 보정 사유는 적었을 때만 보내요(비워 두면 기존 입력과 똑같은 행).
+  if (reason) row.adjustment_reason = reason;
+  const { error } = await sb.from("ad_costs").insert(row);
   if (error) { btn.disabled = false; return toast("저장에 실패했습니다"); }
   toast("광고비가 저장되었습니다");
   closeModal();
