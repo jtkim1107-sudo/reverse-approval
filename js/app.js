@@ -2395,6 +2395,9 @@ let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
 let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
 let monthlySalesLedgerGroups = {}; // 날짜+상품+채널 집계에서 원 주문을 여는 용도
+// 2026-09-11 매출 내역 CSV = 화면에 방금 그린 월 집계 그대로. viewSales 가 그릴 때마다 덮어써요.
+// { month, summary, statisticsError, adjustmentError, loadedAt }
+let salesCsvSnapshot = null;
 let erpCostsCache = []; // 부대비용(택배·운송) 캐시
 let erpSuppliers = [];      // 과거 매입에 쓰인 거래처명
 let erpSupplierList = [];   // suppliers 테이블 (등록된 거래처)
@@ -2650,7 +2653,7 @@ async function loadMonthlySalesStatistics(month) {
   const dateFrom = `${month}-01`;
   const dateTo = `${month}-${String(new Date(year, monthNumber, 0).getDate()).padStart(2, "0")}`;
   const { data, error } = await sb.from("sales_daily_statistics")
-    .select("sales_date,channel,option_id,product_id,product_name,option_unit,gross_qty,gross_amount,cancel_qty,cancel_amount,net_qty,net_amount,mapping_status")
+    .select("sales_date,channel,option_id,product_id,product_name,option_unit,gross_qty,gross_amount,cancel_qty,cancel_amount,net_qty,net_amount,mapping_status,reconciliation_status")
     .gte("sales_date", dateFrom).lte("sales_date", dateTo)
     .order("sales_date", { ascending: false });
   if (error) throw error;
@@ -2779,6 +2782,13 @@ async function viewSales() {
     adjustmentRows: adjustmentSummary?.rows || [],
     productName: prodName,
   });
+  // 아래 표가 그리는 것과 *같은* 집계 결과를 CSV 용으로 보관(다시 조회·계산하지 않음).
+  salesCsvSnapshot = {
+    month: erpMonth, summary: monthlySummary || null,
+    statisticsError: monthlyStatisticsError || null,
+    adjustmentError: adjustmentResult.status === "fulfilled" ? null : (adjustmentResult.reason || new Error("취소·반품 조회 실패")),
+    loadedAt: new Date().toISOString(),
+  };
 
   // 어제 매출 브리핑 상세 카드 - 실패해도(테이블 아직 없음 등) 매출 입력 화면 나머지는 보여야 하므로 따로 감쌈
   let briefingHtml = "";
@@ -2854,7 +2864,7 @@ async function viewSales() {
           ${globalThis.SalesRefresh ? globalThis.SalesRefresh.buttonHtml({ date: refreshDate, source: "sales" }) : ""}</h2>
         <div style="display:flex;gap:8px;align-items:center">
           ${monthPicker()}
-          <button class="btn sm secondary" onclick="exportErpCSV('sales')">CSV</button>
+          <button class="btn sm secondary" onclick="exportMonthlySalesCSV()" title="화면에 보이는 날짜·상품별 순매출 집계(이 달 전체)를 CSV로">CSV</button>
         </div></div>
       ${refreshHtml}
       ${monthlySalesSummaryHtml(monthlySummary, monthlyStatisticsError)}
@@ -3626,7 +3636,37 @@ async function deleteErpRow(table, id) {
   route();
 }
 
+/* 2026-09-11 매출 내역 CSV. 예전에는 exportErpCSV('sales')가 sales 주문 원장(주문별 행·로켓그로스
+   주문 포함)을 그대로 내보내서, 판매통계 NET 기준으로 날짜·상품별 집계를 보여주는 화면과 달랐어요.
+   이제는 viewSales 가 방금 그린 집계(salesCsvSnapshot.summary.entries)를 공통 직렬화 함수
+   (SalesMonthlySummary.toCsv)로 그대로 옮깁니다 - 여기서 다시 조회하거나 계산하지 않아요.
+   조회가 실패했거나 화면과 다른 달이면 빈 파일·이전 자료를 내려받지 않고 오류를 보여줘요. */
+function salesCsvBlockReason(snap, month) {
+  if (!snap || !snap.summary) return "매출 내역을 아직 불러오지 못했습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.";
+  if (snap.month !== month) return `화면의 월(${snap.month})과 선택한 월(${month})이 다릅니다. 화면을 다시 불러온 뒤 시도해 주세요.`;
+  if (snap.statisticsError) return `월 판매통계를 불러오지 못해 CSV를 만들지 않았습니다 (${snap.statisticsError.message || snap.statisticsError}).`;
+  if (snap.adjustmentError) return `판매자배송 취소·반품을 불러오지 못해 CSV를 만들지 않았습니다 (${snap.adjustmentError.message || snap.adjustmentError}).`;
+  if (!snap.summary.has_rg_statistics) return "이 달의 로켓그로스 판매통계가 아직 없어 CSV를 만들지 않았습니다.";
+  return null;
+}
+
+function exportMonthlySalesCSV() {
+  const snap = salesCsvSnapshot;
+  const blocked = salesCsvBlockReason(snap, erpMonth);
+  if (blocked) { alert(blocked); return null; }
+  const csv = SalesMonthlySummary.toCsv(snap.summary, {
+    productCode: id => (erpProducts.find(p => p.id === id) || {}).code || "",
+  });
+  const stamp = new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit",
+    day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
+    .format(new Date()).replace(/[-: ]/g, "").replace(/^(\d{8})(\d{6})$/, "$1-$2");
+  const filename = `리버스_매출내역_${snap.month}_${stamp}.csv`;
+  downloadFile(csv, filename, "text/csv");
+  return { filename, rows: snap.summary.entries.length, loadedAt: snap.loadedAt };
+}
+
 function exportErpCSV(table) {
+  if (table === "sales") return exportMonthlySalesCSV();   // 매출은 주문 원장이 아니라 화면 집계로
   const isSale = table === "sales";
   const head = isSale
     ? ["판매일", "품목", "채널", "수량", "단가", "금액", "적요", "입력자"]

@@ -31,6 +31,7 @@
         channel: RG_CHANNEL, source: "STATISTICS_NET", option_ids: [], order_count: null,
         gross_qty: 0, gross_amount: 0, cancel_qty: 0, cancel_amount: 0,
         net_qty: 0, net_amount: 0, ledger_rows: [],
+        mapping_statuses: [], reconciliation_statuses: [],
       });
       g.gross_qty += n(row.gross_qty);
       g.gross_amount += n(row.gross_amount);
@@ -39,6 +40,11 @@
       g.net_qty += n(row.net_qty);
       g.net_amount += n(row.net_amount);
       if (row.option_id && !g.option_ids.includes(String(row.option_id))) g.option_ids.push(String(row.option_id));
+      const ms = row.mapping_status || (row.product_id ? "MATCHED" : "UNMATCHED");
+      if (!g.mapping_statuses.includes(ms)) g.mapping_statuses.push(ms);
+      if (row.reconciliation_status && !g.reconciliation_statuses.includes(row.reconciliation_status)) {
+        g.reconciliation_statuses.push(row.reconciliation_status);
+      }
     }
 
     // 판매자배송 등 비-RG 채널은 기존 주문 원장을 날짜+상품+채널로 묶습니다.
@@ -54,6 +60,7 @@
         channel, source: "ORDER_MINUS_ADJUSTMENT", option_ids: [], order_count: 0,
         gross_qty: 0, gross_amount: 0, cancel_qty: 0, cancel_amount: 0,
         net_qty: 0, net_amount: 0, ledger_rows: [],
+        mapping_statuses: [row.product_id ? "MATCHED" : "UNMATCHED"], reconciliation_statuses: [],
       });
       g.gross_qty += n(row.qty);
       g.gross_amount += n(row.amount);
@@ -76,6 +83,7 @@
         channel, source: "ORDER_MINUS_ADJUSTMENT", option_ids: [], order_count: 0,
         gross_qty: 0, gross_amount: 0, cancel_qty: 0, cancel_amount: 0,
         net_qty: 0, net_amount: 0, ledger_rows: [],
+        mapping_statuses: [row.product_id ? "MATCHED" : "UNMATCHED"], reconciliation_statuses: [],
       });
       const qty = Math.abs(n(row.qty));
       const amount = Math.abs(n(row.used_amount != null ? row.used_amount : row.estimated_adjustment_amount));
@@ -128,5 +136,48 @@
     };
   }
 
-  global.SalesMonthlySummary = { build, forDate, RG_CHANNEL };
+  /* ── CSV (2026-09-11) ─────────────────────────────────────────────────────
+     사용자 지시: "CSV는 화면에 렌더링되는 것과 동일한 API 응답과 동일한 집계 결과를 사용,
+     화면과 CSV가 각각 별도로 매출을 계산하지 않도록 공통 데이터 배열". 여기서는 *계산하지 않고*
+     build() 가 만든 entries(화면 표가 그리는 바로 그 배열)를 순서 그대로 한 줄씩 옮기기만 해요.
+     주문번호는 넣지 않습니다(화면이 상품별 집계라서). */
+  const CSV_HEADER = ["판매일", "ERP 상품코드", "상품명", "채널", "전체수량", "취소·반품수량", "순판매수량",
+    "전체매출", "취소·반품금액", "순매출", "데이터 원천", "쿠팡 옵션 ID", "매핑상태", "대사상태"];
+  const SOURCE_LABEL = { STATISTICS_NET: "쿠팡 판매통계 NET", ORDER_MINUS_ADJUSTMENT: "주문 − 취소·반품" };
+  const MAPPING_LABEL = { MATCHED: "매핑됨", UNMATCHED: "미매핑" };
+  const RECON_LABEL = { MATCH: "일치", RECONCILIATION_MISMATCH: "정산 차이", NOT_COMPARED: "비교 전(정산 엑셀 없음)" };
+  // 숫자는 쉼표·원 기호 없이. 부동소수 흔적(0.1+0.2)만 걷어내고 값은 바꾸지 않아요.
+  const num = (v) => { const x = Math.round(n(v) * 100) / 100; return Object.is(x, -0) ? 0 : x; };
+
+  function csvRows(summary, { productCode } = {}) {
+    const codeOf = typeof productCode === "function" ? productCode : () => "";
+    const body = summary.entries.map((g) => {
+      const mapping = (g.mapping_statuses || []).map((m) => MAPPING_LABEL[m] || m).join("/")
+        || (g.product_id ? "매핑됨" : "미매핑");
+      const recon = g.source === "STATISTICS_NET"
+        ? ((g.reconciliation_statuses || []).map((r) => RECON_LABEL[r] || r).join("/") || "")
+        : "해당 없음(판매자배송)";
+      return [g.date, g.product_id ? (codeOf(g.product_id) || "") : "", g.product_name, g.channel,
+        num(g.gross_qty), num(g.cancel_qty), num(g.net_qty),
+        num(g.gross_amount), num(g.cancel_amount), num(g.net_amount),
+        SOURCE_LABEL[g.source] || g.source, (g.option_ids || []).join(" "), mapping, recon];
+    });
+    const sum = (i) => num(body.reduce((t, r) => t + r[i], 0));
+    const total = ["합계", "", `${summary.entries.length}행`, "", sum(4), sum(5), sum(6), sum(7), sum(8), sum(9),
+      "", "", "", ""];
+    return [CSV_HEADER, ...body, total];
+  }
+
+  function csvCell(v) {
+    if (typeof v === "number") return String(v);
+    const s = String(v == null ? "" : v);
+    return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  // Excel 한글 깨짐 방지 UTF-8 BOM + CRLF.
+  function toCsv(summary, opts = {}) {
+    return "\uFEFF" + csvRows(summary, opts).map((r) => r.map(csvCell).join(",")).join("\r\n") + "\r\n";
+  }
+
+  global.SalesMonthlySummary = { build, forDate, csvRows, toCsv, CSV_HEADER, RG_CHANNEL };
 })(window);
