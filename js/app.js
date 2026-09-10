@@ -2367,6 +2367,7 @@ let erpMonth = today().slice(0, 7);
 let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
 let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
+let monthlySalesLedgerGroups = {}; // 날짜+상품+채널 집계에서 원 주문을 여는 용도
 let erpCostsCache = []; // 부대비용(택배·운송) 캐시
 let erpSuppliers = [];      // 과거 매입에 쓰인 거래처명
 let erpSupplierList = [];   // suppliers 테이블 (등록된 거래처)
@@ -2566,19 +2567,121 @@ function monthPicker() {
     onchange="if(this.value){erpMonth=this.value;route()}else{this.value=erpMonth}">`;
 }
 
+async function loadMonthlySalesStatistics(month) {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const dateFrom = `${month}-01`;
+  const dateTo = `${month}-${String(new Date(year, monthNumber, 0).getDate()).padStart(2, "0")}`;
+  const { data, error } = await sb.from("sales_daily_statistics")
+    .select("sales_date,channel,option_id,product_id,product_name,option_unit,gross_qty,gross_amount,cancel_qty,cancel_amount,net_qty,net_amount,mapping_status")
+    .gte("sales_date", dateFrom).lte("sales_date", dateTo)
+    .order("sales_date", { ascending: false });
+  if (error) throw error;
+  if (!Array.isArray(data)) throw new Error("판매통계 월 조회 결과가 없습니다");
+  return data;
+}
+
+function monthlySalesSummaryHtml(summary, error) {
+  if (error || !summary?.has_rg_statistics) {
+    return `<div role="alert" style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:12px;margin:8px 0 14px">
+      <b>월 판매통계를 불러오지 못했습니다.</b> 기존 주문 합계를 확정 매출로 대신 표시하지 않습니다.
+      <div style="font-size:12px;color:var(--text-sub);margin-top:4px">${esc(error?.message || "이 달의 로켓그로스 판매통계가 아직 없습니다.")}</div>
+    </div>`;
+  }
+  const rg = summary.rocket_growth;
+  const mp = summary.marketplace;
+  const dates = summary.collected_dates;
+  const coverage = dates.length ? `${dates[0]} ~ ${dates[dates.length - 1]}` : "수집 대기";
+  return `
+    <div class="grid-stats">
+      <div class="stat"><div class="stat-label">${erpMonth} 순매출 합계</div>
+        <div class="stat-value blue">₩${fmt(summary.total.net_amount)}</div></div>
+      <div class="stat"><div class="stat-label">${erpMonth} 순 판매수량</div>
+        <div class="stat-value">${fmt(summary.total.net_qty)}개</div></div>
+    </div>
+    <p style="color:var(--text-sub);font-size:13px;margin-bottom:6px">
+      로켓그로스 순매출 ₩${fmt(rg.net_amount)} (${fmt(rg.net_qty)}개)
+      · 반품·취소 ₩${fmt(rg.cancel_amount)} (${fmt(rg.cancel_qty)}개)
+      · 판매자배송 순매출 ₩${fmt(mp.net_amount)} (${fmt(mp.net_qty)}개)
+    </p>
+    <p style="color:var(--text-sub);font-size:12px;margin:0 0 12px">
+      기준: 로켓그로스는 쿠팡 판매통계 NET, 판매자배송은 주문 − 취소·반품 · 판매통계 반영기간 ${esc(coverage)}
+    </p>`;
+}
+
+function monthlySalesRowsHtml(summary) {
+  if (!summary?.has_rg_statistics) return `<tr><td colspan="8" class="empty">판매통계 수집 대기</td></tr>`;
+  monthlySalesLedgerGroups = {};
+  for (const group of summary.entries) monthlySalesLedgerGroups[group.key] = group;
+  if (!summary.entries.length) return `<tr><td colspan="8" class="empty">${erpMonth}월 매출이 없습니다</td></tr>`;
+  return summary.entries.map(group => {
+    const isNegative = group.net_amount < 0 || group.net_qty < 0;
+    const detail = group.source === "STATISTICS_NET"
+      ? `<span style="font-size:11px;color:var(--text-sub)">판매통계${group.option_ids.length ? ` · 옵션 ${group.option_ids.map(esc).join(", ")}` : ""}</span>`
+      : `<button class="btn sm secondary" onclick="openMonthlySalesLedger('${encodeURIComponent(group.key)}')">주문 ${group.order_count}건</button>`;
+    return `<tr${isNegative ? ` style="background:#fff7f7"` : ""}>
+      <td>${esc(group.date)}</td>
+      <td><b>${esc(group.product_name)}</b></td>
+      <td>${esc(group.channel)}</td>
+      <td class="num">${fmt(group.gross_qty)}</td>
+      <td class="num" style="color:${group.cancel_qty ? "#b26a00" : "inherit"}">${fmt(group.cancel_qty)}</td>
+      <td class="num"><b>${fmt(group.net_qty)}</b></td>
+      <td class="num"><b style="color:${isNegative ? "#b42318" : "inherit"}">₩${fmt(group.net_amount)}</b></td>
+      <td>${detail}</td>
+    </tr>`;
+  }).join("");
+}
+
+function openMonthlySalesLedger(encodedKey) {
+  const group = monthlySalesLedgerGroups[decodeURIComponent(encodedKey)];
+  if (!group || !group.ledger_rows?.length) return;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal" style="max-width:1000px">
+        <h3>${esc(group.date)} · ${esc(group.product_name)}</h3>
+        <p style="font-size:12px;color:var(--text-sub)">상품별 집계의 원 주문 ${group.ledger_rows.length}건입니다.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>수량</th><th>단가</th><th>금액</th><th>적요</th><th>입력자</th><th></th></tr></thead>
+          <tbody>${group.ledger_rows.map(r => `<tr>
+            <td class="num">${fmt(r.qty)}</td><td class="num">₩${fmt(r.unit_price)}</td>
+            <td class="num"><b>₩${fmt(r.amount)}</b></td>
+            <td>${esc(r.memo)}</td><td>${esc(r.created_by)}</td>
+            <td style="white-space:nowrap"><button class="btn sm secondary" onclick="openErpEditModal('sales','${r.id}')">수정</button>
+              <button class="btn sm danger" onclick="deleteErpRow('sales','${r.id}')">삭제</button></td>
+          </tr>`).join("")}</tbody>
+        </table></div>
+        <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">닫기</button></div>
+      </div>
+    </div>`;
+}
+
 /* ---------- 매출 (전표식 다품목 입력) ---------- */
 async function viewSales() {
   const { sales } = await loadErpBase();
   const rows = sales.filter(r => monthOf(r) === erpMonth);
   erpRowsCache = rows;
   let adjustmentSummary = null;
-  try {
-    const [year, month] = erpMonth.split('-').map(Number);
-    const lastDay = new Date(year, month, 0).getDate();
-    adjustmentSummary = await loadSalesAdjustments(`${erpMonth}-01`, `${erpMonth}-${lastDay}`);
-  } catch (e) { console.error('월 취소·반품 조회 실패:', e); }
-  const byChannel = {};
-  rows.forEach(r => { byChannel[r.channel || "기타"] = (byChannel[r.channel || "기타"] || 0) + Number(r.amount); });
+  let monthlyStatistics = [];
+  let monthlyStatisticsError = null;
+  const [year, month] = erpMonth.split('-').map(Number);
+  const lastDay = new Date(year, month, 0).getDate();
+  const [adjustmentResult, statisticsResult] = await Promise.allSettled([
+    loadSalesAdjustments(`${erpMonth}-01`, `${erpMonth}-${lastDay}`),
+    loadMonthlySalesStatistics(erpMonth),
+  ]);
+  if (adjustmentResult.status === "fulfilled") adjustmentSummary = adjustmentResult.value;
+  else console.error("월 취소·반품 조회 실패:", adjustmentResult.reason);
+  if (statisticsResult.status === "fulfilled") monthlyStatistics = statisticsResult.value;
+  else {
+    monthlyStatisticsError = statisticsResult.reason;
+    console.error("월 판매통계 조회 실패:", statisticsResult.reason);
+  }
+  const monthlySummary = globalThis.SalesMonthlySummary?.build({
+    month: erpMonth,
+    statisticsRows: monthlyStatistics,
+    salesRows: rows,
+    adjustmentRows: adjustmentSummary?.rows || [],
+    productName: prodName,
+  });
 
   // 어제 매출 브리핑 상세 카드 - 실패해도(테이블 아직 없음 등) 매출 입력 화면 나머지는 보여야 하므로 따로 감쌈
   let briefingHtml = "";
@@ -2624,33 +2727,16 @@ async function viewSales() {
     </div>
 
     <div class="card">
-      <div class="card-head"><h2>매출 내역 <span style="font-size:11.5px;font-weight:400;color:var(--text-sub)">(주문매출 · 결제시점 기준)</span></h2>
+      <div class="card-head"><h2>매출 내역 <span style="font-size:11.5px;font-weight:400;color:var(--text-sub)">(날짜 · 상품별 순매출)</span></h2>
         <div style="display:flex;gap:8px;align-items:center">
           ${monthPicker()}
           <button class="btn sm secondary" onclick="exportErpCSV('sales')">CSV</button>
         </div></div>
-      ${erpSummaryCards(rows, "주문매출")}
-      ${rgAdjustmentNotCollectedHtml(rows.some(r => (r.channel || "") === RG_CHANNEL_NAME))}
-      ${salesAdjustmentSummaryHtml(adjustmentSummary, rows.reduce((sum, r) => sum + Number(r.amount || 0), 0))}
-      ${Object.keys(byChannel).length ? `<p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">채널별: ${
-        Object.entries(byChannel).map(([c, v]) => `${esc(c)} ₩${fmt(v)}`).join(" · ")}</p>` : ""}
+      ${monthlySalesSummaryHtml(monthlySummary, monthlyStatisticsError)}
       <div class="table-wrap"><table>
-        <thead><tr><th>판매일</th><th>품목</th><th>채널</th><th class="num">수량</th><th class="num">단가</th><th class="num">금액</th><th>적요</th><th>입력자</th><th></th></tr></thead>
-        <tbody>${rows.length ? rows.map(r => `
-          <tr>
-            <td>${esc(r.date)}</td>
-            <td><b>${esc(prodName(r.product_id))}</b></td>
-            <td>${esc(r.channel)}</td>
-            <td class="num">${fmt(r.qty)}</td>
-            <td class="num">₩${fmt(r.unit_price)}</td>
-            <td class="num"><b>₩${fmt(r.amount)}</b></td>
-            <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis">${esc(r.memo)}</td>
-            <td>${esc(r.created_by)}</td>
-            <td style="white-space:nowrap">
-              <button class="btn sm secondary" onclick="openErpEditModal('sales','${r.id}')">수정</button>
-              <button class="btn sm danger" onclick="deleteErpRow('sales','${r.id}')">삭제</button></td>
-          </tr>`).join("") : `<tr><td colspan="9" class="empty">${erpMonth}월 매출이 없습니다</td></tr>`}
-        </tbody>
+        <thead><tr><th>판매일</th><th>상품</th><th>채널</th><th class="num">전체수량</th>
+          <th class="num">취소·반품</th><th class="num">순판매수량</th><th class="num">순매출</th><th>원본</th></tr></thead>
+        <tbody>${monthlySalesRowsHtml(monthlySummary)}</tbody>
       </table></div>
     </div>`;
 }
