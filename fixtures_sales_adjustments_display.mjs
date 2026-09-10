@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const source = readFileSync(new URL('./js/app.js', import.meta.url), 'utf8');
 const context = vm.createContext({ console, Number, Math, Array, fmt: n => String(n), esc: s => String(s) });
-for (const name of ['summarizeSalesAdjustments', 'loadSalesAdjustments', 'salesAdjustmentSummaryHtml', 'loadDailySalesBriefing']) {
+for (const name of ['summarizeSalesAdjustments', 'loadSalesAdjustments', 'salesAdjustmentSummaryHtml', 'rgAdjustmentNotCollectedHtml', 'loadDailySalesBriefing']) {
   const match = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}`));
   assert.ok(match, name);
   vm.runInContext(match[0], context);
@@ -45,4 +45,17 @@ queryError = null; calls=[];pages=[Array.from({length:500},()=>row()),[row()]];
 const summary = await context.loadSalesAdjustments('2026-09-01','2026-09-30');
 check('페이지 경계를 넘어 전체 반품 집계',()=>{assert.equal(summary.return_qty,501);assert.equal(calls.filter(c=>c[0]==='range').length,2);});
 check('월별 접수일 필터 전달',()=>{assert.ok(calls.some(c=>c[0]==='gte'&&c[1]==='2026-09-01'));assert.ok(calls.some(c=>c[0]==='lte'&&c[1]==='2026-09-30'));});
+// 2026-09-10 [로켓그로스 취소·반품 미수집] 0원을 '반품 없음'으로 오해하지 않게 하는 경고
+check('RG 매출이 있으면 미수집 경고를 표시', () => {
+  const html = context.rgAdjustmentNotCollectedHtml(true);
+  assert.match(html, /자동 수집되지 않습니다/);
+  assert.match(html, /포함돼 있지 않으며/);
+  assert.match(html, /판매 리포트/);
+});
+check('RG 매출이 없으면 경고를 띄우지 않음', () => assert.equal(context.rgAdjustmentNotCollectedHtml(false), ''));
+check('경고가 임의의 숫자를 만들어내지 않음', () => {
+  const html = context.rgAdjustmentNotCollectedHtml(true);
+  assert.ok(!/₩[0-9]/.test(html), '경고문에 금액을 지어내면 안 됨');
+});
+
 console.log(`${passed} tests passed`);

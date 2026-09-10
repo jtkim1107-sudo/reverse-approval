@@ -1285,6 +1285,24 @@ async function loadSalesAdjustments(dateFrom, dateTo) {
   return summarizeSalesAdjustments(rows);
 }
 
+// 2026-09-10 [사용자 지적: "9월 9일 로켓그로스 매출의 마이너스 조정이 반영되는지
+// 확인하라"] 실측 결과: 로켓그로스 취소·반품은 *** 어떤 수집 경로에도 잡히지 않아요 ***.
+//   - RG 주문 API(rg/orders)에는 취소·반품/상태 필드 자체가 없음(order 4필드, item 5필드)
+//   - returnRequests v6는 08-20~09-10 조회에서 0건(RG 반품이 이 API에 안 나타남)
+//   - revenue-history도 최근일은 0건(정산 인식 지연)
+// 그래서 sales_adjustments는 0행이고, 화면이 "반품 0개 · ₩0"으로 보이면 "반품이 없었다"로
+// 오해하게 됩니다. 실제로는 2026-09-09 하루만 8개 / 136,660원이 리포트에서 차감됐어요.
+// *** 숫자를 임의로 채우지 않고, 수집되지 않았다는 사실만 표시합니다. ***
+const RG_CHANNEL_NAME = "쿠팡 로켓그로스";
+function rgAdjustmentNotCollectedHtml(hasRgSales) {
+  if (!hasRgSales) return "";
+  return `<p role="alert" style="font-size:12.5px;color:var(--amber,#b26a00);margin:6px 0">
+    ⚠️ <b>로켓그로스 취소·반품은 현재 자동 수집되지 않습니다.</b>
+    아래 취소·반품 금액에는 로켓그로스 건이 <b>포함돼 있지 않으며</b>, 0원이어도 "반품 없음"을 뜻하지 않습니다.
+    쿠팡 판매 리포트(처리일 기준 차감)와 차이가 납니다 — 정확한 순매출은 쿠팡 판매 리포트를 확인하세요.
+  </p>`;
+}
+
 function salesAdjustmentSummaryHtml(summary, grossAmount) {
   if (!summary) return '<p role="alert">취소·반품 내역을 불러오지 못했습니다. 순매출은 확인할 수 없습니다.</p>';
   return `<p style="font-size:12px;color:var(--text-sub)">취소·반품은 접수일 기준입니다. ${summary.includes_estimated ? '원주문 단가로 계산한 추정금액 포함.' : ''}</p>
@@ -1466,6 +1484,7 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
       </p>` : ""}
       <p style="font-size:12px;color:var(--text-sub)">총 주문매출은 조정 전 금액이며, 순매출은 접수일 기준 취소·반품을 차감한 금액입니다. 쿠팡 실적매출·정산매출과는 다를 수 있습니다.</p>
       ${b.adjustment_display_error ? `<p role="alert">${esc(b.adjustment_display_error)}</p>` : ''}
+      ${rgAdjustmentNotCollectedHtml(Number((b.channel_breakdown || {})[RG_CHANNEL_NAME] || 0) > 0)}
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">총 판매수량</div><div class="stat-value">${fmt(b.gross_qty)}개</div></div>
         <div class="stat"><div class="stat-label">총 주문매출(잠정)</div><div class="stat-value blue">₩${fmt(b.gross_amount)}</div></div>
@@ -2610,6 +2629,7 @@ async function viewSales() {
           <button class="btn sm secondary" onclick="exportErpCSV('sales')">CSV</button>
         </div></div>
       ${erpSummaryCards(rows, "주문매출")}
+      ${rgAdjustmentNotCollectedHtml(rows.some(r => (r.channel || "") === RG_CHANNEL_NAME))}
       ${salesAdjustmentSummaryHtml(adjustmentSummary, rows.reduce((sum, r) => sum + Number(r.amount || 0), 0))}
       ${Object.keys(byChannel).length ? `<p style="color:var(--text-sub);font-size:13px;margin-bottom:10px">채널별: ${
         Object.entries(byChannel).map(([c, v]) => `${esc(c)} ₩${fmt(v)}`).join(" · ")}</p>` : ""}
