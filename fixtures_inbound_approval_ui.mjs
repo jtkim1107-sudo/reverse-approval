@@ -150,7 +150,7 @@ has(IA.approvalCellHtml({ ...base, id: "pnew", resubmission_of_plan_id: "prej-99
 // app.js 실제 버튼 조건(rgActionsHtml·배지 건수) - 소스에서 잘라 실행
 const app = read("./js/app.js");
 const seg = app.slice(app.indexOf("const RG_RETRYABLE_ERROR_PATTERNS"), app.indexOf("// WING 실제 제출 - decideRgInbound()와 동일한 원칙"));
-const appCtx = vm.createContext({ esc: s => String(s ?? ""), Date, Number, String, JSON, console });
+const appCtx = vm.createContext({ esc: s => String(s ?? ""), Date, Number, String, JSON, console, fmt: n => Number(n || 0).toLocaleString("ko-KR"), InboundApproval: IA });
 vm.runInContext(seg + "\n;globalThis.__t = { rgActionsHtml, rgCanDecide, rgCanPrepareReplan, rgCanSubmit };", appCtx);
 const T = appCtx.__t;
 const stale = { ...rej, inbound_date: "2026-09-01", inbound_time: "09:30:00" };
@@ -294,8 +294,58 @@ console.log("\n=== 10. 단일 다품목 입고 · 대체된 합배송 그룹(202
   const appr = { id: "6869c83d-50bd", approval_status: "APPROVED", submit_status: "NOT_SUBMITTED", preflight_status: "PASSED",
                  internal_status: "PENDING", transport_type: "TRUCK", total_plt: 6, inbound_date: "2099-01-01", inbound_time: "08:50:00" };
   const act = T.rgActionsHtml(appr, new Set(), {}, { loadBlock: null, items: multi });
-  hasNot(act, "submitRgInbound", "[핵심] 다품목 승인 요청에는 쿠팡 제출 버튼 없음(서버 게이트 1종 전용)");
-  has(act, "다품목 최종 제출 보류", "대신 보류 안내");
+  has(act, "쿠팡 제출 · 상품 2개 · 총 6PLT · 최종 제출", "[핵심] 다품목 승인 요청 버튼: '쿠팡 제출 · 상품 2개 · 총 6PLT · 최종 제출'");
+  has(act, "openRgMultiSubmitModal('6869c83d-50bd')", "버튼은 바로 제출하지 않고 확인창을 먼저 엶");
+  hasNot(act, "submitRgInbound(", "다품목은 확인창 없이 바로 제출하는 경로 없음");
+  hasNot(act, "보류", "보류 안내 제거");
+  check(T.rgActionsHtml({ ...appr, approval_status: "PENDING_APPROVAL" }, new Set(), {}, { loadBlock: null, items: multi }).includes("최종 제출"), false,
+    "승인 전(승인대기)에는 최종 제출 버튼 없음");
+  check(T.rgActionsHtml(appr, new Set([appr.id]), {}, { loadBlock: null, items: multi }).includes("최종 제출"), false, "대체된 요청은 최종 제출 버튼 없음");
+
+  // 확인창 + [최종 제출] 한 번(app.js 실제 함수, 가짜 sb·document·fetch)
+  const grab = name => { const m = app.match(new RegExp(`\\n(async )?function ${name}\\([\\s\\S]*?\\n}`)); if (!m) throw new Error(name); return m[0]; };
+  const els = {};
+  const mkEl = id => (els[id] ||= { id, disabled: false, hidden: true, textContent: "", innerHTML: "" });
+  const root = { innerHTML: "" };
+  let fetchCalls = 0, releaseFetch;
+  const PL = { id: "6869c83d-50bd", approval_status: "APPROVED", submit_status: "NOT_SUBMITTED", internal_status: "PENDING", preflight_status: "PASSED",
+               coupang_inbound_plan_id: "1101897524588859392", destination_center_id: "c-mcn1", destination_center_raw: "MCN1",
+               inbound_date: "2026-09-14", inbound_time: "08:50:00", total_plt: 6, shipment_group_id: "b28edc90-f651" };
+  const IT = [{ inventory_name: "EPP 발판", option_name: "그레이 2개", wing_sku_id: "42219667", coupang_inbound_qty: 320, pallet_count: 4 },
+              { inventory_name: "EPP 발판", option_name: "블랙 2개", wing_sku_id: "42219680", coupang_inbound_qty: 160, pallet_count: 2 }];
+  const GR = { id: "b28edc90-f651", vehicle_type: "5톤", vehicle_count: 1, total_pallet_count: 6, total_transport_cost: 187000, status: "ACTIVE" };
+  const FRS = [{ id: "fr1", status: "ACTIVE", basis: "ESTIMATE", gross_amount: 187000, supply_amount: 170000, vat_amount: 17000 },
+               { id: "fr0", status: "SUPERSEDED", gross_amount: 187000, supply_amount: 170000, vat_amount: 17000 }];
+  const q = (data) => { const o = { select: () => o, eq: () => o, limit: async () => ({ data: [] }), maybeSingle: async () => ({ data }), then: r => r({ data }) }; return o; };
+  const sbFake = { from: t => t === "inbound_plans" ? q(PL) : t === "inbound_plan_items" ? q(IT) : t === "inbound_shipment_groups" ? q([GR]) : q(FRS),
+                   auth: { getSession: async () => ({ data: { session: { access_token: "jwt" } } }) } };
+  const mctx = vm.createContext({ console, sb: sbFake, CoupangCenters: CC, InboundApproval: IA, esc: s => String(s ?? ""),
+    fmt: n => Number(n || 0).toLocaleString("ko-KR"), toast: () => {}, route: () => {}, closeModal: () => {}, rgCanSubmit: T.rgCanSubmit,
+    WING_SUBMIT_API_BASE: "https://x", reportSubmitTransportFailure: async () => {},
+    document: { getElementById: id => id === "modal-root" ? root : mkEl(id), querySelectorAll: () => [] },
+    fetch: () => { fetchCalls++; return new Promise(r => { releaseFetch = () => r({ ok: true, json: async () => ({ ok: true }) }); }); } });
+  vm.runInContext("const _rgMultiSubmitInFlight = new Set();\n" + grab("openRgMultiSubmitModal") + "\n" + grab("confirmRgMultiSubmit")
+    + "\n;globalThis.__m = { openRgMultiSubmitModal, confirmRgMultiSubmit };", mctx);
+  CC.setRows(MASTER);
+  await mctx.__m.openRgMultiSubmitModal(PL.id);
+  const mh = root.innerHTML;
+  for (const t of ["그레이 2개", "블랙 2개", "42219667", "42219680", "320EA", "160EA", "4PLT", "2PLT", "480EA", "6PLT", "목천1센터",
+                   "2026-09-14 08:50", "5톤 1대", "₩187,000", "공급가액 ₩170,000 + VAT ₩17,000", "한 번만", "1101897524588859392"])
+    has(mh, t, `[핵심] 확인창: ${t}`);
+  hasNot(mh, "rg-multi-submit-confirm\" disabled", "정상이면 최종 제출 버튼 활성");
+  const p1 = mctx.__m.confirmRgMultiSubmit(PL.id);
+  await new Promise(r => setTimeout(r, 0));
+  check([els["rg-multi-submit-confirm"]?.disabled, els["rg-multi-submit-confirm"]?.textContent, els["rg-multi-submit-progress"]?.hidden],
+        [true, "제출 중…", false], "[핵심] 누르는 즉시 버튼 비활성화 + '제출 중…' + 진행 표시");
+  const p2 = mctx.__m.confirmRgMultiSubmit(PL.id);
+  await new Promise(r => setTimeout(r, 0));
+  check(fetchCalls, 1, "[핵심] 두 번 눌러도 제출 요청은 1번");
+  releaseFetch(); await p1; await p2;
+  root.innerHTML = "";
+  FRS[1].status = "ACTIVE";   // 운송비 기록 2건(중복)이면 화면에서도 버튼 잠금
+  await mctx.__m.openRgMultiSubmitModal(PL.id);
+  has(root.innerHTML, "사용 중인 운송비 기록이 2건", "운송비 중복이면 경고");
+  has(root.innerHTML, 'id="rg-multi-submit-confirm" disabled', "…최종 제출 버튼 잠금");
   has(T.rgActionsHtml(appr, new Set(), {}, { loadBlock: null, items: [multi[0]] }), "submitRgInbound", "[회귀] 1종 승인 요청은 쿠팡 제출 버튼 그대로");
   check(T.rgCanDecide({ preflight_status: "PASSED", approval_status: "PENDING_APPROVAL", submit_status: "NOT_SUBMITTED", internal_status: "CANCELLED" }), false,
     "[핵심] 취소된 요청(자동 폴러가 만든 블랙 단일 요청)은 승인 대기 건수·대상 아님");

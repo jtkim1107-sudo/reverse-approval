@@ -7853,10 +7853,11 @@ function rgActionsHtml(p, supersededIds, proposals = {}, ctx = {}) {
             <button class="btn sm secondary" onclick="requestRgReplanProposal('${p.id}')">🤖 제안 받기</button>`;
   }
   if (rgCanSubmit(p) && !rgIsSuperseded(p, supersededIds)) {
-    // 2026-09-11 다품목 요청(WING 입고 1개에 상품 여러 개)은 서버 제출 게이트가 아직 상품 1종만 받아요 -
-    // 버튼을 눌러도 409로 막히므로 버튼 대신 보류 안내만(최종 제출 경로는 서버 지원 후 연결).
-    if ((ctx.items || []).length > 1) {
-      return `<small style="color:var(--text-sub)" title="서버 제출 게이트가 다품목을 지원한 뒤 제출 버튼이 열려요">⏸ 다품목 최종 제출 보류(서버 지원 전)</small>`;
+    // 2026-09-12 다품목 요청(WING 입고 1개에 상품 여러 개) - 서버 제출 게이트가 WING 초안 ↔ ERP 를 전부 대조한 뒤에만
+    // 제출해요. 버튼은 확인창(두 상품·수량·PLT·센터·일시·차량·운송비)을 먼저 열고, 거기서 [최종 제출]을 눌러야 나가요.
+    const items = ctx.items || [];
+    if (items.length > 1) {
+      return `<button class="btn sm" onclick="openRgMultiSubmitModal('${p.id}')">쿠팡 제출 · 상품 ${items.length}개 · 총 ${fmt(InboundApproval.palletSum(items))}PLT · 최종 제출</button>`;
     }
     return `<button class="btn sm" onclick="submitRgInbound('${p.id}')">쿠팡 제출</button>`;
   }
@@ -7981,6 +7982,96 @@ async function submitRgInbound(planId) {
     return;
   }
   route();
+}
+
+// 2026-09-12 [사용자 지시] 다품목 요청(WING 입고 1개에 상품 여러 개) 최종 제출.
+// 버튼 → 확인창(두 상품·수량·PLT·센터·일시·차량·운송비·WING 초안 id) → [최종 제출] 한 번. 누르는 즉시 비활성화 + 진행 표시.
+// 화면의 확인은 사람을 위한 것이고, 실제 제출 여부는 서버 게이트(승인 권한자·CAS·WING 초안 ↔ ERP 전체 대조)가 최종 판정해요.
+const _rgMultiSubmitInFlight = new Set();
+async function openRgMultiSubmitModal(planId) {
+  const [{ data: p }, { data: items }] = await Promise.all([
+    sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle(),
+    sb.from("inbound_plan_items").select("*").eq("inbound_plan_id", planId),
+  ]);
+  if (!p || !rgCanSubmit(p) || p.internal_status === "CANCELLED") {
+    toast("이미 처리됐거나 제출 가능한 상태가 아닙니다");
+    return route();
+  }
+  const { data: sup } = await sb.from("inbound_plans").select("id").eq("retry_of_plan_id", planId).limit(1);
+  if (sup && sup.length) { toast("이미 대체된 요청이라 제출할 수 없습니다"); return route(); }
+  const list = items || [];
+  const [{ data: groups }, { data: freights }] = await Promise.all([
+    p.shipment_group_id ? sb.from("inbound_shipment_groups").select("*").eq("id", p.shipment_group_id) : Promise.resolve({ data: [] }),
+    p.shipment_group_id ? sb.from("inbound_freight_costs").select("*").eq("shipment_group_id", p.shipment_group_id) : Promise.resolve({ data: [] }),
+  ]);
+  const g = (groups || [])[0] || null;
+  const activeFr = (freights || []).filter(f => (f.status || "ACTIVE") === "ACTIVE");
+  const fr = activeFr.length === 1 ? activeFr[0] : null;
+  await CoupangCenters.load(sb);
+  const totalQty = InboundApproval.qtySum(list), totalPlt = InboundApproval.palletSum(list);
+  const warn = [];
+  if (!g || (g.status || "ACTIVE") !== "ACTIVE") warn.push("사용 중인 운송 묶음(차량·운송비)이 없어요");
+  if (g && Number(g.vehicle_count) !== 1) warn.push(`차량이 ${g.vehicle_count}대로 기록돼 있어요(1대여야 해요)`);
+  if (activeFr.length !== 1) warn.push(`사용 중인 운송비 기록이 ${activeFr.length}건이에요(1건이어야 해요)`);
+  if (g && Number(g.total_pallet_count) !== totalPlt) warn.push(`운송 묶음 PLT(${g.total_pallet_count})와 품목 합계(${totalPlt})가 달라요`);
+  if (Number(p.total_plt) !== totalPlt) warn.push(`요청 총 PLT(${p.total_plt})와 품목 합계(${totalPlt})가 달라요`);
+  const won = v => `₩${fmt(Math.round(Number(v) || 0))}`;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this && !_rgMultiSubmitInFlight.size)closeModal()">
+      <div class="modal" style="max-width:640px">
+        <h3>🚚 쿠팡 최종 제출 확인 · 상품 ${list.length}개 · 총 ${fmt(totalPlt)}PLT</h3>
+        <p class="rg-modal-sub">WING 입고 <code>${esc(p.coupang_inbound_plan_id || "-")}</code> 하나로 아래 상품을 <b>한 번에</b> 제출해요.
+          제출 후에는 취소할 수 없어요. 서버가 제출 직전에 WING 초안과 ERP 내용을 다시 대조하고, 하나라도 다르면 제출하지 않아요.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>상품</th><th>WING SKU</th><th class="num">수량</th><th class="num">PLT</th></tr></thead>
+          <tbody>${list.map(it => `<tr><td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small>${esc(it.option_name)}</small>` : ""}</td>
+            <td><code>${esc(it.wing_sku_id || "-")}</code></td><td class="num">${fmt(it.coupang_inbound_qty)}EA</td><td class="num">${fmt(it.pallet_count)}PLT</td></tr>`).join("")}</tbody>
+          <tfoot><tr><td colspan="2"><b>합계</b></td><td class="num"><b>${fmt(totalQty)}EA</b></td><td class="num"><b>${fmt(totalPlt)}PLT</b></td></tr></tfoot>
+        </table></div>
+        <table class="rg-detail" style="margin-top:10px"><tbody>
+          <tr><th>센터</th><td>${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}</td></tr>
+          <tr><th>입고 일시</th><td>${esc(p.inbound_date || "-")} ${esc(String(p.inbound_time || "").slice(0, 5))}</td></tr>
+          <tr><th>차량</th><td>${g ? `${esc(g.vehicle_type || "-")} ${fmt(g.vehicle_count)}대 · 운송 묶음 <code>${esc(String(g.id).slice(0, 8))}</code>` : "-"}</td></tr>
+          <tr><th>운송비</th><td>${fr ? `<b>${won(fr.gross_amount)}</b> (VAT 포함) = 공급가액 ${won(fr.supply_amount)} + VAT ${won(fr.vat_amount)} · 한 번만 반영 · ${fr.basis === "ACTUAL" ? "실제 청구" : "예상"}` : "-"}</td></tr>
+          <tr><th>WING 초안</th><td><code>${esc(p.coupang_inbound_plan_id || "-")}</code></td></tr>
+        </tbody></table>
+        ${warn.length ? `<p style="color:var(--red);font-size:13px;margin-top:8px">⚠️ ${warn.map(esc).join("<br>⚠️ ")}<br>이 상태로는 서버가 제출을 막아요.</p>` : ""}
+        <p id="rg-multi-submit-progress" class="rg-modal-sub" style="margin-top:8px" hidden></p>
+        <div class="modal-actions">
+          <button class="btn secondary" id="rg-multi-submit-cancel" onclick="closeModal()">취소</button>
+          <button class="btn danger" id="rg-multi-submit-confirm" ${warn.length ? "disabled" : ""} onclick="confirmRgMultiSubmit('${esc(planId)}')">최종 제출</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function confirmRgMultiSubmit(planId) {
+  if (_rgMultiSubmitInFlight.has(planId)) return;           // 두 번 눌러도 요청은 한 번
+  _rgMultiSubmitInFlight.add(planId);
+  const btn = document.getElementById("rg-multi-submit-confirm");
+  const cancel = document.getElementById("rg-multi-submit-cancel");
+  const prog = document.getElementById("rg-multi-submit-progress");
+  if (btn) { btn.disabled = true; btn.textContent = "제출 중…"; }
+  if (cancel) cancel.disabled = true;
+  if (prog) { prog.hidden = false; prog.textContent = "⏳ 서버가 WING 초안과 ERP 를 대조하고 제출하는 중이에요. 창을 닫지 마세요(최대 1~2분)."; }
+  document.querySelectorAll(`tr[data-rg-plan="${planId}"] button`).forEach(b => b.disabled = true);
+  const finish = msg => { _rgMultiSubmitInFlight.delete(planId); closeModal(); if (msg) toast(msg); route(); };
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { _rgMultiSubmitInFlight.delete(planId); toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); closeModal(); return; }
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/submit`, {
+      method: "POST", headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) return finish(`제출 ${resp.status === 409 ? "차단" : "실패"}: ${String(body.detail || resp.status)}`);
+    finish(body.ok ? "쿠팡 최종 제출이 완료됐습니다" : `제출 결과 확인 필요: ${body.internal_status}`);
+  } catch (e) {
+    _rgMultiSubmitInFlight.delete(planId);
+    closeModal();
+    await reportSubmitTransportFailure(planId, e, "쿠팡 최종 제출");
+    route();
+  }
 }
 
 // ===== 재시도 준비: 새 슬롯 조회 -> 사람이 선택 -> 새 retry plan PRE-FLIGHT =====
