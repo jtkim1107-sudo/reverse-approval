@@ -8484,15 +8484,15 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
   // RECOVERY_CHECK · detail.replan_proposal)과, 서버의 실제 기능 상태(플래그·WING 세션)를
   // 같이 읽어요. 제안은 RLS상 로그인 사용자 전원이 읽을 수 있고, 기능 상태는
   // 서버가 돌려주는 값만 표시해요(화면이 추측하지 않음).
-  const [rgProposals, rgCaps, vehicleByPlan, poById] = await Promise.all([
+  const [rgProposals, rgCaps, vehicleByPlan, poById, , shipmentGroupByPlan] = await Promise.all([
     loadRgProposals(), loadRgCapabilities(), loadRgVehicleTypes(plans.map(p => p.id)),
-    loadRgPurchaseOrders(plans), CoupangCenters.load(sb),
+    loadRgPurchaseOrders(plans), CoupangCenters.load(sb), loadRgShipmentGroups(plans, itemsByPlan),
   ]);
   window._rgCaps = rgCaps;
   // 2026-09-11 거절 기능 DB 적용 여부 - select("*")에 거절 컬럼이 오면 적용된 거예요.
   // 적용 전에는 승인·거절 버튼을 잠가요(예전처럼 화면이 상태를 직접 바꾸는 경로로 되돌리지 않음).
   const migrated = !plans.length || Object.prototype.hasOwnProperty.call(plans[0], "rejection_reason");
-  const ctxFor = p => rgPlanCtx(p, { itemsByPlan, supersededIds, retryByOriginId, plansById, vehicleByPlan, poById, migrated });
+  const ctxFor = p => rgPlanCtx(p, { itemsByPlan, supersededIds, retryByOriginId, plansById, vehicleByPlan, poById, migrated, shipmentGroupByPlan });
   _rgLast = { plans, itemsByPlan, plansById, ctxFor };
 
   const rows = [];
@@ -8520,7 +8520,8 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
     // 승인/거절/제출 버튼은 plan 단위 액션이라, 같은 plan의 품목이 여러 줄이어도 첫 줄에만 표시
     items.forEach((it, i) => rows.push(`
       <tr data-rg-plan="${esc(p.id)}">
-        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}${retryNote}${forwardNote}</td>
+        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}${retryNote}${forwardNote}${
+          i === 0 && ctx.shipmentGroup && p.internal_status !== "CANCELLED" ? `<br>${InboundApproval.shipmentGroupChipHtml(ctx.shipmentGroup)}` : ""}</td>
         <td>${esc(p.supplier)}</td>
         <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
         <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
@@ -8604,6 +8605,39 @@ async function loadRgVehicleTypes(planIds) {
   return out;
 }
 
+// 2026-09-11 [사용자 확정 - 합배송] 운송 묶음(inbound_plans.shipment_group_id → inbound_shipment_groups = 트럭 1대).
+// 같은 묶음의 요청들을 모아 승인 화면에 "합배송 그룹 · 포함 상품 · 총 PLT · 대표 운송비(한 번만)"로 보여줘요.
+// 실패 이력(CANCELLED)·거절 요청은 묶음 구성원에서 빼요(이력 행은 그대로 둠).
+async function loadRgShipmentGroups(plans, itemsByPlan) {
+  const ids = [...new Set(plans.map(p => p.shipment_group_id).filter(Boolean))];
+  const out = {};
+  if (!ids.length) return out;
+  try {
+    const { data, error } = await sb.from("inbound_shipment_groups").select("*").in("id", ids);
+    if (error) return out;
+    (data || []).forEach(sp => {
+      const members = plans
+        .filter(p => p.shipment_group_id === sp.id && p.internal_status !== "CANCELLED" && p.approval_status !== "REJECTED")
+        .flatMap(p => (itemsByPlan[p.id] || []).map(it => ({
+          planId: p.id, name: it.inventory_name || it.option_name || "-", qty: it.coupang_inbound_qty, plt: it.pallet_count })));
+      const group = { ...sp, members };
+      plans.filter(p => p.shipment_group_id === sp.id).forEach(p => { out[p.id] = group; });
+    });
+  } catch (e) { /* 묶음을 못 읽으면 표시만 생략 - 승인 판단(2PLT)은 요청 단위라 영향 없음 */ }
+  return out;
+}
+
+// 상세·거절 창용: 요청 하나로 같은 묶음의 형제 요청까지 읽어요.
+async function loadRgShipmentGroupForPlan(p) {
+  if (!p || !p.shipment_group_id) return null;
+  const { data: sibs } = await sb.from("inbound_plans").select("*").eq("shipment_group_id", p.shipment_group_id);
+  const ids = (sibs || []).map(x => x.id);
+  const { data: its } = ids.length ? await sb.from("inbound_plan_items").select("*").in("inbound_plan_id", ids) : { data: [] };
+  const byPlan = {};
+  (its || []).forEach(it => { (byPlan[it.inbound_plan_id] ||= []).push(it); });
+  return (await loadRgShipmentGroups(sibs || [p], byPlan))[p.id] || null;
+}
+
 async function loadRgPurchaseOrders(plans) {
   const ids = [...new Set(plans.map(p => p.purchase_order_id).filter(Boolean))];
   if (!ids.length) return {};
@@ -8621,6 +8655,7 @@ function rgPlanCtx(p, d) {
     poDrafterId: po.drafter_id || null, poNo: po.po_no || null,
     child: d.retryByOriginId[p.id] || null,
     original: p.resubmission_of_plan_id ? d.plansById[p.resubmission_of_plan_id] || null : null,
+    shipmentGroup: p.internal_status !== "CANCELLED" ? ((d.shipmentGroupByPlan || {})[p.id] || null) : null,
   };
 }
 
@@ -8666,7 +8701,7 @@ async function openRgRejectModal(planId) {
   if (!p) return toast("입고 요청을 찾을 수 없어요");
   const { data: kids } = await sb.from("inbound_plans").select("id").eq("retry_of_plan_id", planId).limit(1);
   const ctx = { me, supersededIds: new Set(kids && kids.length ? [planId] : []), items: items || [],
-                vehicleType: vehicles[planId] ?? null };
+                vehicleType: vehicles[planId] ?? null, shipmentGroup: await loadRgShipmentGroupForPlan(p) };
   ctx.loadBlock = InboundApproval.loadBlock(p, ctx.items);
   if (!InboundApproval.canReject(p, ctx)) {
     const wing = InboundApproval.wingSubmittedLabel(p);
@@ -8740,6 +8775,7 @@ async function openRgPlanDetail(planId) {
     supersededIds: new Set(child ? [planId] : []), child, original,
     poNo: po?.po_no || null, poDrafterId: po?.drafter_id || null,
     migrated: Object.prototype.hasOwnProperty.call(p, "rejection_reason"),
+    shipmentGroup: p.internal_status !== "CANCELLED" ? await loadRgShipmentGroupForPlan(p) : null,
   };
   ctx.loadBlock = InboundApproval.loadBlock(p, ctx.items);
   const actions = InboundApproval.decisionHtml(p, ctx).replace(/<button class="btn sm secondary" onclick="openRgPlanDetail\([^)]*\)">상세<\/button>/, "");

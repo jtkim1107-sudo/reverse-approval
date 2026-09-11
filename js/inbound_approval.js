@@ -167,6 +167,36 @@
   }
 
   // 상세 모달 본문
+  // 2026-09-11 [사용자 확정 - 합배송] 운송 묶음(inbound_shipment_groups 1행 = 트럭 1대)에 연결된 요청들.
+  // group = { id, vehicle_type, total_pallet_count, total_transport_cost, slot_date, slot_time,
+  //           members: [{ planId, name, qty, plt }] } - 실패 이력(CANCELLED)·거절 요청은 호출부가 members 에서 빼요.
+  // 운송비는 묶음 전체에 한 번만: 요청별 개별 제안 운송비는 합산하지 않아요(각각 승인해도 한 번).
+  const won = v => `₩${Number(v || 0).toLocaleString("ko-KR")}`;
+  function shipmentGroupSummary(group) {
+    if (!group) return null;
+    const members = group.members || [];
+    return {
+      id: group.id, short: short(group.id), itemCount: members.length,
+      plt: Number(group.total_pallet_count) || members.reduce((a, m) => a + (Number(m.plt) || 0), 0),
+      vehicle: group.vehicle_type || "-", cost: Number(group.total_transport_cost) || 0, members,
+    };
+  }
+  function shipmentGroupChipHtml(group) {
+    const g = shipmentGroupSummary(group);
+    if (!g) return "";
+    return `<small class="rg-group" title="같은 트럭 한 대로 가는 요청 묶음 - 운송비는 묶음 전체에 한 번만 반영">`
+      + `🚚 합배송 그룹 ${escHtml(g.short)} · 포함 상품 ${g.itemCount}개 · 총 ${g.plt}PLT · 대표 운송비 ${won(g.cost)} · 운송비 중복 반영 없음</small>`;
+  }
+  function shipmentGroupDetailHtml(group, p) {
+    const g = shipmentGroupSummary(group);
+    if (!g) return "";
+    const lines = g.members.map(m => `${escHtml(m.name || "-")} ${Number(m.qty || 0).toLocaleString("ko-KR")}개 · ${Number(m.plt) || 0}PLT`
+      + ` <small class="rg-muted">요청 ${escHtml(short(m.planId))}${p && m.planId === p.id ? " (이 요청)" : ""}</small>`);
+    return `<b>합배송 그룹 <code>${escHtml(g.short)}</code></b> · ${escHtml(g.vehicle)} 1대 · 총 ${g.plt}PLT`
+      + `<br>포함 상품 ${g.itemCount}개: ${lines.join(" / ")}`
+      + `<br>대표 운송비 <b>${won(g.cost)}</b> - 묶음 전체에 한 번만 반영(운송비 중복 반영 없음, 요청별 개별 제안 운송비는 합산하지 않아요)`;
+  }
+
   function detailHtml(p, ctx = {}) {
     const items = ctx.items || [];
     const c = centers();
@@ -178,7 +208,9 @@
       ["상품", items.map(it => `${escHtml(it.inventory_name || "-")}${it.option_name ? ` <small>${escHtml(it.option_name)}</small>` : ""}`).join("<br>") || "-"],
       ["최종 입고수량", items.map(it => `${Number(it.coupang_inbound_qty || 0).toLocaleString("ko-KR")}개`).join(", ") || "-"],
       ["PLT", `전체 ${palletSum(items)}PLT${ctx.loadBlock ? ` · <span class="rg-block">${escHtml(ctx.loadBlock.label)}</span>` : ""}`
-        + (ctx.vehicleType ? `<br><small class="rg-muted">차량 ${escHtml(ctx.vehicleType)} (참고용 - 승인 판단은 차량과 무관)</small>` : "")],
+        + (ctx.shipmentGroup
+          ? `<br><small class="rg-muted">차량 ${escHtml(ctx.shipmentGroup.vehicle_type || "-")} 1대(합배송 그룹 기준${ctx.vehicleType ? ` · 이 요청 단독 제안 ${escHtml(ctx.vehicleType)}은 쓰지 않음` : ""}) - 승인 판단은 차량과 무관</small>`
+          : (ctx.vehicleType ? `<br><small class="rg-muted">차량 ${escHtml(ctx.vehicleType)} (참고용 - 승인 판단은 차량과 무관)</small>` : ""))],
       ["쿠팡센터", centerHtml],
       ["입고 예정", `${escHtml(p.inbound_date || "-")} ${escHtml(String(p.inbound_time || "").slice(0, 5))}`],
       ["운송", escHtml(p.transport_type === "PARCEL" ? "택배(PARCEL)" : "트럭(TRUCK)")],
@@ -187,6 +219,7 @@
       ["WING 제출", wing ? escHtml(wing) : "미제출"],
       ["WING 초안 id", p.coupang_inbound_plan_id ? `<code>${escHtml(p.coupang_inbound_plan_id)}</code>` : "-"],
     ];
+    if (ctx.shipmentGroup) rows.splice(6, 0, ["운송 묶음", shipmentGroupDetailHtml(ctx.shipmentGroup, p)]);
     if (p.coupang_shipment_id) rows.push(["shipmentId", `<code>${escHtml(p.coupang_shipment_id)}</code>`]);
     if (p.approved_by_name) rows.push(["승인자", `${escHtml(p.approved_by_name)} · ${escHtml(fmtKst(p.approved_at))}`]);
     if (p.approval_status === "REJECTED") {
@@ -247,5 +280,6 @@
     isWingSubmitted, wingSubmittedLabel, singlePltBlocked, canApprove, canReject, canResubmit,
     defaultRejectReason, defaultRejectCode, approvalCellHtml, decisionHtml, detailHtml, rejectionInfoHtml,
     csvRows, toCsv, fmtKst, palletSum,
+    shipmentGroupSummary, shipmentGroupChipHtml, shipmentGroupDetailHtml,
   };
 })(typeof window !== "undefined" ? window : globalThis);

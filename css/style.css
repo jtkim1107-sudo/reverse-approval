@@ -741,6 +741,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .rg-reject-info small { color: var(--text-sub); }
 .rg-block { color: var(--red); font-weight: 600; }
+/* 2026-09-11 합배송(운송 묶음) - 같은 트럭 한 대, 운송비는 묶음 전체에 한 번 */
+.rg-group { display: inline-block; margin-top: 4px; padding: 2px 8px; border-radius: 6px; background: var(--brand-light); color: var(--brand); font-weight: 600; font-size: 12px; line-height: 1.5; }
 .rg-link, .rg-note { color: var(--text-sub); font-size: 12px; }
 .rg-actions { white-space: nowrap; }
 .rg-actions .btn { margin: 2px 0; }

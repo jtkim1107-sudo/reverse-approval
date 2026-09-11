@@ -213,5 +213,41 @@ const idx = read("./index.html");
 check(idx.indexOf("coupang_centers.js") > 0 && idx.indexOf("coupang_centers.js") < idx.indexOf("js/app.js"), true, "index.html 이 app.js 전에 센터 모듈 로드");
 check(idx.indexOf("inbound_approval.js") > 0 && idx.indexOf("inbound_approval.js") < idx.indexOf("js/app.js"), true, "index.html 이 app.js 전에 승인 모듈 로드");
 
+
+console.log("\n=== 9. 합배송(운송 묶음) - 같은 PO·목천1·같은 입고시각, 트럭 1대, 운송비 한 번 ===");
+{
+  const SP = { id: "sp-7f3a9c10-0000", vehicle_type: "5톤", total_pallet_count: 6, total_transport_cost: 187000,
+               slot_date: "2026-09-14", slot_time: "0940" };
+  const plansG = [
+    { id: "34600ca0-6c74", shipment_group_id: SP.id, internal_status: "PENDING", approval_status: "PENDING_APPROVAL" },
+    { id: "c1c52f5b-0d1f", shipment_group_id: SP.id, internal_status: "PENDING", approval_status: "PENDING_APPROVAL" },
+    { id: "38ad9c7a-0055", shipment_group_id: null, internal_status: "CANCELLED", approval_status: "PENDING_APPROVAL" },
+  ];
+  const itemsG = { "34600ca0-6c74": [{ inventory_name: "EPP 그레이", coupang_inbound_qty: 320, pallet_count: 4 }],
+                   "c1c52f5b-0d1f": [{ inventory_name: "EPP 블랙", coupang_inbound_qty: 160, pallet_count: 2 }],
+                   "38ad9c7a-0055": [{ inventory_name: "EPP 그레이", coupang_inbound_qty: 320, pallet_count: 4 }] };
+  const fnSrc = name => { const m = app.match(new RegExp(`async function ${name}\\([\\s\\S]*?\\n}`)); if (!m) throw new Error(name); return m[0]; };
+  const gctx = vm.createContext({ console, sb: { from: t => ({ select: () => ({ in: async () => ({ data: t === "inbound_shipment_groups" ? [SP] : [], error: null }) }) }) } });
+  vm.runInContext(fnSrc("loadRgShipmentGroups") + "\n;globalThis.__g = loadRgShipmentGroups;", gctx);
+  const byPlan = await gctx.__g(plansG, itemsG);
+  const G = byPlan["34600ca0-6c74"];
+  check(G === byPlan["c1c52f5b-0d1f"], true, "[핵심] 두 요청이 같은 운송 묶음 하나에 연결");
+  check(G.members.map(m => [m.name, m.plt]), [["EPP 그레이", 4], ["EPP 블랙", 2]], "포함 상품 2개(CANCELLED 실패 이력은 제외)");
+  check("38ad9c7a-0055" in byPlan, false, "[핵심] CANCELLED 선점 행은 묶음·승인 대상 아님");
+  const chip = IA.shipmentGroupChipHtml(G);
+  for (const t of ["합배송 그룹", "포함 상품 2개", "총 6PLT", "대표 운송비 ₩187,000", "운송비 중복 반영 없음"]) has(chip, t, `목록 칩: ${t}`);
+  hasNot(chip, "88,000", "블랙 개별 제안 88,000원은 표시·합산 안 함");
+  hasNot(chip, "220,000", "개별값 합산(220,000원) 없음");
+  const d = IA.detailHtml({ id: "c1c52f5b-0d1f", destination_center_id: "c-mcn1", destination_center_raw: "MCN1", inbound_date: "2026-09-14",
+                            inbound_time: "09:40:00", transport_type: "TRUCK", preflight_status: "PASSED", approval_status: "PENDING_APPROVAL",
+                            submit_status: "NOT_SUBMITTED", shipment_group_id: SP.id },
+                          { items: itemsG["c1c52f5b-0d1f"], shipmentGroup: G, vehicleType: "1톤", me: {} });
+  for (const t of ["운송 묶음", "5톤 1대", "총 6PLT", "포함 상품 2개", "EPP 그레이 320개 · 4PLT", "EPP 블랙 160개 · 2PLT", "(이 요청)",
+                   "대표 운송비 <b>₩187,000</b>", "운송비 중복 반영 없음", "이 요청 단독 제안 1톤은 쓰지 않음"]) has(d, t, `상세: ${t}`);
+  check((plain(d).match(/187,000/g) || []).length, 1, "[핵심] 상세 화면에 대표 운송비는 한 번만");
+  check(IA.loadBlock({ transport_type: "TRUCK", total_plt: 2 }, itemsG["c1c52f5b-0d1f"]), null, "2PLT 판정은 요청 단위 그대로(묶음·무게와 무관)");
+  check(/(?<![-\w])weight\b/.test((read("./js/inbound_approval.js") + app).replace(/font-weight/g, "").replace(/^\s*\/\/.*$/gm, "")), false, "승인 화면 코드에 무게(weight) 필드 사용 없음");
+}
+
 console.log(failures ? `\n=== 결과: 실패 ${failures}건 ===` : "\n=== 결과: 전체 통과 ===");
 process.exit(failures ? 1 : 0);
