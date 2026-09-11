@@ -6352,10 +6352,13 @@ async function loadPOFreightReview(poId, currentFreightEst) {
   if (result.total_freight_est == null || result.plan_count === 0) return; // 연결된 TRUCK 자동입고 없음 - 조용히 스킵
   if (Number(currentFreightEst) === Number(result.total_freight_est)) return; // 이미 반영돼 있음
   await CoupangCenters.load(sb);
-  const reasons = (result.groups || []).map(g => [
-    g.destination_center_id ? CoupangCenters.label({ id: g.destination_center_id }) : "",
-    g.selection_reason || "",
-  ].filter(Boolean).map(esc).join(" · ")).filter(Boolean).join(" / ");
+  // 2026-09-11 새 선택 사유에는 이미 '천안1센터 (CHA1)'가 들어 있어요 - 그땐 사유만, 옛 사유('천안1 선택')엔 센터명을 앞에 붙여요.
+  const reasons = (result.groups || []).map(g => {
+    const reason = g.selection_reason || "";
+    const hasLabel = /센터 \(|센터명 확인 필요/.test(reason);
+    return (hasLabel ? [reason] : [g.destination_center_id ? CoupangCenters.label({ id: g.destination_center_id }) : "", reason])
+      .filter(Boolean).map(esc).join(" · ");
+  }).filter(Boolean).join(" / ");
   el.innerHTML = ` <span class="chip waiting" style="display:inline-block;margin-top:4px">
       🚚 TRUCK 자동선택 운송비 ₩${fmt(result.total_freight_est)}${reasons ? ` (${reasons})` : ""}
       <a onclick="applyPOFreightEstimate('${poId}', ${result.total_freight_est})" style="color:var(--brand);cursor:pointer;font-weight:600;margin-left:4px">적용 →</a>

@@ -1,0 +1,22 @@
+{
+  "_comment": "2026-09-11 쿠팡 센터 표시명 공통 판정표 - 파이썬 coupang_center_names · 화면 js/coupang_centers.js 가 같은 결과여야 해요. reverse-approval 저장소에 같은 파일이 있어요.",
+  "master": [
+    {"id": "c-cha1", "center_name": "천안1", "center_code": "CHA1"},
+    {"id": "c-mcn1", "center_name": "목천1", "center_code": "MCN1"},
+    {"id": "c-inc4", "center_name": "인천4", "center_code": "INC4"},
+    {"id": "c-xrc14", "center_name": "XRC14", "center_code": "XRC14"},
+    {"id": "c-yba1", "center_name": "용인백암센터", "center_code": "YBA1"},
+    {"id": "c-srbuc1", "center_name": "SR부천1", "center_code": "SRBUC1"}
+  ],
+  "cases": [
+    {"ref": {"code": "CHA1"}, "text": "천안1센터", "with_code": "천안1센터 (CHA1)"},
+    {"ref": {"code": "cha1"}, "text": "천안1센터", "with_code": "천안1센터 (CHA1)"},
+    {"ref": {"id": "c-mcn1", "code": "WRONG"}, "text": "목천1센터", "with_code": "목천1센터 (MCN1)"},
+    {"ref": {"id": "c-inc4"}, "text": "인천4센터", "with_code": "인천4센터 (INC4)"},
+    {"ref": {"code": "XRC14"}, "text": "센터명 확인 필요", "with_code": "센터명 확인 필요 (코드: XRC14)"},
+    {"ref": {"code": "CEN1"}, "text": "센터명 확인 필요", "with_code": "센터명 확인 필요 (코드: CEN1)"},
+    {"ref": {"code": "YBA1"}, "text": "용인백암센터", "with_code": "용인백암센터 (YBA1)"},
+    {"ref": {"code": "SRBUC1"}, "text": "SR부천1센터", "with_code": "SR부천1센터 (SRBUC1)"},
+    {"ref": {"code": ""}, "text": "-", "with_code": "-"}
+  ]
+}

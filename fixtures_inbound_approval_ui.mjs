@@ -57,6 +57,17 @@ CC.setRows([{ id: "x", center_name: "용인백암센터", center_code: "YBA1" }]
 check(CC.text("YBA1"), "용인백암센터", "이름이 이미 '센터'로 끝나면 '센터' 중복 안 붙임");
 CC.setRows(MASTER);
 
+console.log("\n=== 1b. 센터명 공통 판정표(파이썬 coupang_center_names 와 같은 표) ===");
+{
+  const T = JSON.parse(read("./fixtures_center_name_cases.json"));
+  CC.setRows(T.master);
+  for (const c of T.cases) {
+    const ref = { id: c.ref.id, code: c.ref.code };
+    check([CC.text(ref), CC.label(ref)], [c.text, c.with_code], `화면: ${JSON.stringify(c.ref)} → ${c.text}`);
+  }
+  CC.setRows(MASTER);
+}
+
 console.log("\n=== 2. 승인·거절 버튼(승인 권한자만) ===");
 const APPROVER = { id: "u-appr", name: "장팀장", approver: true };
 const STAFF = { id: "u-staff", name: "김사원", approver: false };
