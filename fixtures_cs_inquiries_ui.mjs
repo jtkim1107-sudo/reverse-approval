@@ -51,7 +51,10 @@ check(Math.round(C.hoursSince("2026-09-11 09:00:00", NOW)) === 3, "쿠팡 문의
 const html = C.tabHtml({ rows, statusRow: okStatus, now: NOW });
 check(html.includes("고객문의 자동수집 정상") && html.includes("문의 4건 확인 · 미답변 3건") && html.includes("2026-08-29~2026-09-11"), "수집 상태 배너: 정상·건수·조회 범위");
 check(html.includes("AI 답변 초안") && html.includes("claude-haiku-4-5") && html.includes("[[확인 후 기재]]"), "AI 초안·모델·확인 자리 표시");
-check(html.includes("규칙 기반 답변 초안") && html.includes("AI 미설정"), "규칙 초안은 규칙 기반이라고 구분");
+check(html.includes("규칙 기반 초안") && html.includes("규칙 기반 분류:") && html.includes("규칙 기반(외부 AI 호출 없음)"), "규칙 초안·분류는 '규칙 기반'이라고 명확히 표시");
+const rulesOnly = C.tabHtml({ rows: C.merge(cs.slice(1, 2), [ins[1]]), statusRow: okStatus, now: NOW });
+check(!/AI 답변 초안|AI\(외부|claude-/.test(rulesOnly), "규칙 기반만 있을 때는 'AI' 표시가 전혀 없음", rulesOnly);
+check(C.dashboardAlertHtml({ rows: C.merge(cs.slice(1, 2), [ins[1]]), statusRow: okStatus }).includes("규칙 기반 초안을 확인하세요"), "대시보드 알림도 '규칙 기반 초안'");
 check(html.includes("불량·파손") && html.includes("긴급") && html.includes("부정") && html.includes("요약: 뚜껑 파손 수령"), "유형·긴급도·감정·요약 표시");
 check(html.includes("확인 필요: 파손 사진 확인") && html.includes("근거 사실: 상품명 원터치 휴지통 7L"), "확인 필요 항목·근거 사실");
 check(html.includes("초안 복사") && html.includes("https://wing.coupang.com/tenants/cs/product/inquiries")

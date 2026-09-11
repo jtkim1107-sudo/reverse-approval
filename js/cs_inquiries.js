@@ -80,7 +80,7 @@
     const body = found === 0 ? "쿠팡에 문의가 없습니다(조회 성공 · 0건)" : `문의 ${found}건 확인 · 미답변 ${d.unanswered ?? "?"}건`;
     return { state: stale ? "STALE" : "OK",
       text: `수집 정상 · 마지막 확인 ${kst(st.last_success_at)} · ${body}${range ? ` · 조회 범위 ${range}` : ""}
-        · 분석 ${d.ai_backend === "claude_api" ? "AI" : "규칙 기반(AI 미설정)"}${stale ? " · 3시간 넘게 확인이 없어요" : ""}` };
+        · 분류·초안 ${d.ai_backend === "claude_api" ? `AI(외부 호출 ${d.ai_calls ?? "?"}건)` : "규칙 기반(외부 AI 호출 없음)"}${stale ? " · 3시간 넘게 확인이 없어요" : ""}` };
   }
 
   function bannerHtml(info) {
@@ -104,6 +104,7 @@
           ${chip(REVIEW[r.review] || ["?", "waiting"])}
           ${chip([r.answered ? "답변완료" : "미답변", r.answered ? "approved" : "waiting"])}
           <span class="chip progress">${r.source === "callcenter" ? "콜센터" : "상품 Q&A"}</span>
+          ${ins?.inquiry_type && ins.draft_source !== "ai" ? `<span style="font-size:11.5px;color:var(--text-sub)">규칙 기반 분류:</span>` : ""}
           ${ins?.inquiry_type ? chip([TYPE_LABEL[ins.inquiry_type] || ins.inquiry_type, "mine"]) : ""}
           ${ins?.urgency ? chip(URGENCY[ins.urgency]) : ""}
           ${ins?.sentiment ? chip(SENTIMENT[ins.sentiment]) : ""}
@@ -116,7 +117,7 @@
         ${draft ? `
         <div class="cs-draft" style="margin-top:8px;background:var(--gray-bg);border-radius:8px;padding:10px 12px">
           <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
-            <b style="font-size:12.5px">${ins.draft_source === "ai" ? "AI 답변 초안" : "규칙 기반 답변 초안"}${ins.ai_model ? ` <small class="cs-sub">(${esc(ins.ai_model)})</small>` : ""}</b>
+            <b style="font-size:12.5px">${ins.draft_source === "ai" ? "AI 답변 초안" : "규칙 기반 초안"}${ins.draft_source === "ai" && ins.ai_model ? ` <small class="cs-sub">(${esc(ins.ai_model)})</small>` : ""}</b>
             <span class="cs-sub" style="font-size:11.5px">쿠팡으로 자동 전송하지 않아요 · 검토 후 WING 에서 직접 등록</span>
           </div>
           <div class="cs-draft-text" style="font-size:13px;white-space:pre-wrap;margin-top:6px">${esc(draft)}</div>
@@ -155,7 +156,7 @@
           <p style="font-size:12.5px;color:var(--text-sub)">${info.state === "OK"
             ? "위 수집 상태처럼 쿠팡 조회는 정상이고, 조회 범위에 문의가 0건이에요."
             : "수집이 정상이 아니면 이 0건은 \"문의가 없다\"는 뜻이 아니라 \"확인하지 못했다\"는 뜻이에요."}
-            새 문의가 들어오면 GCP 가 매시 40분에 가져와 분석하고 답변 초안을 만들어 여기와 사이드바에 알려요.
+            새 문의가 들어오면 GCP 가 매시 40분에 가져와 규칙으로 분류하고 규칙 기반 초안을 만들어 여기와 사이드바에 알려요.
             쿠팡으로 답변을 자동 전송하지 않습니다.</p></div>`;
     }
     return `${bannerHtml(info)}${insNote}
@@ -206,7 +207,7 @@
       onclick="location.hash='#/voc/inquiries'">
       <b>💬 고객문의</b> ${s.pending ? `새 문의 ${s.pending}건` : ""}${s.unanswered ? ` · 미답변 ${s.unanswered}건` : ""}${s.urgent ? ` · 긴급 ${s.urgent}건` : ""}
       ${s.callcenterDue ? ` · 콜센터 자동답변 임박 ${s.callcenterDue}건` : ""}${info.state !== "OK" ? ` · 수집 확인 필요` : ""}
-      <span style="font-size:12px;color:var(--text-sub)"> - AI 답변 초안을 확인하세요</span></div>`;
+      <span style="font-size:12px;color:var(--text-sub)"> - ${data.statusRow?.detail?.ai_backend === "claude_api" ? "답변 초안" : "규칙 기반 초안"}을 확인하세요</span></div>`;
   }
 
   async function copyDraft(key) {
