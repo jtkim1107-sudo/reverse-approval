@@ -1603,8 +1603,7 @@ async function viewDashboard() {
   let briefingHtml = "";
   try {
     const yd = yesterday();
-    briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd,
-      { detailed: false, csLine: CsInquiries.briefingLineHtml(csData) });
+    briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: false });
   } catch (e) { console.error("매출 브리핑 카드:", e); }
 
   const monthSales = dashboardSales.summary?.has_rg_statistics
@@ -1627,6 +1626,9 @@ async function viewDashboard() {
     ${CsInquiries.dashboardAlertHtml(csData)}
     ${todaySalesHtml}
     <div id="rg-sales-statistics-mount">${briefingHtml}</div>
+    ${/* 브리핑 영역은 판매통계 패널이 통째로 다시 그려서, 고객문의 줄은 그 바로 아래 따로 붙여요 */ ""}
+    <div class="card cs-brief-card" style="padding:10px 14px;margin-top:-4px">
+      <b style="font-size:13px">오전 브리핑 · 고객문의</b>${CsInquiries.briefingLineHtml(csData)}</div>
     <div class="grid-stats">
       <div class="stat" onclick="location.hash='#/inbox'">
         <div class="stat-label">내 결재 대기</div>

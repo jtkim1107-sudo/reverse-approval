@@ -106,7 +106,8 @@ check(copied && copied.startsWith("불편을 드려 죄송합니다"), "초안 �
 // ── 6. 앱 연결 ───────────────────────────────────────────────────────────
 check(indexSrc.includes('id="badge-voc"') && indexSrc.indexOf("cs_inquiries.js") < indexSrc.indexOf("js/app.js"), "사이드바 배지 + 스크립트 순서");
 check(/badge-voc[\s\S]{0,400}CsInquiries\.summary\(data\.rows\)\.pending/.test(appSrc), "사이드바 배지 = 새 문의(미확인) 수");
-check(appSrc.includes("CsInquiries.dashboardAlertHtml(csData)") && appSrc.includes("csLine: CsInquiries.briefingLineHtml(csData)"), "대시보드 알림·브리핑 카드 연결");
+check(appSrc.includes("CsInquiries.dashboardAlertHtml(csData)") && /rg-sales-statistics-mount">\$\{briefingHtml\}<\/div>[\s\S]{0,200}오전 브리핑 · 고객문의<\/b>\$\{CsInquiries\.briefingLineHtml\(csData\)\}/.test(appSrc),
+  "대시보드 알림 + 브리핑 영역 바로 아래 고객문의 줄(판매통계 패널이 브리핑 영역을 다시 그려도 남음)");
 check(/tab === "reviews" \? renderVocStatusBanner\(\) : Promise\.resolve\(""\)/.test(appSrc), "리뷰 수집 배너는 리뷰 탭에만(고객문의 탭은 자체 수집 상태)");
 check(!/답변 <b>등록<\/b> 기능은 아직 연결 전/.test(appSrc), "옛 '답변 등록 기능 연결 전' 안내 제거(대신 초안·WING 바로가기)");
 check(!/service_role|sb_secret_|ANTHROPIC|KEYCLOAK/i.test(src), "브라우저 파일에 키 없음");
