@@ -3808,7 +3808,8 @@ async function fetchInventoryDecisions(forceRefresh = false) {
     });
     const body = await resp.json().catch(() => null);
     if (!resp.ok) return { ok: false, error: body?.detail || body?.error || `HTTP ${resp.status}` };
-    return { ok: true, decisions: body.decisions || [], summary: body.summary || {}, calculatedAt: body.calculated_at };
+    return { ok: true, decisions: body.decisions || [], summary: body.summary || {}, calculatedAt: body.calculated_at,
+             cacheUpdatedAt: body.cache_updated_at || null, refreshError: body.refresh_error || null };
   } catch (e) {
     return { ok: false, error: e.name === "AbortError" ? "계산 시간 초과(약 95초) - 다시 시도해 주세요." : String(e) };
   } finally {
@@ -3903,6 +3904,7 @@ async function viewInventoryDecisions() {
     inventoryDecisionsCache = await fetchInventoryDecisions(forceRefresh);
   }
   const result = inventoryDecisionsCache;
+  const cacheHealthHtml = await inventoryCacheHealthHtml(result);
   if (!result.ok) {
     return `<div class="card">
       <div class="card-head"><h2>재고 · 발주</h2></div>
@@ -3952,6 +3954,7 @@ async function viewInventoryDecisions() {
           ${result.calculatedAt ? "계산: " + new Date(result.calculatedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
         </span>
       </div>
+      ${cacheHealthHtml}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${summaryChips}</div>
       <div class="table-wrap"><table class="inv-decision-table">
         <thead><tr>
@@ -3962,6 +3965,26 @@ async function viewInventoryDecisions() {
       </table></div>
       <p style="font-size:11.5px;color:var(--text-sub);margin-top:8px">행을 누르면 상세 근거(라이브재고/ERP장부재고/판매이력/기존발주/입고예정/예측)를 볼 수 있어요.</p>
     </div>`;
+}
+
+// 2026-09-11 재고 캐시 갱신 실패를 숨기지 않아요 - 실패해도 화면은 마지막 정상 캐시를 보여주고,
+// 그 사실과 마지막 정상 갱신시각을 알려요(sync_job_status: inventory_decisions_cache, 백엔드가 기록).
+async function inventoryCacheHealthHtml(result) {
+  const fmtT = t => t ? new Date(t).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "-";
+  let st = null;
+  try {
+    const { data } = await sb.from("sync_job_status").select("last_success_at,last_attempt_at,last_error,error_kind,consecutive_failures")
+      .eq("job_name", "inventory_decisions_cache").maybeSingle();
+    st = data;
+  } catch (e) { st = null; }
+  const lines = [];
+  if (result.refreshError) lines.push(`새로고침 계산이 실패해 마지막 정상 캐시(${fmtT(result.calculatedAt)} 계산)를 보여줘요.`);
+  if (st && Number(st.consecutive_failures) > 0) {
+    const kind = { SCHEMA: "데이터 형식 검증 실패", BUSY: "다른 갱신 진행 중", OTHER: "계산·조회 오류" }[st.error_kind] || "갱신 실패";
+    lines.push(`최근 자동 갱신 ${fmt(st.consecutive_failures)}회 연속 실패(${esc(kind)}, ${fmtT(st.last_attempt_at)}) · 마지막 정상 갱신 ${fmtT(st.last_success_at)}`);
+  }
+  if (!lines.length) return "";
+  return `<p role="alert" style="font-size:12.5px;color:var(--amber);background:var(--amber-bg);border-radius:8px;padding:8px 10px;margin:0 0 10px">⚠️ ${lines.join("<br>⚠️ ")}</p>`;
 }
 
 function openInventoryDecisionDetail(productId) {
