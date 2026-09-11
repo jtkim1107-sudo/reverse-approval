@@ -8619,7 +8619,8 @@ async function loadRgShipmentGroups(plans, itemsByPlan) {
       const members = plans
         .filter(p => p.shipment_group_id === sp.id && p.internal_status !== "CANCELLED" && p.approval_status !== "REJECTED")
         .flatMap(p => (itemsByPlan[p.id] || []).map(it => ({
-          planId: p.id, name: it.inventory_name || it.option_name || "-", qty: it.coupang_inbound_qty, plt: it.pallet_count })));
+          planId: p.id, name: [it.inventory_name, it.option_name].filter(Boolean).join(" · ") || "-",
+          qty: it.coupang_inbound_qty, plt: it.pallet_count })));
       const group = { ...sp, members };
       plans.filter(p => p.shipment_group_id === sp.id).forEach(p => { out[p.id] = group; });
     });
