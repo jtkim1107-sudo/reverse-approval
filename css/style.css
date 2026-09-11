@@ -761,6 +761,12 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 table.rg-detail { width: 100%; border-collapse: collapse; }
 table.rg-detail th, table.rg-detail td { padding: 7px 8px; border-bottom: 1px solid var(--line); font-size: 13px; text-align: left; vertical-align: top; }
 table.rg-detail th { white-space: nowrap; color: var(--text-sub); font-weight: 500; width: 104px; }
+table.rg-detail td { overflow-wrap: anywhere; word-break: keep-all; }
+table.rg-detail td code { word-break: break-all; }
+@media (max-width: 520px) {
+  table.rg-detail th { width: 72px; white-space: normal; }
+  .rg-actions { white-space: normal; }
+}
 .rg-detail-h { margin: 16px 0 6px; font-size: 13.5px; }
 .rg-events { margin: 0 0 0 18px; font-size: 12.5px; line-height: 1.8; max-height: 210px; overflow-y: auto; }
 .rg-ev-time { color: var(--text-sub); font-variant-numeric: tabular-nums; }
