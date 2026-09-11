@@ -95,9 +95,12 @@ const rangeRef = (month, start, end, amount, at = "2026-09-11T07:20:00+09:00") =
   check(sep.totals.net === 10000 + -2000, "합계 = 자동 10,000 + 보정 −2,000 (수동 11,000 은 더하지 않음)", sep.totals);
   check(!sep.manual.some((m) => m.id === "m1"), "다른 달 수동 행은 이 달 계산에 없음");
 
-  const aug = A.monthAds({ month: "2026-08", today: "2026-09-04", autoRows: [], collections: [], manualRows, manualVatIncluded: true });
-  check(aug.state === A.STATE.MANUAL_ONLY, "자동수집 시작 전 달(8월)은 수동 입력 기준", aug.state);
-  check(aug.manual[0].decision === "INCLUDED_PRE_AUTO" && aug.totals.net === Math.round(59365 / 1.1), "8월 수동 행은 포함(공급가액)", aug.totals);
+  // 2026-09-11 자동수집 시작일이 8월 1일로 옮겨져 '시작 전 달'은 7월이에요.
+  const jul = A.monthAds({ month: "2026-07", today: "2026-09-04", autoRows: [], collections: [],
+                           manualRows: [{ id: "j1", date: "2026-07-20", channel: null, amount: 59365, memo: "", created_by: "장팀장" }], manualVatIncluded: true });
+  check(A.AUTO_START_DATE === "2026-08-01", "자동수집 시작일 = 2026-08-01(서버 AUTO_START 와 같음)", A.AUTO_START_DATE);
+  check(jul.state === A.STATE.MANUAL_ONLY, "자동수집 시작 전 달(7월)은 수동 입력 기준", jul.state);
+  check(jul.manual[0].decision === "INCLUDED_PRE_AUTO" && jul.totals.net === Math.round(59365 / 1.1), "7월 수동 행은 포함(공급가액)", jul.totals);
 }
 
 // ── 4. 음수 환급 부호 보존 · 부가세 기준 ───────────────────────────────────
@@ -158,7 +161,8 @@ const rangeRef = (month, start, end, amount, at = "2026-09-11T07:20:00+09:00") =
   check(html.includes("쿠팡 세션 만료") && html.includes("기존 정상 광고비는 그대로 유지"), "실패 사유 + 기존값 유지 안내(원문 명령·경로 없이)");
   check(html.includes("광고비 새로고침") && html.includes("AdCosts.refreshClick(this)") && html.includes('data-month="2026-09"'), "광고비 새로고침 버튼(이 달)");
   check(html.includes("＋ 수동 광고비 입력"), "수동 입력 버튼 유지(자동수집과 구분된 이름)");
-  check(html.includes("계산 제외 · 중복 확인 필요") && html.includes("같은 날 자동수집 ₩0"), "수동 행 중복 경고(같은 날 자동수집 금액 함께)");
+  check(html.includes("계산 제외 · 금액 다름 · 대사 필요") && html.includes("같은 날 자동수집 ₩0") && html.includes("RECONCILIATION_NEEDED"),
+        "금액이 다른 수동 행: RECONCILIATION_NEEDED + 같은 날 자동수집 금액 함께");
   check(html.includes("휴지통 캠페인") && html.includes("옵션 95928210719"), "캠페인·상품별 상세");
   check(html.includes("원천: WING 광고 지표(일별 집행 광고비, 부가세 별도)"), "출처·부가세 기준 표시");
   check(!/SSO 세션이 끝남/.test(html), "서버 원문 오류를 그대로 노출하지 않고 사람 말로 바꿈");
@@ -203,6 +207,33 @@ const rangeRef = (month, start, end, amount, at = "2026-09-11T07:20:00+09:00") =
   check(hole.state === A.STATE.UNDETERMINED && hole.recon.diff === null, "기간 안에 미확정 날짜가 있으면 대사하지 않고 미확정", hole.recon);
   const noref = A.monthAds({ month: "2026-09", today: "2026-09-11", collections: colls, manualRows: [] });
   check(noref.state === A.STATE.PENDING_RECON && noref.totals.net === 646517 && A.cmBadge(noref).includes("대사 전"), "기간 합계를 아직 못 받았으면 일별 합계 반영 + '잠정 · 대사 전'", noref.state);
+}
+
+// ── 5b. 2026-09-11 8월 실제 운영 수치(WING 전체 재수집) + 수동 4건 대사 ─────────
+{
+  const AUG = { "08-24": 100, "08-25": 7042, "08-26": 42494, "08-27": 59365, "08-28": 65717, "08-29": 80543, "08-30": 82444, "08-31": 78078 };
+  const colls = A.monthDays("2026-08").map((d) => okColl(d, AUG[d.slice(5)] || 0));
+  const manual = [["m24", "2026-08-24", 100], ["m25", "2026-08-25", 7042], ["m26", "2026-08-26", 42494], ["m27", "2026-08-27", 59365]]
+    .map(([id, date, amount]) => ({ id, date, channel: null, amount, memo: "", created_by: "장팀장" }));
+  const refs = [rangeRef("2026-08", "2026-08-01", "2026-08-31", 415774)];
+  const aug = A.monthAds({ month: "2026-08", today: "2026-09-11", collections: colls, manualRows: manual, refs, manualVatIncluded: true });
+  check(aug.manual.every((m) => m.decision === "MATCHED_MANUAL_DUPLICATE" && m.included === false), "수동 4건 = 같은 날·같은 금액 → MATCHED_MANUAL_DUPLICATE, 계산 제외", aug.manual.map((m) => m.decision));
+  check(aug.totals.duplicateAmount === 109001, "중복 제외 금액 109,001원", aug.totals.duplicateAmount);
+  check(aug.totals.net === 415783 && aug.totals.autoNet === 415783 && aug.totals.manualNet === 0, "8월 광고비(공급가액) = 자동수집 415,783원, 수동은 더하지 않음", aug.totals);
+  check(aug.totals.vat === 41578, "부가세 41,578원(일별 10% 반올림 합, 별도 표시)", aug.totals.vat);
+  check(aug.state === A.STATE.ROUNDING_DIFFERENCE && aug.recon.diff === 9 && aug.recon.dailySum === 415783,
+        "쿠팡 8월 기간 합계 415,774원과 +9원 ROUNDING_DIFFERENCE(배분·보정 없음)", aug.recon);
+  check(aug.rows.filter((r) => r.source === "AUTO").length === 31 && aug.rows.every((r) => r.source === "AUTO"), "계산 행 = 8월 31일 자동수집 행만");
+  const diffManual = manual.map((m) => (m.id === "m26" ? { ...m, amount: 40000 } : m));
+  const aug2 = A.monthAds({ month: "2026-08", today: "2026-09-11", collections: colls, manualRows: diffManual, refs, manualVatIncluded: true });
+  const m26 = aug2.manual.find((m) => m.id === "m26");
+  check(m26.decision === "RECONCILIATION_NEEDED" && !m26.included && aug2.totals.net === 415783, "금액이 다르면 RECONCILIATION_NEEDED · 자동 보정 없이 계산 제외(합계 그대로)", m26);
+  const html = A.cardHtml(aug, []);
+  check(html.includes("MATCHED_MANUAL_DUPLICATE") && html.includes("₩109,001") && html.includes("계산 제외 · 자동수집과 같은 금액(중복)"), "화면: 중복 4건·109,001원 표시");
+  check(!/deleteErpRow\('ad_costs','m2[4-7]'\).*disabled/.test(html), "수동 행은 그대로 둠(자동 삭제·수정 없음)");
+  const oct = A.monthAds({ month: "2026-10", today: "2026-10-05", collections: [okColl("2026-10-02", 5000)],
+                           manualRows: [{ id: "o1", date: "2026-10-02", channel: null, amount: 5000, memo: "" }], manualVatIncluded: true });
+  check(oct.manual[0].decision === "MATCHED_MANUAL_DUPLICATE" && oct.totals.net === 5000, "모든 월 공통: 10월에도 같은 날·같은 금액 수동 행은 중복 제외");
 }
 
 // ── 6. 브라우저 파일에 비밀값 없음 ─────────────────────────────────────────

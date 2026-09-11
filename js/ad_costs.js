@@ -10,7 +10,9 @@
  *   · 수동 입력(ad_costs)은 지우거나 고치지 않아요. 계산 포함 여부만 정합니다.
  *       - 자동수집 시작일 이전 날짜          → 포함 (INCLUDED_PRE_AUTO)
  *       - 보정 사유(adjustment_reason)가 있음 → 자동수집과 별도로 포함 (INCLUDED_ADJUSTMENT)
- *       - 그 밖(자동수집 기간의 일반 입력)     → 제외 + 중복 확인 필요 (RECONCILIATION_NEEDED)
+ *       - 같은 날 자동수집과 금액이 같음       → 제외 · 중복 (MATCHED_MANUAL_DUPLICATE) - 2026-09-11
+ *       - 그 밖(자동수집 기간, 금액이 다름)     → 제외 + 대사 필요 (RECONCILIATION_NEEDED) - 자동 보정 안 함
+ *     자동수집과 수동 입력을 같은 날 동시에 더하지 않아요(모든 월 공통).
  *   · 자동수집 기간인데 정상 수집이 없는 날(실패·미수집)은 0원이 아니라 "미확정"입니다.
  *     그 달 공헌이익도 확정값으로 보이지 않게 상태를 돌려줘요.
  *   · 오늘 광고비는 내일 수집되므로 오늘은 미확정 계산에서 빼고 따로 알려요.
@@ -26,12 +28,15 @@
   // 자동수집이 원천이 되는 첫 날짜(백필 시작일). 이 날 이전은 수동 입력이 원천이에요.
   // 수집 이력에서 추정하지 않아요 - 첫날 백필이 실패하면 그날이 조용히 '수동 기간'이 되어
   // 0원처럼 보이게 되기 때문입니다.
-  const AUTO_START_DATE = "2026-09-01";
+  // 2026-09-11 8월 1~31일을 WING 원천에서 전체 재수집(부가세 별도 공급가액) → 시작일을 8월 1일로 옮겼어요.
+  // 서버 coupang_ad_costs.AUTO_START 와 같아야 해요.
+  const AUTO_START_DATE = "2026-08-01";
 
   // 수동 행의 계산 포함 여부
   const MANUAL = {
     PRE_AUTO: "INCLUDED_PRE_AUTO",
     ADJUSTMENT: "INCLUDED_ADJUSTMENT",
+    DUPLICATE: "MATCHED_MANUAL_DUPLICATE",
     RECONCILIATION_NEEDED: "RECONCILIATION_NEEDED",
   };
   // 월 광고비 상태
@@ -163,16 +168,19 @@
       if (!inMonth(d)) continue;
       const autoPeriod = !!autoStart && d >= autoStart;
       const reason = (m.adjustment_reason || "").trim();
+      const dayAuto = dayMap[d] && dayMap[d].status === "OK" && dayMap[d].auto ? dayMap[d].auto : null;
       let decision;
       if (!autoPeriod) decision = MANUAL.PRE_AUTO;
       else if (reason) decision = MANUAL.ADJUSTMENT;
+      // 같은 날짜·같은 금액(원천 금액과 원 단위까지 같음) → 자동수집과 중복. 수동 행은 그대로 두고 계산에서만 뺍니다.
+      else if (dayAuto && round(m.amount) === round(dayAuto.amount)) decision = MANUAL.DUPLICATE;
       else decision = MANUAL.RECONCILIATION_NEEDED;
       const sv = splitVat(m.amount, p.manualVatIncluded !== false, vatEnabled);
       manual.push({
         id: m.id, date: d, channel: m.channel || null, amount: Number(m.amount) || 0,
         net: sv.net, vat: sv.vat, memo: m.memo || "", created_by: m.created_by || "",
         adjustment_reason: reason || null, decision,
-        included: decision !== MANUAL.RECONCILIATION_NEEDED,
+        included: decision === MANUAL.PRE_AUTO || decision === MANUAL.ADJUSTMENT,
         autoSameDay: dayMap[d] && dayMap[d].auto ? round(dayMap[d].auto.net + dayMap[d].auto.vat) : null,
       });
     }
@@ -233,10 +241,12 @@
       undeterminedDays: undetermined.map((x) => x.date),
       todayPending: days.some((x) => x.status === "TODAY_PENDING"),
       reconciliationNeeded: manual.filter((m) => m.decision === MANUAL.RECONCILIATION_NEEDED),
+      duplicates: manual.filter((m) => m.decision === MANUAL.DUPLICATE),
       totals: {
         net: sum(rows, "net"), vat: sum(rows, "vat"),
         autoNet: sum(autoRowsIn, "net"), autoVat: sum(autoRowsIn, "vat"),
         manualNet: sum(manualIn, "net"), manualVat: sum(manualIn, "vat"),
+        duplicateAmount: manual.filter((m) => m.decision === MANUAL.DUPLICATE).reduce((s, m) => s + m.amount, 0),
       },
       lastOkAt: okAts.length ? okAts[okAts.length - 1] : null,
       lastFailure: failures.length ? { date: failures[0].date, error: failures[0].lastError } : null,
@@ -284,7 +294,8 @@
   const DECISION_LABEL = {
     INCLUDED_PRE_AUTO: ["계산 포함 · 자동수집 이전", "ok"],
     INCLUDED_ADJUSTMENT: ["계산 포함 · 보정", "ok"],
-    RECONCILIATION_NEEDED: ["계산 제외 · 중복 확인 필요", "warn"],
+    MATCHED_MANUAL_DUPLICATE: ["계산 제외 · 자동수집과 같은 금액(중복)", "muted"],
+    RECONCILIATION_NEEDED: ["계산 제외 · 금액 다름 · 대사 필요", "warn"],
   };
   const chip = ([label, tone]) => `<span class="ad-chip ad-${tone}">${esc(label)}</span>`;
 
@@ -341,12 +352,15 @@
       ? `<div class="ad-note ad-warn">자동수집 광고비를 불러오지 못했어요(${esc(String(opts.autoError.message || opts.autoError).slice(0, 80))}).
           자동수집 기간의 광고비는 미확정으로 표시합니다.</div>` : "";
     const recon = info.reconciliationNeeded.length
-      ? `<div class="ad-note ad-warn">자동수집 기간에 보정 사유 없이 입력한 수동 광고비 ${info.reconciliationNeeded.length}건은
-          자동수집과 중복될 수 있어 <b>계산에서 뺐어요</b>. 실제로 별도 비용이면 보정 사유를 적어 다시 입력해 주세요.</div>` : "";
+      ? `<div class="ad-note ad-warn">RECONCILIATION_NEEDED · 자동수집 기간에 입력한 수동 광고비 ${info.reconciliationNeeded.length}건이
+          같은 날 자동수집 금액과 달라요. 자동으로 고치지 않고 <b>계산에서만 뺐어요</b>. 실제로 별도 비용이면 보정 사유를 적어 다시 입력해 주세요.</div>` : "";
+    const dupNote = info.duplicates && info.duplicates.length
+      ? `<div class="ad-note ad-muted">MATCHED_MANUAL_DUPLICATE · 수동 입력 ${info.duplicates.length}건(${won(t.duplicateAmount)})은 같은 날 자동수집 금액과 같아
+          중복으로 보고 계산에서 뺐어요. 수동 행은 지우거나 고치지 않았습니다.</div>` : "";
 
     const dayRows = info.days.filter((x) => x.autoPeriod).slice().reverse().map((x) => {
       const man = info.manual.filter((m) => m.date === x.date);
-      const manTxt = man.length ? man.map((m) => `${won(m.amount)} ${m.included ? "포함" : "제외"}`).join(", ") : "—";
+      const manTxt = man.length ? man.map((m) => `${won(m.amount)} ${m.included ? "포함" : m.decision === "MATCHED_MANUAL_DUPLICATE" ? "중복 제외" : "제외"}`).join(", ") : "—";
       const note = x.failedAfterOk ? `최근 재수집 실패(${esc(reasonText(x.lastError))}) · 기존값 유지`
         : x.status === "UNDETERMINED" && x.lastError ? esc(reasonText(x.lastError))
         : x.status === "UNDETERMINED" ? "수집 이력 없음" : x.lastOkAt ? `수집 ${esc(kst(x.lastOkAt))}` : "";
@@ -398,7 +412,7 @@
     const manualRows = info.manual.length ? info.manual.map((m) => `
       <tr><td>${esc(m.date.slice(5))}</td><td>${esc(m.channel || "전체")}</td>
         <td class="num"><b>${won(m.amount)}</b></td>
-        <td>${chip(DECISION_LABEL[m.decision])}${m.decision === "RECONCILIATION_NEEDED" && m.autoSameDay != null
+        <td>${chip(DECISION_LABEL[m.decision])}${(m.decision === "RECONCILIATION_NEEDED" || m.decision === "MATCHED_MANUAL_DUPLICATE") && m.autoSameDay != null
           ? `<div class="ad-sub">같은 날 자동수집 ${won(m.autoSameDay)}</div>` : ""}${m.adjustment_reason
           ? `<div class="ad-sub">사유: ${esc(m.adjustment_reason)}</div>` : ""}</td>
         <td>${esc(m.memo)}</td><td>${esc(m.created_by)}</td>
@@ -416,7 +430,7 @@
       <div class="ad-status">${stateChip}
         <span class="ad-sub">마지막 정상 수집 ${info.lastOkAt ? esc(kst(info.lastOkAt)) : "없음"}</span>
         <span class="ad-sub">원천: WING 광고 지표(일별 집행 광고비, 부가세 별도) · GCP 자동수집 · 시작 ${esc(AUTO_START_DATE)}</span></div>
-      ${resNote}${autoErr}${undetNote}${failNote}${recon}${reconPanel}
+      ${resNote}${autoErr}${undetNote}${failNote}${recon}${dupNote}${reconPanel}
       <div class="grid-stats" style="margin-top:10px">
         <div class="stat"><div class="stat-label">광고비 (공급가액)</div>
           <div class="stat-value ${info.state !== STATE.CONFIRMED && info.state !== STATE.MANUAL_ONLY ? "amber" : ""}">${won(t.net)}${info.state === STATE.UNDETERMINED ? " <small>+ 미확정</small>" : (info.state === STATE.ROUNDING_DIFFERENCE || info.state === STATE.PENDING_RECON) ? " <small>잠정</small>" : ""}</div></div>
@@ -435,6 +449,7 @@
         <thead><tr><th>일자</th><th>채널</th><th class="num">금액</th><th>계산</th><th>메모</th><th>입력자</th><th></th></tr></thead>
         <tbody>${manualRows}</tbody></table></div>
       <p class="ad-sub" style="margin-top:8px">자동수집 기간에는 쿠팡 원천 광고비가 기준이고, 수동 입력은 보정 사유가 있을 때만 더해요.
+        같은 날 같은 금액이면 중복(MATCHED_MANUAL_DUPLICATE), 금액이 다르면 대사 필요(RECONCILIATION_NEEDED)로 표시하고 계산에서 뺍니다.
         수집이 실패해도 기존 정상 광고비는 지우지 않고, 실패한 날은 "미확정"으로 표시합니다.</p>
     </div>`;
   }
