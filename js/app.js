@@ -569,6 +569,8 @@ async function route() {
   content.innerHTML = `<div class="card" style="color:var(--text-sub)">불러오는 중…</div>`;
   let html;
   try {
+    // 쿠팡 센터 마스터는 첫 화면에서 한 번만 읽어요(이후 즉시 반환). 센터명을 쓰는 모든 화면이 같은 값을 봐요.
+    await CoupangCenters.load(sb);
     html = await r.render(param);
   } catch (e) {
     // 화면 그리다 오류가 나면 '불러오는 중…'에서 멈춰 버리므로, 무엇이 잘못됐는지 보여준다
@@ -4756,7 +4758,7 @@ async function viewShipmentPlans() {
     sb.from("shipment_plan_items").select("*"),
     sb.from("purchase_orders").select("id,po_no"),
     sb.from("purchase_order_items").select("id,product_id"),
-    sb.from("coupang_centers").select("id,center_name"),
+    sb.from("coupang_centers").select("id,center_name,center_code"),
     sb.from("products").select("id,name"),
   ]);
 
@@ -4777,6 +4779,7 @@ async function viewShipmentPlans() {
   const poById = Object.fromEntries((poRes.data || []).map(p => [p.id, p]));
   const poItemById = Object.fromEntries((poItemsRes.data || []).map(p => [p.id, p]));
   const centerById = Object.fromEntries((centersRes.data || []).map(c => [c.id, c]));
+  CoupangCenters.setRows(centersRes.data || []);
   const productById = Object.fromEntries((productsRes.data || []).map(p => [p.id, p]));
 
   // === 1. 빈 상태 화면 - 지금 실제로 이 상태(row 0건)라 반드시 필요 ===
@@ -4819,7 +4822,7 @@ async function viewShipmentPlans() {
           return `
             <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px">
               <div style="display:flex;justify-content:space-between;font-weight:600">
-                <span>차량 ${i + 1} — ${p.total_pallet_count}PLT(확정 계획 PLT) / ${esc(center ? center.center_name : p.destination_center_id)} / ${fmt(p.total_transport_cost)}원</span>
+                <span>차량 ${i + 1} — ${p.total_pallet_count}PLT(확정 계획 PLT) / ${CoupangCenters.html({ id: p.destination_center_id, code: center?.center_code })} / ${fmt(p.total_transport_cost)}원</span>
                 <span class="chip ${execChip}">${esc(p.execution_status)}</span>
               </div>
               <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
@@ -6325,7 +6328,11 @@ async function loadPOFreightReview(poId, currentFreightEst) {
   if (!el) return; // 모달이 이미 닫혔으면 아무것도 안 함
   if (result.total_freight_est == null || result.plan_count === 0) return; // 연결된 TRUCK 자동입고 없음 - 조용히 스킵
   if (Number(currentFreightEst) === Number(result.total_freight_est)) return; // 이미 반영돼 있음
-  const reasons = (result.groups || []).map(g => esc(g.selection_reason || g.center_name || "")).filter(Boolean).join(" / ");
+  await CoupangCenters.load(sb);
+  const reasons = (result.groups || []).map(g => [
+    g.destination_center_id ? CoupangCenters.text({ id: g.destination_center_id }) : "",
+    g.selection_reason || "",
+  ].filter(Boolean).map(esc).join(" · ")).filter(Boolean).join(" / ");
   el.innerHTML = ` <span class="chip waiting" style="display:inline-block;margin-top:4px">
       🚚 TRUCK 자동선택 운송비 ₩${fmt(result.total_freight_est)}${reasons ? ` (${reasons})` : ""}
       <a onclick="applyPOFreightEstimate('${poId}', ${result.total_freight_est})" style="color:var(--brand);cursor:pointer;font-weight:600;margin-left:4px">적용 →</a>
@@ -6376,7 +6383,7 @@ function _qtyChangeBadge(direction) {
 
 function _loadFillProposalCardHtml(poId, poItemId, proposal, savedMeta) {
   const planLine = proposal.plan
-    ? `${esc(proposal.plan.center_name || "센터 미정")} · ${esc(proposal.plan.vehicle_type)} 1대 · 운송비 ₩${fmt(proposal.plan.total_transport_cost)}`
+    ? `${proposal.plan.destination_center_id || proposal.plan.center_code ? CoupangCenters.html({ id: proposal.plan.destination_center_id, code: proposal.plan.center_code }) : "센터 미정"} · ${esc(proposal.plan.vehicle_type)} 1대 · 운송비 ₩${fmt(proposal.plan.total_transport_cost)}`
       + (proposal.plan.slot_date ? ` · ${esc(proposal.plan.slot_date)} ${esc(proposal.plan.slot_time || "")}` : "")
     : "";
 
@@ -7378,8 +7385,12 @@ async function renderTruckInboundPrepCard() {
   const prepRows = result.rows;
   if (!prepRows.length) return "";
 
-  const { data: centerRows } = await sb.from("coupang_centers").select("id,center_name").order("center_name");
-  const centerOptions = (centerRows || []).map(c => `<option value="${esc(c.id)}">${esc(c.center_name)}</option>`).join("");
+  const { data: centerRows } = await sb.from("coupang_centers").select("id,center_name,center_code");
+  CoupangCenters.setRows(centerRows || []);
+  const centerOptions = (centerRows || [])
+    .map(c => ({ id: c.id, label: CoupangCenters.optionText({ id: c.id }) }))
+    .sort((a, b) => a.label.localeCompare(b.label, "ko"))
+    .map(c => `<option value="${esc(c.id)}">${esc(c.label)}</option>`).join("");
 
   const rows = prepRows.map(row => `
     <tr>
@@ -7420,29 +7431,23 @@ async function renderParcelApprovalCard(plans, itemsByPlan) {
   const pending = plans.filter(rgCanApproveParcel);
   if (!pending.length) return "";
 
-  const centerIds = [...new Set(pending.map(p => p.destination_center_id).filter(Boolean))];
-  const { data: centerRows } = centerIds.length
-    ? await sb.from("coupang_centers").select("id,center_name").in("id", centerIds)
-    : { data: [] };
-  const centerNameById = {};
-  (centerRows || []).forEach(c => { centerNameById[c.id] = c.center_name; });
-
+  await CoupangCenters.load(sb);
   const rows = pending.map(p => {
     const it = (itemsByPlan[p.id] || [])[0] || {};
     const boxes = (p.parcel_boxes && p.parcel_boxes.boxes) || [];
-    const centerName = p.destination_center_id ? centerNameById[p.destination_center_id] : null;
     return `<tr data-rg-plan="${esc(p.id)}">
         <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}</td>
         <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
         <td class="num">${fmt(boxes.length)}</td>
-        <td>${esc(p.destination_center_raw || "-")}${centerName ? `<br><small style="color:var(--text-sub)">${esc(centerName)}</small>` : ""}</td>
+        <td>${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}</td>
         <td>${esc(p.inbound_date || "-")}</td>
         <td>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
         <td><span class="chip progress">${esc(p.automation_state)}</span></td>
         <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
-        <td style="white-space:nowrap">
+        <td style="white-space:nowrap">${me?.approver ? `
           <button class="btn sm green" onclick="decideParcelApproval('${esc(p.id)}','APPROVED')">승인</button>
-          <button class="btn sm danger" onclick="decideParcelApproval('${esc(p.id)}','REJECTED')">거절</button>
+          <button class="btn sm danger" onclick="decideParcelApproval('${esc(p.id)}','REJECTED')">거절</button>` : ""}
+          <button class="btn sm secondary" onclick="openRgPlanDetail('${esc(p.id)}')">상세</button>
         </td>
       </tr>`;
   }).join("");
@@ -7507,7 +7512,7 @@ function rgSubmitStatusHtml(p) {
   return html;
 }
 
-// 승인/거절이 가능한 조건 - decideRgInbound()의 CAS .eq() 조건과 반드시 동일하게 유지
+// 승인 대기 판정(배지 건수와 같은 조건). 실제 승인·거절 가능 여부는 InboundApproval + DB가 판정해요.
 const rgCanDecide = p => p.preflight_status === "PASSED" && p.approval_status === "PENDING_APPROVAL" && p.submit_status === "NOT_SUBMITTED";
 const rgCanSubmit = p => p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
 // retry_of_plan_id로 이 plan을 가리키는 다른 plan이 있으면(=이미 새 슬롯으로
@@ -7554,7 +7559,7 @@ const rgIsSlotStale = p => {
   if (slotMs !== null) return slotMs - Date.now() < RG_MIN_BOOKING_LEAD_MS;   // 지났거나 여유 2h 미만
   return String(p.inbound_date).slice(0, 10) < rgTodayStr();                   // 시각 모르면 날짜만
 };
-const rgCanPrepareReplan = (p, supersededIds) => rgIsSlotStale(p) && !supersededIds.has(p.id);
+const rgCanPrepareReplan = (p, supersededIds) => p.approval_status !== "REJECTED" && rgIsSlotStale(p) && !supersededIds.has(p.id);
 
 // PARCEL(BOX) 전용 - 2026-09-04 추가. TRUCK 조건(rgCanDecide/rgCanSubmit/
 // rgCanPrepareRetry)은 위에서 이미 다 걸러지므로, 여기 두 조건은 transport_
@@ -7584,11 +7589,9 @@ const rgCanSubmitParcel = p =>
   p.transport_type === "PARCEL" && p.automation_state === "PENDING_HUMAN_APPROVAL" &&
   p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
 
+// 승인·거절 버튼은 2026-09-11부터 InboundApproval.decisionHtml()이 따로 그려요(승인 권한자만).
 function rgActionsHtml(p, supersededIds, proposals = {}) {
-  if (rgCanDecide(p)) {
-    return `<button class="btn sm green" onclick="decideRgInbound('${p.id}','APPROVED')">승인</button>
-            <button class="btn sm danger" onclick="decideRgInbound('${p.id}','REJECTED')">거절</button>`;
-  }
+  if (p.approval_status === "REJECTED") return "";   // 거절은 끝 상태 - 제출·재계획·재시도 버튼 없음
   // 2026-09-07 [PARCEL 승인센터 연결] rgCanSubmit(아래)은 transport_type을 안 보고
   // approval_status/submit_status만 봐서 PARCEL도 매칭돼버림 - PARCEL 전용 분기를
   // 먼저 확인해야 submitRgInbound(TRUCK 확인문구·로직)가 아니라 반드시
@@ -7790,12 +7793,12 @@ function renderRgRetrySlots(body) {
   const fcCode = body.own_center_fc_code;
   const slots = (body.slots_by_center || {})[fcCode] || [];
   if (!slots.length) {
-    box.innerHTML = `<span class="chip waiting">가용 슬롯 없음</span> 지금은 <b>${esc(fcCode || "-")}</b> 센터에
+    box.innerHTML = `<span class="chip waiting">가용 슬롯 없음</span> 지금은 <b>${CoupangCenters.html(fcCode)}</b>에
       예약 가능한 슬롯이 없습니다(최소 2시간 이후 슬롯만 표시). 잠시 후 다시 시도해주세요.`;
     return;
   }
   box.innerHTML = `
-    <div style="margin-bottom:8px"><b>${esc(fcCode || "-")}</b> 센터 · 지금부터 최소 2시간 이후 슬롯만 표시됩니다</div>
+    <div style="margin-bottom:8px"><b>${CoupangCenters.html(fcCode)}</b> · 지금부터 최소 2시간 이후 슬롯만 표시됩니다</div>
     <div style="max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:6px">
       ${slots.map((s, i) => `
         <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer">
@@ -7951,7 +7954,7 @@ async function requestRgReplanProposal(planId) {
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok) { toast(`제안 실패: ${body.detail || resp.status}`); return; }
     if (body.kind === "PROPOSED" && body.proposed) {
-      toast(`대체 일정 제안: ${body.proposed.edd} ${body.proposed.booking_time.slice(0,2)}:${body.proposed.booking_time.slice(2,4)} @${body.proposed.fc_code} — [제안대로 준비]로 이어가세요`);
+      toast(`대체 일정 제안: ${body.proposed.edd} ${body.proposed.booking_time.slice(0,2)}:${body.proposed.booking_time.slice(2,4)} · ${CoupangCenters.text(body.proposed.fc_code)} — [제안대로 준비]로 이어가세요`);
     } else {
       toast(`제안 없음(${body.kind}): ${body.note || body.reason || ""}`);
     }
@@ -8009,7 +8012,7 @@ function rgProposalNoteHtml(pr) {
   if (!pr) return "";
   const when = pr.recorded_at ? new Date(pr.recorded_at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }) : "";
   if (pr.kind === "PROPOSED" && pr.proposed) {
-    return `<br><small style="color:var(--text-sub)">🤖 자동 제안: <b>${esc(pr.proposed.edd)} ${esc(pr.proposed.booking_time.slice(0,2))}:${esc(pr.proposed.booking_time.slice(2,4))}</b> @${esc(pr.proposed.fc_code || "")} · 재승인 필요 <span style="opacity:.7">(${esc(when)})</span></small>`;
+    return `<br><small style="color:var(--text-sub)">🤖 자동 제안: <b>${esc(pr.proposed.edd)} ${esc(pr.proposed.booking_time.slice(0,2))}:${esc(pr.proposed.booking_time.slice(2,4))}</b> · ${CoupangCenters.html(pr.proposed.fc_code || "")} · 재승인 필요 <span style="opacity:.7">(${esc(when)})</span></small>`;
   }
   if (pr.kind === "AUTO_PREPARED") {
     return `<br><small style="color:var(--text-sub)">🤖 자동 준비됨 → 대체 plan ${esc(String(pr.replacement_plan_id || "").slice(0,8))} (재승인 대기)</small>`;
@@ -8234,7 +8237,7 @@ function renderParcelFcCandidates(body) {
       flat.push({ edd, fc_code: c.fc_code });
       return `<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer">
         <input type="radio" name="parcel-fc-candidate" value="${i}" onchange="pickParcelFcCandidate(${i})">
-        ${esc(c.fc_code)}${c.cluster ? ` · ${esc(c.cluster)}` : ""}${c.fc_priority != null ? ` (우선순위 ${esc(String(c.fc_priority))})` : ""}
+        ${CoupangCenters.html(c.fc_code)}${c.cluster ? ` · ${esc(c.cluster)}` : ""}${c.fc_priority != null ? ` (우선순위 ${esc(String(c.fc_priority))})` : ""}
       </label>`;
     }).join("");
   }).join("");
@@ -8253,7 +8256,7 @@ function pickParcelFcCandidate(index) {
 async function confirmParcelResume(planId) {
   if (!_parcelSelectedCandidate) return;
   const { edd, fc_code } = _parcelSelectedCandidate;
-  if (!confirm(`${edd} · ${fc_code}로 입고를 확정합니다(STEP3). 계속할까요?`)) return;
+  if (!confirm(`${edd} · ${CoupangCenters.optionText(fc_code)}로 입고를 확정합니다(STEP3). 계속할까요?`)) return;
 
   const btn = document.getElementById("parcel-fc-confirm");
   if (btn) btn.disabled = true;
@@ -8452,12 +8455,21 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
   // RECOVERY_CHECK · detail.replan_proposal)과, 서버의 실제 기능 상태(플래그·WING 세션)를
   // 같이 읽어요. 제안은 RLS상 로그인 사용자 전원이 읽을 수 있고, 기능 상태는
   // 서버가 돌려주는 값만 표시해요(화면이 추측하지 않음).
-  const [rgProposals, rgCaps] = await Promise.all([loadRgProposals(), loadRgCapabilities()]);
+  const [rgProposals, rgCaps, vehicleByPlan, poById] = await Promise.all([
+    loadRgProposals(), loadRgCapabilities(), loadRgVehicleTypes(plans.map(p => p.id)),
+    loadRgPurchaseOrders(plans), CoupangCenters.load(sb),
+  ]);
   window._rgCaps = rgCaps;
+  // 2026-09-11 거절 기능 DB 적용 여부 - select("*")에 거절 컬럼이 오면 적용된 거예요.
+  // 적용 전에는 승인·거절 버튼을 잠가요(예전처럼 화면이 상태를 직접 바꾸는 경로로 되돌리지 않음).
+  const migrated = !plans.length || Object.prototype.hasOwnProperty.call(plans[0], "rejection_reason");
+  const ctxFor = p => rgPlanCtx(p, { itemsByPlan, supersededIds, retryByOriginId, plansById, vehicleByPlan, poById, migrated });
+  _rgLast = { plans, itemsByPlan, plansById, ctxFor };
 
   const rows = [];
   plans.forEach(p => {
     const items = itemsByPlan[p.id] || [];
+    const ctx = ctxFor(p);
     if (!items.length) {
       rows.push(`<tr><td colspan="13"><b>${esc(p.supplier)}</b> — 품목 정보 없음</td></tr>`);
       return;
@@ -8484,18 +8496,18 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
         <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
         <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
         <td class="num">${fmt(it.pallet_count)}${
-          Number(it.pallet_count) === 1 && p.submit_status === "NOT_SUBMITTED" && p.internal_status !== "CANCELLED"
+          Number(it.pallet_count) === 1 && p.submit_status === "NOT_SUBMITTED" && p.internal_status !== "CANCELLED" && p.approval_status !== "REJECTED"
             ? `<br><small style="color:var(--text-sub)" title="사용자 정책: 1PLT 단독 출발 금지 - 증량 또는 혼적 필요">🚛 적재 보완 대기</small>` : ""}</td>
-        <td>${esc(p.destination_center_raw || "-")}</td>
+        <td>${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}</td>
         <td>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}${
           rgCanPrepareReplan(p, supersededIds)
             ? `<br><small style="color:var(--danger,#c0392b)">⚠️ 슬롯 만료(여유 2h 미만) · 미제출</small>${rgProposalNoteHtml(rgProposals[p.id])}` : ""}</td>
         <td>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
-        <td>${rgChip(RG_APPROVAL_CHIP, p.approval_status)}</td>
+        <td class="rg-approval-cell">${InboundApproval.approvalCellHtml(p, ctx)}</td>
         <td>${rgSubmitStatusHtml(p)}</td>
         <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
         <td>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
-        <td style="white-space:nowrap">${i === 0 ? rgActionsHtml(p, supersededIds, rgProposals) : ""}</td>
+        <td class="rg-actions">${i === 0 ? `${rgActionsHtml(p, supersededIds, rgProposals)} ${InboundApproval.decisionHtml(p, ctx)}` : ""}</td>
       </tr>`));
   });
 
@@ -8523,7 +8535,13 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
     ${parcelApprovalCardHtml}
     ${truckPrepCardHtml}
     <div class="card">
-      <h2>입고신청 내역 (${plans.length}건)</h2>
+      <div class="card-head">
+        <h2>입고신청 내역 (${plans.length}건)</h2>
+        <button class="btn sm secondary" onclick="exportRgInboundCSV()">CSV 내보내기</button>
+      </div>
+      ${migrated ? "" : `<p class="rg-migrate-note"><span class="chip waiting">DB 적용 대기</span> 승인·거절은 DB 권한 검증(마이그레이션
+        <code>2026-09-11_inbound_plan_rejection.sql</code>) 적용 뒤에 열려요. 그 전에는 화면에서 상태를 바꿀 수 없습니다.</p>`}
+      ${me?.approver ? "" : `<p class="rg-migrate-note">승인·거절은 승인 권한자만 할 수 있어요. 여기서는 상태와 거절 사유를 확인할 수 있습니다.</p>`}
       <div class="table-wrap"><table>
         <thead><tr>
           <th>상품</th><th>공급처</th><th class="num">추천수량</th><th class="num">최종 입고수량</th>
@@ -8535,78 +8553,264 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
     </div>`;
 }
 
-/* 승인/거절 - 발주서 결재(decidePO)와 동일한 CAS 패턴: 최신 상태를 다시 읽어 조건을
-   재확인하고, UPDATE 자체에도 .eq()로 같은 조건을 걸어서 두 사람이 동시에 눌러도
-   정확히 한쪽만 성공하게 만들어요. WING은 이 함수 어디에서도 호출하지 않습니다. */
+/* ==================== 입고 요청 승인·거절 (2026-09-11 재구성) ====================
+   예전에는 화면이 inbound_plans.approval_status 를 직접 UPDATE 했어요(누구나 가능, 사유 없음).
+   이제 승인·거절은 DB 함수 fn_decide_inbound_plan() 하나로만 가요 - 권한(profiles.approver),
+   거절 사유 필수, WING 제출 건 거절 불가, 1PLT 단독 승인 불가, 거절 이력 기록은 DB가 판정하고,
+   DB 트리거가 화면의 직접 변경을 막아요. WING 은 이 흐름 어디에서도 호출하지 않아요(취소 API 포함).
+   판단 로직·HTML 은 js/inbound_approval.js, 센터명은 js/coupang_centers.js. */
+let _rgLast = null;
+
+async function loadRgVehicleTypes(planIds) {
+  const out = {};
+  if (!planIds.length) return out;
+  try {
+    const { data, error } = await sb.from("inbound_plan_events")
+      .select("inbound_plan_id,created_at,vehicle_type:detail->center_selection->>vehicle_type")
+      .eq("event_type", "PREFLIGHT_PASSED").in("inbound_plan_id", planIds)
+      .order("created_at", { ascending: false });
+    if (error) return out;
+    (data || []).forEach(r => { if (!(r.inbound_plan_id in out)) out[r.inbound_plan_id] = r.vehicle_type || null; });
+  } catch (e) { /* 차량 정보를 못 읽으면 1PLT 판정은 '확인 불가 = 막는 쪽'으로 가요 */ }
+  return out;
+}
+
+async function loadRgPurchaseOrders(plans) {
+  const ids = [...new Set(plans.map(p => p.purchase_order_id).filter(Boolean))];
+  if (!ids.length) return {};
+  const { data } = await sb.from("purchase_orders").select("id,po_no,drafter_id").in("id", ids);
+  return Object.fromEntries((data || []).map(r => [r.id, r]));
+}
+
+function rgPlanCtx(p, d) {
+  const items = d.itemsByPlan[p.id] || [];
+  const vehicleType = d.vehicleByPlan[p.id] ?? null;
+  const po = d.poById[p.purchase_order_id] || {};
+  return {
+    me, items, vehicleType, migrated: d.migrated, supersededIds: d.supersededIds,
+    singlePlt: InboundApproval.singlePltBlocked(p, items, vehicleType),
+    poDrafterId: po.drafter_id || null, poNo: po.po_no || null,
+    child: d.retryByOriginId[p.id] || null,
+    original: p.resubmission_of_plan_id ? d.plansById[p.resubmission_of_plan_id] || null : null,
+  };
+}
+
+async function rgDecideRpc(planId, decision, reason = null, reasonCode = null) {
+  const { data, error } = await sb.rpc("fn_decide_inbound_plan", {
+    p_plan_id: planId, p_decision: decision, p_reason: reason, p_reason_code: reasonCode,
+  });
+  if (error) {
+    const missing = error.code === "PGRST202"
+      || (/fn_decide_inbound_plan/.test(error.message || "") && /not find|찾을 수 없/.test(error.message || ""));
+    return { ok: false, message: missing ? "DB 적용 전이라 처리할 수 없어요 - 관리자에게 거절 기능 마이그레이션 실행을 요청하세요." : (error.message || "처리에 실패했습니다") };
+  }
+  return { ok: true, data };
+}
+
 async function decideRgInbound(planId, decision) {
+  if (decision === "REJECTED") return openRgRejectModal(planId);
   const row = event?.target?.closest("tr");
   const rowBtns = row ? row.querySelectorAll("button") : [];
   rowBtns.forEach(b => b.disabled = true);  // 요청 중 더블클릭 방지
-
-  const { data: fresh, error: e0 } = await sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle();
-  if (e0 || !fresh || !rgCanDecide(fresh)) {
-    toast("이미 처리됐거나 조건이 맞지 않는 입고신청입니다");
-    return route();
-  }
-
-  const { data, error } = await sb.from("inbound_plans")
-    .update({ approval_status: decision })
-    .eq("id", planId).eq("preflight_status", "PASSED")
-    .eq("approval_status", "PENDING_APPROVAL").eq("submit_status", "NOT_SUBMITTED")
-    .select("id");
-  if (error || !data?.length) {
-    toast("처리에 실패했습니다");
+  if (!confirm("이 입고 요청을 승인합니다.\n승인만으로 쿠팡(WING)에 제출되지는 않습니다. 계속할까요?")) {
     rowBtns.forEach(b => b.disabled = false);
-    return route();
+    return;
   }
-
-  await sb.from("inbound_plan_events").insert({
-    inbound_plan_id: planId,
-    event_type: decision === "REJECTED" ? "HUMAN_REJECTED" : "HUMAN_APPROVED",
-    detail: { decided_by: me.name, decided_at: nowStr() },
-  });
-
-  toast(decision === "APPROVED" ? "입고신청을 승인했습니다" : "입고신청을 거절했습니다");
+  const res = await rgDecideRpc(planId, "APPROVED");
+  toast(res.ok ? "입고 요청을 승인했습니다" : `승인하지 못했습니다: ${res.message}`);
   route();
 }
 
-/* 2026-09-07 [PARCEL 승인센터 연결] decideRgInbound()와 완전히 동일한 CAS 원칙
-   (최신 상태 재확인 + UPDATE 자체에도 같은 조건을 걸어 동시 클릭 방지) - 여기에
-   automation_state=PENDING_HUMAN_APPROVAL 조건만 추가돼요(TRUCK 조건은 한 글자도
-   안 건드림 - decideRgInbound()는 그대로 둠, 이 함수는 완전히 별개). 이 함수는
-   approval_status만 바꿔요 - WING은 이 함수 어디에서도 호출하지 않습니다(실제
-   제출은 submitParcelPlan()으로 완전히 분리됨). */
+// PARCEL 승인 카드도 같은 DB 함수로 가요(PARCEL 조건 automation_state=PENDING_HUMAN_APPROVAL 은 DB가 확인).
 async function decideParcelApproval(planId, decision) {
-  const row = event?.target?.closest("tr");
-  const rowBtns = row ? row.querySelectorAll("button") : [];
-  rowBtns.forEach(b => b.disabled = true);
+  if (decision === "REJECTED") return openRgRejectModal(planId);
+  return decideRgInbound(planId, "APPROVED");
+}
 
-  const { data: fresh, error: e0 } = await sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle();
-  if (e0 || !fresh || !rgCanApproveParcel(fresh)) {
-    toast("이미 처리됐거나 조건이 맞지 않는 PARCEL 입고신청입니다");
+async function openRgRejectModal(planId) {
+  if (!me?.approver) return toast("승인 권한자만 거절할 수 있어요");
+  const [{ data: p }, { data: items }, vehicles] = await Promise.all([
+    sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle(),
+    sb.from("inbound_plan_items").select("*").eq("inbound_plan_id", planId),
+    loadRgVehicleTypes([planId]),
+  ]);
+  if (!p) return toast("입고 요청을 찾을 수 없어요");
+  const { data: kids } = await sb.from("inbound_plans").select("id").eq("retry_of_plan_id", planId).limit(1);
+  const ctx = { me, supersededIds: new Set(kids && kids.length ? [planId] : []), items: items || [],
+                vehicleType: vehicles[planId] ?? null };
+  ctx.singlePlt = InboundApproval.singlePltBlocked(p, ctx.items, ctx.vehicleType);
+  if (!InboundApproval.canReject(p, ctx)) {
+    const wing = InboundApproval.wingSubmittedLabel(p);
+    toast(wing || "지금 거절할 수 있는 상태가 아니에요(이미 처리됐거나 대체된 요청)");
     return route();
   }
+  const it = ctx.items[0] || {};
+  const reason = InboundApproval.defaultRejectReason(ctx);
+  const code = InboundApproval.defaultRejectCode(ctx);
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>입고 요청 거절</h3>
+        <p class="rg-modal-sub"><b>${esc(it.inventory_name || "-")}</b> · ${fmt(it.coupang_inbound_qty)}개 · ${InboundApproval.palletSum(ctx.items)}PLT
+          · ${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}
+          · ${esc(p.inbound_date || "-")} ${esc(String(p.inbound_time || "").slice(0, 5))}
+          ${p.approval_status === "APPROVED" ? `<br><span class="chip approved">승인됨 · WING 미제출</span> 승인된 요청도 제출 전이면 거절할 수 있어요.` : ""}</p>
+        <label class="rg-reason-label">거절 사유 <span class="req">필수</span>
+          <textarea id="rg-reject-reason" rows="3" maxlength="500" placeholder="예) 재고 충분 · 입고 수량 재검토 필요">${esc(reason)}</textarea>
+        </label>
+        <input type="hidden" id="rg-reject-code" value="${esc(code || "")}">
+        <ul class="rg-modal-notes">
+          <li>거절하면 되돌릴 수 없어요. 수정이 필요하면 거절 뒤 <b>[수정 후 재요청]</b>으로 새 승인 요청을 만들어요.</li>
+          <li>거절된 요청은 승인 대기 건수, WING 제출·재제출, 자동 재계획에서 빠져요.</li>
+          ${p.coupang_inbound_plan_id ? `<li>WING 초안(미제출)은 WING에 그대로 남아요. 취소 API가 확인되지 않아 자동 취소하지 않습니다.</li>` : ""}
+        </ul>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn danger" id="rg-reject-confirm" onclick="confirmRgReject('${esc(planId)}')">거절 확정</button>
+        </div>
+      </div>
+    </div>`;
+}
 
-  const { data, error } = await sb.from("inbound_plans")
-    .update({ approval_status: decision })
-    .eq("id", planId).eq("preflight_status", "PASSED")
-    .eq("approval_status", "PENDING_APPROVAL").eq("submit_status", "NOT_SUBMITTED")
-    .eq("automation_state", "PENDING_HUMAN_APPROVAL")
-    .select("id");
-  if (error || !data?.length) {
-    toast("처리에 실패했습니다");
-    rowBtns.forEach(b => b.disabled = false);
-    return route();
+async function confirmRgReject(planId) {
+  const reason = (document.getElementById("rg-reject-reason")?.value || "").trim();
+  if (reason.length < 2) return toast("거절 사유를 입력해 주세요(2자 이상)");
+  const codeEl = document.getElementById("rg-reject-code");
+  // 기본 사유(1PLT)를 사람이 다른 문구로 바꿨으면 사유 코드는 붙이지 않아요(문구와 코드가 어긋나지 않게).
+  const code = codeEl?.value && reason === InboundApproval.SINGLE_PLT_REASON ? codeEl.value : null;
+  const btn = document.getElementById("rg-reject-confirm");
+  if (btn) btn.disabled = true;
+  const res = await rgDecideRpc(planId, "REJECTED", reason, code);
+  if (!res.ok) {
+    toast(`거절하지 못했습니다: ${res.message}`);
+    if (btn) btn.disabled = false;
+    return;
   }
-
-  await sb.from("inbound_plan_events").insert({
-    inbound_plan_id: planId,
-    event_type: decision === "REJECTED" ? "HUMAN_REJECTED" : "HUMAN_APPROVED",
-    detail: { decided_by: me.name, decided_at: nowStr(), transport_type: "PARCEL" },
-  });
-
-  toast(decision === "APPROVED" ? "PARCEL 입고신청을 승인했습니다(실제 쿠팡 제출은 별도 버튼입니다)" : "PARCEL 입고신청을 거절했습니다");
+  toast("입고 요청을 거절했습니다 - 승인 대기와 WING 제출 대상에서 빠졌어요");
+  closeModal();
   route();
+}
+
+async function openRgPlanDetail(planId) {
+  const [{ data: p }, { data: items }, { data: events }, vehicles, { data: kids }] = await Promise.all([
+    sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle(),
+    sb.from("inbound_plan_items").select("*").eq("inbound_plan_id", planId),
+    sb.from("inbound_plan_events").select("event_type,detail,created_at").eq("inbound_plan_id", planId).order("created_at"),
+    loadRgVehicleTypes([planId]),
+    sb.from("inbound_plans").select("id,approval_status,preflight_status").eq("retry_of_plan_id", planId).limit(1),
+  ]);
+  if (!p) return toast("입고 요청을 찾을 수 없어요");
+  await CoupangCenters.load(sb);
+  const [po, original] = await Promise.all([
+    p.purchase_order_id ? sb.from("purchase_orders").select("po_no,drafter_id").eq("id", p.purchase_order_id).maybeSingle().then(r => r.data) : null,
+    p.resubmission_of_plan_id ? sb.from("inbound_plans").select("id,approval_status,rejection_reason").eq("id", p.resubmission_of_plan_id).maybeSingle().then(r => r.data) : null,
+  ]);
+  const child = (kids || [])[0] || null;
+  const ctx = {
+    me, items: items || [], events: events || [], vehicleType: vehicles[planId] ?? null,
+    supersededIds: new Set(child ? [planId] : []), child, original,
+    poNo: po?.po_no || null, poDrafterId: po?.drafter_id || null,
+    migrated: Object.prototype.hasOwnProperty.call(p, "rejection_reason"),
+  };
+  ctx.singlePlt = InboundApproval.singlePltBlocked(p, ctx.items, ctx.vehicleType);
+  const actions = InboundApproval.decisionHtml(p, ctx).replace(/<button class="btn sm secondary" onclick="openRgPlanDetail\([^)]*\)">상세<\/button>/, "");
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal rg-detail-modal">
+        <h3>입고 요청 상세</h3>
+        ${InboundApproval.detailHtml(p, ctx)}
+        <div class="modal-actions">
+          <span class="rg-detail-actions">${actions}</span>
+          <button class="btn secondary" onclick="closeModal()">닫기</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+// 거절 → 수정 후 재요청: 원본은 그대로 두고 새 승인 요청(PRE-FLIGHT 다시)을 만들어요.
+let _rgResubmitSlot = null;
+async function openRgResubmitModal(planId) {
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); return; }
+  const { data: items } = await sb.from("inbound_plan_items").select("coupang_inbound_qty,pallet_count,inventory_name").eq("inbound_plan_id", planId);
+  const it = (items || [])[0] || {};
+  _rgResubmitSlot = null;
+  _rgRetrySelectedSlot = null;
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>✏️ 수정 후 재요청</h3>
+        <p class="rg-modal-sub">거절된 요청은 그대로 두고, 고친 내용으로 <b>새 승인 요청</b>을 만들어요(원본과 연결돼 이력이 남아요).
+          새 요청은 PRE-FLIGHT를 다시 거치고 <b>다시 승인</b>받아야 제출할 수 있어요. 여기서 쿠팡에 제출되지 않습니다.</p>
+        <label class="rg-reason-label">입고 수량 <small>(기존 ${fmt(it.coupang_inbound_qty)}개 · ${fmt(it.pallet_count)}PLT, 발주 승인 수량 이하)</small>
+          <input type="number" id="rg-resubmit-qty" min="1" step="1" value="${esc(it.coupang_inbound_qty ?? "")}">
+        </label>
+        <div id="rg-retry-slots" style="font-size:13.5px;color:var(--text-sub)">입고 가능 슬롯 조회 중...</div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="rg-retry-confirm" disabled onclick="confirmRgResubmit('${esc(planId)}')">새 승인 요청 만들기</button>
+        </div>
+      </div>
+    </div>`;
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/resubmit-slots`, { headers: { Authorization: `Bearer ${jwt}` } });
+    const body = await resp.json().catch(() => ({}));
+    const box = document.getElementById("rg-retry-slots");
+    if (!box) return;
+    if (!resp.ok) {
+      box.innerHTML = `<span class="chip rejected">진행 불가</span> ${esc(body.detail || String(resp.status))}`;
+      return;
+    }
+    renderRgRetrySlots(body);
+    rgApplyPreflightGateToModal();
+  } catch (e) {
+    const box = document.getElementById("rg-retry-slots");
+    if (box) box.innerHTML = `<span class="chip rejected">조회 오류</span> ${esc(e.message)}`;
+  }
+}
+
+async function confirmRgResubmit(planId) {
+  const slot = _rgRetrySelectedSlot;
+  if (!slot) return;
+  const qty = numOf(document.getElementById("rg-resubmit-qty")?.value);
+  if (!qty || qty <= 0 || !Number.isInteger(qty)) return toast("입고 수량은 1 이상 정수로 입력해 주세요");
+  const timeLabel = `${slot.booking_time.slice(0, 2)}:${slot.booking_time.slice(2, 4)}`;
+  if (!confirm(`새 승인 요청을 만듭니다: ${slot.edd} ${timeLabel} · ${fmt(qty)}개\n\n· 거절된 원본은 그대로 남아요\n· 새 요청은 다시 승인해야 제출됩니다\n\n계속할까요?`)) return;
+  const btn = document.getElementById("rg-retry-confirm");
+  if (btn) btn.disabled = true;
+  const { data: { session } } = await sb.auth.getSession();
+  const jwt = session?.access_token;
+  if (!jwt) { toast("로그인 세션이 만료됐습니다. 다시 로그인해주세요"); if (btn) btn.disabled = false; return; }
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/inbound-plans/${planId}/resubmit`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ edd: slot.edd, booking_time: slot.booking_time, coupang_inbound_qty: qty }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      toast(`재요청을 만들지 못했습니다: ${body.detail || resp.status}`);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    toast(body.preflight_status === "PASSED"
+      ? "새 승인 요청이 만들어졌어요 - 승인 대기 상태입니다"
+      : `새 요청이 만들어졌지만 PRE-FLIGHT 확인이 필요해요: ${body.preflight_status}`);
+  } catch (e) {
+    toast(`재요청 중 오류: ${e.message}`);
+    if (btn) btn.disabled = false;
+    return;
+  }
+  closeModal();
+  route();
+}
+
+// 입고신청 내역 CSV - 화면과 같은 센터명(CoupangCenters)·같은 판정(InboundApproval)을 그대로 써요.
+function exportRgInboundCSV() {
+  if (!_rgLast) return toast("입고신청 내역을 먼저 불러와 주세요");
+  const csv = InboundApproval.toCsv(InboundApproval.csvRows(_rgLast.plans, _rgLast.ctxFor));
+  downloadFile(csv, `리버스_쿠팡입고신청_${today()}.csv`, "text/csv");
 }
 
 /* 2026-09-07 [PARCEL 승인센터 연결] submitRgInbound()와 동일한 엔드포인트
