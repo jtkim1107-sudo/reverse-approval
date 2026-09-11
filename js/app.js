@@ -2416,6 +2416,8 @@ let erpTransfers = [];    // stock_transfers (쿠팡 사외재고 이동)
 let erpMonth = today().slice(0, 7);
 let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
+// 2026-09-11 입고 트럭 운송비(운송 묶음당 1건) - 판매분 배부 계산 결과(js/inbound_freight.js). loadErpBase 가 채워요.
+let erpFreight = { bySale: new Map(), records: [], costs: [], error: null };
 let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
 let monthlySalesLedgerGroups = {}; // 날짜+상품+채널 집계에서 원 주문을 여는 용도
 // 2026-09-11 매출 내역 CSV = 화면에 방금 그린 월 집계 그대로. viewSales 가 그릴 때마다 덮어써요.
@@ -2445,10 +2447,18 @@ function supplierOptionsHtml(sel) {
   </select>`;
 }
 const monthOf = r => (r.date || "").slice(0, 7);
+// 쿠팡 사외재고에서 차감되는 판매 = '풀필먼트' 채널(로켓그로스 등) 매출.
+// 쿠팡 판매자배송(윙)은 우리 창고에서 택배로 나가므로 자사창고에서 차감해야 한다 — 이름이 아니라 배송 방식으로 판단.
+// 채널 목록에 없는 이름은 배송 방식을 알 수 없으므로, 이름에 '쿠팡'이 들어가면 기존 규칙대로 쿠팡 재고로 본다.
+function isCoupangPoolSale(x) {
+  const ch = x.channel || "";
+  const reg = erpChannelList.find(c => c.name === ch);
+  return reg ? reg.ship_type === "풀필먼트" : ch.includes("쿠팡");
+}
 
 /* 제품·재고·거래처·채널 공통 로드 */
 async function loadErpBase() {
-  const [prodRes, buyRes, saleRes, costRes, chRes, trRes, spRes] = await Promise.all([
+  const [prodRes, buyRes, saleRes, costRes, chRes, trRes, spRes, frcRes, fraRes] = await Promise.all([
     sb.from("products").select("*").order("name"),
     sb.from("purchases").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("sales").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
@@ -2456,6 +2466,8 @@ async function loadErpBase() {
     sb.from("sales_channels").select("*").order("created_at"),
     sb.from("stock_transfers").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("suppliers").select("*").order("name"),
+    sb.from("inbound_freight_costs").select("*, purchase_orders(po_no)").order("created_at"),
+    sb.from("inbound_freight_allocations").select("*"),
   ]);
   erpSupplierList = spRes.data || [];
   erpProducts = prodRes.data || [];
@@ -2486,14 +2498,8 @@ async function loadErpBase() {
     // 창고에서 쿠팡으로 보낸(입고) − 회수
     const moved = upTo(erpTransfers.filter(t => t.product_id === p.id))
       .reduce((s, t) => s + (t.kind === "쿠팡입고" ? 1 : -1) * Number(t.qty), 0);
-    // 쿠팡 사외재고에서 차감되는 판매 = '풀필먼트' 채널(로켓그로스 등) 매출.
-    // 쿠팡 판매자배송(윙)은 우리 창고에서 택배로 나가므로 자사창고에서 차감해야 한다 — 이름이 아니라 배송 방식으로 판단.
-    // 채널 목록에 없는 이름은 배송 방식을 알 수 없으므로, 이름에 '쿠팡'이 들어가면 기존 규칙대로 쿠팡 재고로 본다.
-    const coupangSold = mySales.filter(x => {
-      const ch = x.channel || "";
-      const reg = erpChannelList.find(c => c.name === ch);
-      return reg ? reg.ship_type === "풀필먼트" : ch.includes("쿠팡");
-    }).reduce((s, x) => s + unitQty(x), 0);
+    // 쿠팡 사외재고에서 차감되는 판매(isCoupangPoolSale - 배송 방식 기준)
+    const coupangSold = mySales.filter(isCoupangPoolSale).reduce((s, x) => s + unitQty(x), 0);
     const houseSold = sold - coupangSold;
     // 쿠팡 재고 = 직송 입고 + 창고에서 보낸 것 − 쿠팡 판매
     const atCoupangRaw = boughtCoupang + moved - coupangSold;
@@ -2521,6 +2527,14 @@ async function loadErpBase() {
       lastCost: effCost(p), isSet: true,
     };
   });
+  // 2026-09-11 입고 트럭 운송비: 입고된 수량의 재고원가에 얹고, 쿠팡 재고 선입선출로 실제 판매분만 공헌이익에 배부.
+  // 표를 못 읽으면(권한·미적용) 운송비 차감 없이 계산하고 화면에 알림 - 조용히 0원으로 확정하지 않음.
+  const frcErr = frcRes.error || fraRes.error;
+  const frCosts = frcErr ? [] : (frcRes.data || []);
+  erpFreight = { ...InboundFreight.compute({
+    costs: frCosts, allocations: frcErr ? [] : (fraRes.data || []), buys, sales, transfers: erpTransfers,
+    products: erpProducts, isCoupangSale: isCoupangPoolSale, today: td,
+  }), costs: frCosts, error: frcErr ? (frcErr.message || String(frcErr)) : null };
   erpSuppliers = [...new Set([...buys.map(b => b.supplier), ...costs.map(c => c.supplier)].filter(Boolean))];
   // 채널 목록: 등록된 채널 + 과거 매출에 쓰인 채널
   erpChannels = [...new Set([...erpChannelList.map(c => c.name), ...sales.map(s => s.channel).filter(Boolean)])];
@@ -5258,13 +5272,18 @@ function cmOfSale(r, shipCharged) {
   const shipGross = (!isFulfill && (!shipCharged || shipCharged.has(r))) ? shipFee : 0;
   const logiGross = isFulfill ? unitFee * qty : 0;
   const fee = expNet(feeGross), ship = expNet(shipGross), logi = expNet(logiGross);
+  // 2026-09-11 입고 트럭 운송비 - 이 판매가 소진한 입고분(선입선출)에 배부된 공급가액만(소수 그대로, VAT 는 부가세 화면).
+  // 입고 전·미판매 재고분은 여기 오지 않아요. 상품원가(unit_cost)와는 별도 항목이라 겹치지 않음.
+  const frt = erpFreight.bySale.get(r.id);
+  const inFreight = frt ? frt.supply : 0;
   return {
     // 고객이 실제로 낸 돈 = 공급가액 + 부가세 (판매가를 부가세 별도로 적는 경우도 맞음)
-    gross: revenue + outVat, revenue, outVat, qty, cost, fee, ship, logi,
+    gross: revenue + outVat, revenue, outVat, qty, cost, fee, ship, logi, inFreight,
+    freightBasis: frt ? frt.basis : null,
     // 수수료·배송비·물류비에 붙은 부가세 — 부가세 신고 시 공제받는 매입세액
     feeShipVat: expVat(feeGross) + expVat(shipGross) + expVat(logiGross),
     inVat: buyVat(unitCost * qty, p) + expVat(feeGross) + expVat(shipGross) + expVat(logiGross),
-    cm: revenue - cost - fee - ship - logi,
+    cm: revenue - cost - fee - ship - logi - inFreight,
     noCost: !unitCost,
     noChannel: !!r.channel && !erpChannelList.some(c => c.name === r.channel),
   };
@@ -5276,12 +5295,13 @@ function sumCM(rows) {
     const c = cmOfSale(r, shipCharged);
     s.gross += c.gross; s.revenue += c.revenue; s.outVat += c.outVat; s.inVat += c.inVat;
     s.qty += c.qty; s.cost += c.cost;
-    s.fee += c.fee; s.ship += c.ship; s.logi += c.logi; s.cm += c.cm;
+    s.fee += c.fee; s.ship += c.ship; s.logi += c.logi; s.inFreight += c.inFreight; s.cm += c.cm;
+    if (c.freightBasis) s.freightBases.add(c.freightBasis);
     if (c.noCost) { s.noCostRows++; s.noCostRevenue += c.revenue; }
     if (c.noChannel) s.unknownChannels.add(r.channel);
     return s;
-  }, { gross: 0, revenue: 0, outVat: 0, inVat: 0, qty: 0, cost: 0, fee: 0, ship: 0, logi: 0, cm: 0,
-       noCostRows: 0, noCostRevenue: 0, unknownChannels: new Set() });
+  }, { gross: 0, revenue: 0, outVat: 0, inVat: 0, qty: 0, cost: 0, fee: 0, ship: 0, logi: 0, inFreight: 0, cm: 0,
+       freightBases: new Set(), noCostRows: 0, noCostRevenue: 0, unknownChannels: new Set() });
 }
 
 /* ---------- 광고비 원천 (2026-09-11 쿠팡 광고비 자동수집) ----------
@@ -5410,14 +5430,14 @@ async function viewProfit() {
   const byCh = {};
   rows.forEach(r => {
     const k = r.channel || "기타";
-    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, logi: 0, cm: 0, ad: 0 };
+    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, logi: 0, inFreight: 0, cm: 0, ad: 0 };
     const c = cmOfSale(r, shipCharged);
     byCh[k].revenue += c.revenue; byCh[k].cost += c.cost;
-    byCh[k].fee += c.fee; byCh[k].ship += c.ship; byCh[k].logi += c.logi; byCh[k].cm += c.cm;
+    byCh[k].fee += c.fee; byCh[k].ship += c.ship; byCh[k].logi += c.logi; byCh[k].inFreight += c.inFreight; byCh[k].cm += c.cm;
   });
   monthAds.forEach(a => {
     const k = a.channel || "기타";
-    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, logi: 0, cm: 0, ad: 0 };
+    if (!byCh[k]) byCh[k] = { revenue: 0, cost: 0, fee: 0, ship: 0, logi: 0, inFreight: 0, cm: 0, ad: 0 };
     // 상단 합계와 같은 기준(부가세 제외)으로 차감해야 두 숫자가 어긋나지 않음
     const net = adNetOf(a);
     byCh[k].ad += net;
@@ -5427,13 +5447,21 @@ async function viewProfit() {
   // 품목별
   const byProd = {};
   rows.forEach(r => {
-    if (!byProd[r.product_id]) byProd[r.product_id] = { qty: 0, revenue: 0, cm: 0 };
+    if (!byProd[r.product_id]) byProd[r.product_id] = { qty: 0, revenue: 0, cm: 0, inFreight: 0, freightUnits: 0, bases: new Set() };
     const c = cmOfSale(r, shipCharged);
     byProd[r.product_id].qty += c.qty;
     byProd[r.product_id].revenue += c.revenue;
     byProd[r.product_id].cm += c.cm;
+    byProd[r.product_id].inFreight += c.inFreight;
+    if (c.freightBasis) {
+      byProd[r.product_id].freightUnits += erpFreight.bySale.get(r.id)?.units || 0;
+      byProd[r.product_id].bases.add(c.freightBasis);
+    }
   });
   const prodList = Object.entries(byProd).sort((a, b) => b[1].cm - a[1].cm);
+  const hasFreight = erpFreight.records.length > 0 || t.inFreight > 0;
+  const freightBasisTag = bases => bases.size
+    ? ` <small style="color:var(--text-sub)">${[...bases].map(InboundFreight.basisLabel).join("·")}</small>` : "";
 
   const noSetting = erpChannelList.filter(c => !Number(c.fee_rate)).map(c => c.name);
 
@@ -5453,7 +5481,7 @@ async function viewProfit() {
           ${vatCfg.enabled && t.outVat ? `<div style="font-size:12px;color:var(--text-sub);margin-top:2px">
             고객이 낸 돈 ₩${fmt(t.gross)} − 부가세 ₩${fmt(t.outVat)}</div>` : ""}</div>
         <div class="stat"><div class="stat-label">변동비 합계</div>
-          <div class="stat-value amber">₩${fmt(t.cost + t.fee + t.ship + t.logi + adTotal)}${adUndet ? " <small>+ 광고비 미확정</small>" : ""}</div></div>
+          <div class="stat-value amber">₩${fmt(t.cost + t.fee + t.ship + t.logi + t.inFreight + adTotal)}${adUndet ? " <small>+ 광고비 미확정</small>" : ""}</div></div>
         <div class="stat"><div class="stat-label">공헌이익</div>
           <div class="stat-value" style="color:${adUndet ? "var(--amber)" : cmNet >= 0 ? "var(--green)" : "var(--red)"}">${cmShown(cmNet)}</div>
           ${adUndet ? `<div style="font-size:12px;color:var(--text-sub);margin-top:2px">확인된 광고비까지 뺀 잠정 ₩${fmt(cmNet)}</div>` : ""}
@@ -5489,14 +5517,16 @@ async function viewProfit() {
         <tbody>
           <tr><td>매출액</td><td class="num"><b>₩${fmt(t.revenue)}</b></td><td class="num">100%</td></tr>
           ${[["상품원가", t.cost], ["판매수수료", t.fee], ["출고배송비", t.ship],
-             ["물류비 (로켓그로스 등)", t.logi], ["쿠팡 광고비", adTotal]]
-            .filter(([label, v]) => v > 0 || !label.startsWith("물류비")).map(([label, v]) => {
+             ["물류비 (로켓그로스 등)", t.logi], ["입고 트럭 운송비", t.inFreight], ["쿠팡 광고비", adTotal]]
+            .filter(([label, v]) => v > 0 || !(label.startsWith("물류비") || (label.startsWith("입고") && !hasFreight))).map(([label, v]) => {
               const undet = adUndet && label === "쿠팡 광고비";
               return `
             <tr><td style="padding-left:18px;color:var(--text-sub)">− ${label}${undet
                 ? ` <small style="color:var(--amber)">미확정 ${adInfo.undeterminedDays.length}일 제외</small>`
                 : label === "쿠팡 광고비" && adInfo.state === AdCosts.STATE.ROUNDING_DIFFERENCE
-                ? ` <small style="color:var(--amber)">잠정 · 쿠팡 기간 합계와 ${fmt(Math.abs(adInfo.recon.diff))}원 차이</small>` : ""}</td>
+                ? ` <small style="color:var(--amber)">잠정 · 쿠팡 기간 합계와 ${fmt(Math.abs(adInfo.recon.diff))}원 차이</small>`
+                : label === "입고 트럭 운송비"
+                ? ` <small>판매 수량에 배부된 공급가액만${freightBasisTag(t.freightBases)}</small>` : ""}</td>
               <td class="num">${undet ? `미확정 (확인된 ₩${fmt(v)})` : `₩${fmt(v)}`}</td>
               <td class="num">${t.revenue ? (v / t.revenue * 100).toFixed(1) : 0}%</td></tr>`; }).join("")}
           <tr style="border-top:2px solid var(--line)">
@@ -5551,7 +5581,7 @@ async function viewProfit() {
     <div class="card">
       <h2>채널별 공헌이익</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>채널</th><th class="num">매출</th><th class="num">원가</th><th class="num">수수료</th><th class="num">배송비</th><th class="num">물류비</th><th class="num">광고비</th><th class="num">공헌이익</th><th class="num">이익률</th></tr></thead>
+        <thead><tr><th>채널</th><th class="num">매출</th><th class="num">원가</th><th class="num">수수료</th><th class="num">배송비</th><th class="num">물류비</th>${hasFreight ? '<th class="num">입고 운송비</th>' : ""}<th class="num">광고비</th><th class="num">공헌이익</th><th class="num">이익률</th></tr></thead>
         <tbody>${Object.keys(byCh).length ? Object.entries(byCh)
           .sort((a, b) => b[1].cm - a[1].cm).map(([k, v]) => `
           <tr>
@@ -5561,10 +5591,11 @@ async function viewProfit() {
             <td class="num">₩${fmt(v.fee)}</td>
             <td class="num">₩${fmt(v.ship)}</td>
             <td class="num">${v.logi ? "₩" + fmt(v.logi) : '<span style="color:var(--text-sub)">—</span>'}</td>
+            ${hasFreight ? `<td class="num">${v.inFreight ? "₩" + fmt(Math.round(v.inFreight)) : '<span style="color:var(--text-sub)">—</span>'}</td>` : ""}
             <td class="num">₩${fmt(v.ad)}</td>
             <td class="num"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
             <td class="num">${v.revenue ? (v.cm / v.revenue * 100).toFixed(1) + "%" : "—"}</td>
-          </tr>`).join("") : `<tr><td colspan="9" class="empty">데이터가 없습니다</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="${hasFreight ? 10 : 9}" class="empty">데이터가 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>
@@ -5572,27 +5603,95 @@ async function viewProfit() {
     <div class="card">
       <h2>품목별 공헌이익</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>품목</th><th class="num">수량</th><th class="num">매출</th><th class="num">공헌이익</th><th class="num">이익률</th><th class="num">개당 이익</th></tr></thead>
+        <thead><tr><th>품목</th><th class="num">수량</th><th class="num">매출</th>${hasFreight ? '<th class="num">입고 운송비<br><small>판매분 배부</small></th>' : ""}<th class="num">공헌이익</th><th class="num">이익률</th><th class="num">개당 이익</th></tr></thead>
         <tbody>${prodList.length ? prodList.map(([pid, v]) => {
           const rate = v.revenue ? (v.cm / v.revenue * 100) : 0;
           return `<tr>
             <td><b>${esc(prodName(pid))}</b></td>
             <td class="num">${fmt(v.qty)}</td>
             <td class="num">₩${fmt(v.revenue)}</td>
+            ${hasFreight ? `<td class="num">${v.inFreight ? `₩${fmt(Math.round(v.inFreight))}${freightBasisTag(v.bases)}
+              <div style="font-size:11.5px;color:var(--text-sub)">${fmt(v.freightUnits)}개 × ₩${fmt(Math.round(v.inFreight / v.freightUnits))}</div>`
+              : '<span style="color:var(--text-sub)">—</span>'}</td>` : ""}
             <td class="num"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
             <td class="num" style="color:${rate < 15 ? "#d9480f" : "inherit"}">${rate.toFixed(1)}%</td>
             <td class="num">₩${fmt(v.qty ? Math.round(v.cm / v.qty) : 0)}</td>
-          </tr>`; }).join("") : `<tr><td colspan="6" class="empty">데이터가 없습니다</td></tr>`}
+          </tr>`; }).join("") : `<tr><td colspan="${hasFreight ? 7 : 6}" class="empty">데이터가 없습니다</td></tr>`}
         </tbody>
       </table></div>
       <p style="font-size:12px;color:var(--text-sub);margin-top:10px">
         ※ 이익률 15% 미만은 주황색입니다. 많이 팔릴수록 손해인 상품을 여기서 잡아냅니다.</p>
     </div>
 
+    ${inboundFreightCardHtml(erpMonth)}
+
     ${AdCosts.cardHtml(adInfo, [], { autoError: adSrc.autoError })}`;
 }
 
 let profitAdsCache = [], profitFixedCache = [];
+
+// 2026-09-11 입고 트럭 운송비 카드 - 운송 묶음 ID·배분 근거(총 PLT, PLT 비율)·예상/실제·판매분/재고원가/입고 전 구분.
+// 단위당 금액은 내부에서 소수 그대로 계산하고 여기서만 반올림해 보여줘요.
+function inboundFreightCardHtml(month) {
+  if (erpFreight.error) {
+    return `<div class="card"><h2>입고 트럭 운송비</h2><p style="font-size:13px;color:var(--amber)">
+      입고 운송비 기록을 읽지 못해 이번 공헌이익에는 입고 운송비가 빠져 있어요 (${esc(erpFreight.error)}).</p></div>`;
+  }
+  if (!erpFreight.records.length) return "";
+  const won = v => `₩${fmt(Math.round(v))}`;
+  const rows = erpFreight.records.map(r => {
+    const c = r.cost;
+    const po = c.purchase_orders?.po_no || "";
+    const basis = r.basis === "ACTUAL"
+      ? `<span class="chip approved">실제 청구</span>${c.carrier_invoice_ref ? ` <small>${esc(c.carrier_invoice_ref)}</small>` : ""}${c.invoice_date ? ` <small>${esc(c.invoice_date)}</small>` : ""}`
+        + (r.estimate ? ` <small style="color:var(--text-sub)">예상 ${won(r.estimate.gross)}은 교체됨(중복 반영 없음)</small>` : "")
+      : `<span class="chip waiting">예상</span> <small style="color:var(--text-sub)">운송업체 청구금액 등록 전</small>`;
+    return `
+      <div style="border-top:1px solid var(--line);padding-top:12px;margin-top:12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:13.5px">
+          <b>${esc(po)}</b> ${basis}
+          <span class="chip">${esc(InboundFreight.STAGE_LABEL[r.stage] || r.stage)}</span>
+        </div>
+        <div style="font-size:12.5px;color:var(--text-sub);margin:6px 0 8px;line-height:1.7">
+          운송 묶음 ID <code title="${esc(c.shipment_group_id)}">${esc(String(c.shipment_group_id).slice(0, 8))}</code> ·
+          결제 총액 ${won(r.gross)} (VAT 포함) = 공급가액 ${won(r.supply)} + 매입 VAT ${won(r.vat)} ·
+          배분 근거 총 ${fmt(r.totalPlt)}PLT, ${esc(r.ratio)} (PLT 비율, 마지막 행이 원 단위 차이 흡수) ·
+          공헌이익에는 공급가액만, VAT 는 부가세 화면으로</div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>상품</th><th class="num">PLT</th><th class="num">수량</th><th class="num">배분 공급가액</th><th class="num">개당</th>
+            <th class="num">입고</th><th class="num">${esc(month)} 판매분 차감</th><th class="num">누적 판매분 차감</th>
+            <th class="num">재고원가로 남음</th><th class="num">입고 전(예상)</th></tr></thead>
+          <tbody>${r.allocs.map(a => `
+            <tr>
+              <td><b>${esc(prodName(a.product_id))}</b>${a.rounding_adjusted ? ' <small style="color:var(--text-sub)">원 단위 조정</small>' : ""}</td>
+              <td class="num">${fmt(a.pallet_count)}</td>
+              <td class="num">${fmt(a.qty)}</td>
+              <td class="num">${won(a.allocated_supply)}</td>
+              <td class="num">${won(a.perUnit)}</td>
+              <td class="num">${fmt(a.receivedQty)}</td>
+              <td class="num">${a.soldByMonth[month] ? won(a.soldByMonth[month]) : "—"}</td>
+              <td class="num">${a.soldSupply ? won(a.soldSupply) + ` <small>(${fmt(a.soldQty)}개)</small>` : "—"}</td>
+              <td class="num">${a.inventorySupply ? won(a.inventorySupply) : "—"}</td>
+              <td class="num">${a.pendingSupply ? won(a.pendingSupply) : "—"}</td>
+            </tr>`).join("")}
+          </tbody>
+          <tfoot><tr><td><b>합계</b></td><td class="num">${fmt(r.totalPlt)}</td><td class="num">${fmt(r.allocs.reduce((s, a) => s + a.qty, 0))}</td>
+            <td class="num"><b>${won(r.supply)}</b></td><td></td><td class="num">${fmt(r.receivedQty)}</td>
+            <td class="num">${won(InboundFreight.soldInMonth(r, month))}</td><td class="num">${won(r.soldSupply)}</td>
+            <td class="num">${won(r.inventorySupply)}</td><td class="num">${won(r.pendingSupply)}</td></tr></tfoot>
+        </table></div>
+      </div>`;
+  }).join("");
+  return `
+    <div class="card">
+      <h2>입고 트럭 운송비</h2>
+      <p style="font-size:12.5px;color:var(--text-sub);line-height:1.7">
+        운송 묶음(트럭 1대)마다 한 번만 기록해요. 입고 전에는 예상 원가로만 보이고 공헌이익에서 빼지 않아요.
+        입고되면 그 수량의 재고원가에 얹고, 쿠팡 재고에서 먼저 들어온 것부터 팔린 것으로 보고
+        <b>실제 판매된 수량만큼만</b> 상품별 공헌이익에서 빼요. 안 팔린 재고분은 재고원가로 남아요.</p>
+      ${rows}
+    </div>`;
+}
 
 /* ---------- 부가세 ---------- */
 // 부가세 신고는 분기 단위. 1기 예정(1~3월)·확정(4~6월), 2기 예정(7~9월)·확정(10~12월)
@@ -5635,10 +5734,15 @@ async function viewVat() {
     // 판매수수료·출고배송비에 붙은 부가세도 공제 대상 — 커머스에서 금액이 가장 큰 항목
     const shipCharged = shipChargedRows(s);
     const feeShipVat = s.reduce((sum, r) => sum + cmOfSale(r, shipCharged).feeShipVat, 0);
-    const inVat = buyVatSum + costVat + adVat + feeShipVat;
+    // 2026-09-11 입고 트럭 운송비 매입 VAT - 운송업체 실제 청구(ACTUAL)만 청구일 분기에. 예상은 아래에 따로.
+    const fr = InboundFreight.vatRows(erpFreight.costs, inRange);
+    const freightVat = fr.actualVat;
+    const inVat = buyVatSum + costVat + adVat + feeShipVat + freightVat;
     return { period, outVat, inVat, pay: outVat - inVat, taxableNet, freeNet, buyNetSum,
-             costVat, adVat, buyVatSum, feeShipVat, saleCnt: s.length, buyCnt: b.length };
+             costVat, adVat, buyVatSum, feeShipVat, freightVat, freightSupply: fr.actualSupply,
+             saleCnt: s.length, buyCnt: b.length };
   };
+  const frEst = InboundFreight.vatRows(erpFreight.costs, () => false);
   const periods = VAT_PERIODS.map(calc);
   // 선택한 연도가 올해가 아니면 '진행 중' 분기가 없음 (지난 해는 전 분기가 확정)
   const isThisYear = year === td.slice(0, 4);
@@ -5673,8 +5777,13 @@ async function viewVat() {
         ${cur.period.label} = ₩${fmt(cur.outVat)} − ₩${fmt(cur.inVat)} = <b style="color:${cur.pay >= 0 ? "var(--red)" : "var(--green)"}">₩${fmt(cur.pay)}</b>
         ${cur.pay < 0 ? " (마이너스면 돌려받습니다)" : ""}<br><br>
         <span style="color:var(--text-sub)">낸 부가세에는 상품 매입 ₩${fmt(cur.buyVatSum)},
-        판매수수료·배송비 ₩${fmt(cur.feeShipVat)}, 택배·운송비 ₩${fmt(cur.costVat)}, 광고비 ₩${fmt(cur.adVat)}가 들어 있습니다.</span>
-      </div>`}
+        판매수수료·배송비 ₩${fmt(cur.feeShipVat)}, 택배·운송비 ₩${fmt(cur.costVat)}, 광고비 ₩${fmt(cur.adVat)}${
+        cur.freightVat ? `, 입고 트럭 운송비 ₩${fmt(cur.freightVat)} (공급가액 ₩${fmt(cur.freightSupply)}, 실제 청구)` : ""}가 들어 있습니다.</span>
+      </div>
+      ${frEst.estimateCount ? `<div style="border:1px dashed var(--line);border-radius:9px;padding:12px;margin-top:10px;font-size:13px;line-height:1.7">
+        <b>입고 트럭 운송비 (예상 ${frEst.estimateCount}건)</b> — 공급가액 ₩${fmt(frEst.estimateSupply)} / 매입 VAT ₩${fmt(frEst.estimateVat)}<br>
+        <span style="color:var(--text-sub)">운송업체 실제 청구금액(세금계산서)이 등록되면 그 청구일 분기의 낸 부가세에 들어가요.
+        지금은 예상값이라 위 합계에 넣지 않았어요.</span></div>` : ""}`}
     </div>
 
     ${!vatCfg.enabled ? "" : `
@@ -5703,7 +5812,7 @@ async function viewVat() {
         </tbody>
       </table></div>
       <p style="font-size:12px;color:var(--text-sub);margin-top:10px">
-        ※ <b>낸 부가세</b> = 상품 매입 + 판매수수료 + 출고배송비 + 택배·운송비 + 광고비에 붙은 부가세를 모두 합한 금액입니다.<br>
+        ※ <b>낸 부가세</b> = 상품 매입 + 판매수수료 + 출고배송비 + 택배·운송비 + 입고 트럭 운송비(실제 청구) + 광고비에 붙은 부가세를 모두 합한 금액입니다.<br>
         ※ 과세표준(과세 매출)과 면세 매출은 신고서에서 칸이 다르므로 나눠서 표시합니다.<br>
         ※ 실제 신고는 세무대리인을 통해 하시고, 이 화면은 <b>미리 준비하고 자금을 확보하기 위한 참고용</b>입니다.
       </p>
@@ -5862,7 +5971,9 @@ async function viewReport() {
     const summary = summaries[index].summary;
     const sale = summary?.has_rg_statistics ? summary.total.net_amount : null;
     const goods = buys.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
-    const extra = costs.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0);
+    // 2026-09-11 입고 트럭 운송비(운송 묶음 기록)는 입고 처리 때 purchase_costs 에 따로 넣지 않으므로 입고한 달에 한 번 더해요.
+    const extra = costs.filter(r => monthOf(r) === m).reduce((s, r) => s + Number(r.amount), 0)
+      + erpFreight.records.filter(r => (r.firstReceiptDate || "").slice(0, 7) === m).reduce((s, r) => s + r.gross, 0);
     const buy = goods + extra;
     return { m, sale, buy, goods, extra, diff: sale == null ? null : sale - buy };
   });
@@ -6275,9 +6386,10 @@ function openPODetail(id) {
               <td style="width:110px;color:var(--text-sub)">거래처</td><td>${esc(p.supplier)}${sup?.pay_terms ? ` <span class="chip waiting">${esc(sup.pay_terms)}</span>` : ""}</td></tr>
           <tr><td style="color:var(--text-sub)">입고처</td><td>${p.deliver_to === "쿠팡" ? "쿠팡 (로켓그로스 직송)" : "자사창고"}</td>
               <td style="color:var(--text-sub)">기안</td><td>${esc(userName(p.drafter_id))}</td></tr>
-          <tr><td style="color:var(--text-sub)">예상 운송비</td><td>${p.freight_est ? "₩" + fmt(p.freight_est) : "—"}<span id="po-freight-review"></span></td>
+          <tr><td style="color:var(--text-sub)">예상 운송비</td><td>${p.freight_est ? "₩" + fmt(p.freight_est) + (poFreightRecord(p.id) ? " <small>(VAT 포함)</small>" : "") : "—"}<span id="po-freight-review"></span></td>
               <td style="color:var(--text-sub)">메모</td><td>${esc(p.memo) || "—"}</td></tr>
         </tbody></table></div>
+        ${poFreightPanelHtml(p)}
 
         <h3 style="font-size:15px;margin:16px 0 8px">품목</h3>
         <div class="table-wrap"><table>
@@ -6369,6 +6481,78 @@ async function loadPOFreightReview(poId, currentFreightEst) {
       🚚 ${(result.groups || []).some(g => g.consolidated) ? "TRUCK 운송비(합배송 반영)" : "TRUCK 자동선택 운송비"} ₩${fmt(result.total_freight_est)}${reasons ? ` (${reasons})` : ""}
       <a onclick="applyPOFreightEstimate('${poId}', ${result.total_freight_est})" style="color:var(--brand);cursor:pointer;font-weight:600;margin-left:4px">적용 →</a>
     </span>`;
+}
+
+// 2026-09-11 입고 트럭 운송비 기록(운송 묶음당 1건) - 발주서 상세·입고 처리에서 같은 기록을 봐요.
+const poFreightRecord = poId => erpFreight.records.find(r => r.cost.purchase_order_id === poId) || null;
+
+function poFreightPanelHtml(p) {
+  const r = poFreightRecord(p.id);
+  if (!r) return "";
+  const c = r.cost;
+  const won = v => `₩${fmt(Math.round(v))}`;
+  const basis = r.basis === "ACTUAL"
+    ? `<span class="chip approved">실제 청구</span>${c.carrier_invoice_ref ? ` ${esc(c.carrier_invoice_ref)}` : ""}${c.invoice_date ? ` · ${esc(c.invoice_date)}` : ""}`
+      + (r.estimate ? ` <small style="color:var(--text-sub)">(예상 ${won(r.estimate.gross)} → 실제로 교체, 중복 반영 없음)</small>` : "")
+    : `<span class="chip waiting">예상</span>`;
+  return `
+    <div style="border:1px solid var(--line);border-radius:9px;padding:12px;margin-top:10px;font-size:13px;line-height:1.75">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
+        <b>🚚 입고 트럭 운송비 ${basis}</b>
+        ${me.approver ? `<button class="btn sm secondary" onclick="openFreightActualModal('${c.id}','${p.id}')">실제 청구금액 등록</button>` : ""}
+      </div>
+      결제 총액 <b>${won(r.gross)}</b> (VAT 포함) = 공급가액 ${won(r.supply)} + 매입 VAT ${won(r.vat)}<br>
+      운송 묶음 ID <code title="${esc(c.shipment_group_id)}">${esc(String(c.shipment_group_id).slice(0, 8))}</code> ·
+      배분 근거 총 ${fmt(r.totalPlt)}PLT, ${esc(r.ratio)} — ${r.allocs.map(a =>
+        `${esc(prodName(a.product_id))} ${fmt(a.pallet_count)}PLT ${won(a.allocated_supply)} (개당 ${won(a.perUnit)})`).join(" · ")}<br>
+      <span style="color:var(--text-sub)">${esc(InboundFreight.STAGE_LABEL[r.stage] || r.stage)} ·
+        공헌이익에는 공급가액만, 실제 판매된 수량만큼만 반영돼요. 운송 묶음당 한 번만 기록해요.</span>
+    </div>`;
+}
+
+// 실제 운송업체 청구금액 등록 - 승인 권한자만(DB 함수가 다시 확인). 같은 기록을 교체하고 배분도 다시 계산해요.
+function openFreightActualModal(freightId, poId) {
+  const r = erpFreight.records.find(x => x.cost.id === freightId);
+  if (!r) return toast("운송비 기록을 찾을 수 없습니다");
+  document.getElementById("modal-root").innerHTML = `
+    <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
+      <div class="modal">
+        <h3>실제 운송비 청구금액 등록</h3>
+        <p style="font-size:12.5px;color:var(--text-sub);margin:-4px 0 10px;line-height:1.7">
+          지금 ${r.basis === "ACTUAL" ? "실제" : "예상"} ₩${fmt(r.gross)} (공급가액 ₩${fmt(r.supply)} + VAT ₩${fmt(r.vat)}).
+          등록하면 이 기록이 실제 금액으로 <b>교체</b>되고(더하지 않음) 상품별 배분도 같은 PLT 비율로 다시 계산돼요.</p>
+        <div class="form-grid">
+          <div class="field"><label>결제 총액(원, VAT 포함) *</label><input id="fa-gross" type="text" inputmode="numeric" class="comma" value="${cfv(r.gross)}"></div>
+          <div class="field"><label>매입 VAT(원) *</label><input id="fa-vat" type="text" inputmode="numeric" class="comma" value="${cfv(r.vat)}"></div>
+          <div class="field"><label>청구(세금계산서) 일자 *</label><input id="fa-date" type="date" value="${today()}"></div>
+          <div class="field"><label>청구서 번호·메모</label><input id="fa-ref" type="text" placeholder="예: 운송업체 청구서 번호"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn secondary" onclick="closeModal()">취소</button>
+          <button class="btn" id="btn-fa-save" onclick="saveFreightActual('${freightId}','${poId}')">실제 금액으로 교체</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+async function saveFreightActual(freightId, poId) {
+  const gross = numOf(document.getElementById("fa-gross").value);
+  const vat = numOf(document.getElementById("fa-vat").value);
+  const date = document.getElementById("fa-date").value;
+  const ref = document.getElementById("fa-ref").value.trim();
+  if (!(gross > 0) || !(vat >= 0) || vat > gross) return toast("결제 총액과 매입 VAT를 확인해 주세요");
+  if (!date) return toast("청구 일자를 입력해 주세요");
+  if (!confirm(`실제 운송비 ₩${fmt(gross)} (공급가액 ₩${fmt(gross - vat)} + VAT ₩${fmt(vat)})로 교체할까요?`)) return;
+  const btn = document.getElementById("btn-fa-save");
+  btn.disabled = true;
+  const { error } = await sb.rpc("fn_set_inbound_freight_actual", {
+    p_freight_id: freightId, p_gross: gross, p_vat: vat, p_invoice_ref: ref || null, p_invoice_date: date });
+  if (error) { btn.disabled = false; return toast("등록하지 못했습니다: " + (error.message || "")); }
+  toast("실제 운송비로 교체했습니다 (중복 반영 없음)");
+  closeModal();
+  await loadErpBase();
+  await loadPOs();
+  openPODetail(poId);
 }
 
 async function applyPOFreightEstimate(poId, amount) {
@@ -7242,6 +7426,16 @@ function openReceiveModal(id) {
   const p = poCache.find(x => x.id === id);
   const items = (poItemCache[id] || []).filter(it => it.qty - it.received_qty > 0);
   if (!items.length) return toast("입고할 수량이 없습니다");
+  // 2026-09-11 운송 묶음 운송비 기록이 있는 PO 는 여기서 운송비를 따로 기록하지 않아요(같은 트럭 운송비 두 번 방지).
+  // 기록을 못 읽었으면 예상 운송비를 미리 채우지 않아요 - 모르고 확정하면 중복될 수 있어서.
+  const frRec = poFreightRecord(p.id);
+  const freightField = frRec
+    ? `<div class="field"><label>입고 트럭 운송비</label>
+        <div style="font-size:12.5px;line-height:1.6;padding-top:4px">운송 묶음 기록 ₩${fmt(frRec.gross)} (${frRec.basis === "ACTUAL" ? "실제 청구" : "예상"}, VAT 포함)으로 반영돼요 —
+        여기서 따로 기록하지 않아요(중복 방지). 실제 청구금액은 발주서 상세에서 등록하세요.</div></div>`
+    : `<div class="field"><label>실제 운송비(원) ${vatTag("exp")}</label>
+        <input id="rc-freight" type="text" inputmode="numeric" class="comma" value="${erpFreight.error ? "" : cfv(p.freight_est || "")}">
+        ${erpFreight.error ? `<p style="font-size:12px;color:var(--amber);margin-top:4px">운송 묶음 기록을 확인하지 못해 예상 운송비를 미리 채우지 않았어요.</p>` : ""}</div>`;
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:760px;width:96vw">
@@ -7251,8 +7445,7 @@ function openReceiveModal(id) {
           입고처: <b>${p.deliver_to === "쿠팡" ? "쿠팡 (로켓그로스)" : "자사창고"}</b> · 거래처: <b>${esc(p.supplier)}</b></p>
         <div class="form-grid">
           <div class="field"><label>입고일 *</label><input id="rc-date" type="date" value="${today()}"></div>
-          <div class="field"><label>실제 운송비(원) ${vatTag("exp")}</label>
-            <input id="rc-freight" type="text" inputmode="numeric" class="comma" value="${cfv(p.freight_est || "")}"></div>
+          ${freightField}
         </div>
         <div class="table-wrap" style="margin-top:8px"><table>
           <thead><tr><th>품목</th><th class="num">발주</th><th class="num">기입고</th><th class="num">미입고</th><th style="width:110px" class="num">이번 입고</th></tr></thead>
@@ -7279,7 +7472,9 @@ async function saveReceive(id) {
   const date = document.getElementById("rc-date").value;
   if (!date) return toast("입고일을 선택해 주세요");
   if (date > today()) return toast("입고일은 오늘보다 뒤일 수 없습니다");
-  const freight = numOf(document.getElementById("rc-freight").value) || 0;
+  // 운송 묶음 운송비 기록이 있으면 입력칸이 없고, 여기서 purchase_costs 에 넣지 않아요(중복 방지).
+  const freightEl = document.getElementById("rc-freight");
+  const freight = freightEl && !poFreightRecord(p.id) ? (numOf(freightEl.value) || 0) : 0;
   const rows = [...document.querySelectorAll("#modal-root tr[data-item]")];
   const recs = [], updates = [];
   for (const tr of rows) {
