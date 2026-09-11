@@ -4,14 +4,20 @@
    - 승인·거절 버튼: profiles.approver 인 사람에게만. 일반 사용자는 상태·거절 사유만 봐요.
    - 거절: 사유 필수. 승인 대기뿐 아니라 "승인됐지만 아직 WING 미제출" 요청도 거절 가능.
    - WING에 제출(시도 포함)된 요청: "WING 제출 완료 · 거절 불가" 표시, 거절 버튼 없음.
-   - 1PLT 단독(1톤 또는 차량 미확인) TRUCK 요청: "승인 불가 · 1PLT 단독 입고" 표시, 승인 버튼 잠금,
-     거절 사유 기본값도 같은 문구.
+   - 적재 기준(2026-09-11 확정, 차량 종류와 무관): TRUCK 전체 PLT 합계가 1PLT면 "승인 불가 · 1PLT 단독 입고",
+     1PLT 미만이면 "승인 불가 · 1PLT 미만 불완전 적재", PLT 정보가 없거나 불확실하면 DATA_CHECK.
+     승인 버튼 잠금, 거절 사유 기본값도 같은 문구. 판정표는 DB·파이썬(inbound_load_rule.py)과 같아요.
    - 거절은 끝 상태. 수정은 [수정 후 재요청] → 새 승인 요청(원본과 연결). WING 취소 API는 부르지 않아요. */
 (function (root) {
   "use strict";
 
-  const SINGLE_PLT_REASON = "승인 불가 · 1PLT 단독 입고";
-  const SINGLE_PLT_CODE = "SINGLE_PLT_LOAD";
+  const LOAD_LABELS = {
+    SINGLE_PLT: "승인 불가 · 1PLT 단독 입고",
+    UNDER_ONE_PLT: "승인 불가 · 1PLT 미만 불완전 적재",
+    PLT_DATA_CHECK: "승인 불가 · PLT 계산정보 확인 필요(DATA_CHECK)",
+  };
+  const SINGLE_PLT_REASON = LOAD_LABELS.SINGLE_PLT;
+  const SINGLE_PLT_CODE = "SINGLE_PLT";
   const WING_DONE_LABEL = "WING 제출 완료 · 거절 불가";
   const WING_TRIED_LABEL = "WING 제출 시도됨 · 거절 불가";
 
@@ -36,12 +42,25 @@
 
   const palletSum = items => (items || []).reduce((s, it) => s + (Number(it.pallet_count) || 0), 0);
 
-  // erp_submit_gate._check_1plt_load_gate()·DB fn_inbound_plan_single_plt_blocked() 와 같은 기준
-  function singlePltBlocked(p, items, vehicleType) {
-    if ((p.transport_type || "TRUCK") !== "TRUCK") return false;
-    if (palletSum(items) !== 1) return false;
-    return vehicleType == null || vehicleType === "" || vehicleType === "1톤";
+  const toNum = v => (v === null || v === undefined || v === "" || typeof v === "boolean" || Number.isNaN(Number(v))) ? null : Number(v);
+
+  // 적재 기준 - DB fn_inbound_plan_load_block_code()·inbound_load_rule.evaluate() 와 같은 표.
+  // 차량 종류는 입력으로 받지도 않아요. 반환: null(허용) | { code, label, total }
+  function loadBlock(p, items) {
+    if (p.transport_type === "PARCEL") return null;
+    const list = items || [];
+    const mk = (code, total) => ({ code, label: LOAD_LABELS[code], total });
+    if (!list.length) return mk("PLT_DATA_CHECK", null);
+    const vals = list.map(it => toNum(it.pallet_count));
+    if (vals.some(v => v === null || v < 0)) return mk("PLT_DATA_CHECK", null);
+    const total = vals.reduce((a, b) => a + b, 0);
+    if (p.total_plt !== null && p.total_plt !== undefined && toNum(p.total_plt) !== total) return mk("PLT_DATA_CHECK", total);
+    if (total < 1) return mk("UNDER_ONE_PLT", total);
+    if (total === 1) return mk("SINGLE_PLT", total);
+    if (total < 2) return mk("PLT_DATA_CHECK", total);
+    return null;
   }
+  const singlePltBlocked = (p, items) => !!loadBlock(p, items);
 
   const isSuperseded = (p, supersededIds) => !!supersededIds && supersededIds.has(p.id);
 
@@ -67,8 +86,8 @@
       && (me.approver === true || (!!me.id && me.id === drafter));
   }
 
-  const defaultRejectReason = ctx => (ctx && ctx.singlePlt ? SINGLE_PLT_REASON : "");
-  const defaultRejectCode = ctx => (ctx && ctx.singlePlt ? SINGLE_PLT_CODE : null);
+  const defaultRejectReason = ctx => (ctx && ctx.loadBlock ? ctx.loadBlock.label : "");
+  const defaultRejectCode = ctx => (ctx && ctx.loadBlock ? ctx.loadBlock.code : null);
 
   function rejectionInfoHtml(p) {
     if (p.approval_status !== "REJECTED") return "";
@@ -85,8 +104,8 @@
     const [cls, label] = chipMap[p.approval_status] || ["waiting", p.approval_status || "-"];
     let html = `<span class="chip ${cls}">${label}</span>`;
     html += rejectionInfoHtml(p);
-    if (ctx.singlePlt && p.approval_status !== "REJECTED" && !isWingSubmitted(p) && p.internal_status !== "CANCELLED") {
-      html += `<br><small class="rg-block">${SINGLE_PLT_REASON}</small>`;
+    if (ctx.loadBlock && p.approval_status !== "REJECTED" && !isWingSubmitted(p) && p.internal_status !== "CANCELLED") {
+      html += `<br><small class="rg-block">${escHtml(ctx.loadBlock.label)}</small>`;
     }
     if (p.resubmission_of_plan_id) {
       html += `<br><small class="rg-link">↩ 거절된 요청 ${escHtml(short(p.resubmission_of_plan_id))}의 재요청</small>`;
@@ -109,8 +128,8 @@
       const gate = ctx.migrated === false
         ? ` disabled title="DB 적용 전 - 관리자가 거절 기능 마이그레이션을 실행하면 사용할 수 있어요"` : "";
       if (canApprove(p, ctx)) {
-        out.push(ctx.singlePlt
-          ? `<button class="btn sm" disabled title="${SINGLE_PLT_REASON}">승인</button>`
+        out.push(ctx.loadBlock
+          ? `<button class="btn sm" disabled title="${escHtml(ctx.loadBlock.label)} - 차량 종류와 관계없이 전체 2PLT 이상만 승인">승인</button>`
           : `<button class="btn sm green" onclick="decideRgInbound('${id}','APPROVED')"${gate}>승인</button>`);
       }
       if (canReject(p, ctx)) {
@@ -158,7 +177,8 @@
       ["요청 번호", `<code>${escHtml(short(p.id))}</code>${ctx.poNo ? ` · 발주서 ${escHtml(ctx.poNo)}` : ""}`],
       ["상품", items.map(it => `${escHtml(it.inventory_name || "-")}${it.option_name ? ` <small>${escHtml(it.option_name)}</small>` : ""}`).join("<br>") || "-"],
       ["최종 입고수량", items.map(it => `${Number(it.coupang_inbound_qty || 0).toLocaleString("ko-KR")}개`).join(", ") || "-"],
-      ["PLT", `${palletSum(items)}PLT${ctx.vehicleType ? ` · 차량 ${escHtml(ctx.vehicleType)}` : ""}`],
+      ["PLT", `전체 ${palletSum(items)}PLT${ctx.loadBlock ? ` · <span class="rg-block">${escHtml(ctx.loadBlock.label)}</span>` : ""}`
+        + (ctx.vehicleType ? `<br><small class="rg-muted">차량 ${escHtml(ctx.vehicleType)} (참고용 - 승인 판단은 차량과 무관)</small>` : "")],
       ["쿠팡센터", centerHtml],
       ["입고 예정", `${escHtml(p.inbound_date || "-")} ${escHtml(String(p.inbound_time || "").slice(0, 5))}`],
       ["운송", escHtml(p.transport_type === "PARCEL" ? "택배(PARCEL)" : "트럭(TRUCK)")],
@@ -203,7 +223,7 @@
           c ? c.text(ref) : (p.destination_center_raw || ""), c ? c.code(ref) : (p.destination_center_raw || ""),
           p.inbound_date || "", String(p.inbound_time || "").slice(0, 5), p.preflight_status || "",
           approvalText[p.approval_status] || p.approval_status || "",
-          ctx.singlePlt && p.approval_status !== "REJECTED" && !isWingSubmitted(p) ? SINGLE_PLT_REASON : "",
+          ctx.loadBlock && p.approval_status !== "REJECTED" && !isWingSubmitted(p) ? ctx.loadBlock.label : "",
           p.rejection_reason || "", p.rejected_by_name || "", p.rejected_at ? fmtKst(p.rejected_at) : "",
           wingSubmittedLabel(p) ? (p.coupang_shipment_id ? "제출완료" : "제출시도") : "미제출",
           p.coupang_inbound_plan_id || "", p.coupang_shipment_id || "",
@@ -223,7 +243,7 @@
   }
 
   root.InboundApproval = {
-    SINGLE_PLT_REASON, SINGLE_PLT_CODE, WING_DONE_LABEL, WING_TRIED_LABEL, CSV_HEADER,
+    SINGLE_PLT_REASON, SINGLE_PLT_CODE, LOAD_LABELS, loadBlock, WING_DONE_LABEL, WING_TRIED_LABEL, CSV_HEADER,
     isWingSubmitted, wingSubmittedLabel, singlePltBlocked, canApprove, canReject, canResubmit,
     defaultRejectReason, defaultRejectCode, approvalCellHtml, decisionHtml, detailHtml, rejectionInfoHtml,
     csvRows, toCsv, fmtKst, palletSum,

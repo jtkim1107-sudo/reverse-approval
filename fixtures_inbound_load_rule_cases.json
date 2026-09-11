@@ -1,0 +1,17 @@
+{
+  "_comment": "2026-09-11 적재 기준 공통 판정표 - DB(fn_inbound_plan_load_block_code)·파이썬(inbound_load_rule)·프런트(InboundApproval.loadBlock)가 같은 결과여야 해요. 차량 종류는 입력에 없음(판정에 쓰지 않음). reverse-approval 저장소에 같은 파일이 있어요.",
+  "cases": [
+    {"name": "1PLT 단일 상품", "transport": "TRUCK", "pallets": [1], "total_plt": 1, "expect": "SINGLE_PLT"},
+    {"name": "여러 상품 합계 1PLT(1+0)", "transport": "TRUCK", "pallets": [1, 0], "total_plt": 1, "expect": "SINGLE_PLT"},
+    {"name": "1PLT 미만(0PLT)", "transport": "TRUCK", "pallets": [0], "total_plt": 0, "expect": "UNDER_ONE_PLT"},
+    {"name": "품목 없음", "transport": "TRUCK", "pallets": [], "total_plt": null, "expect": "PLT_DATA_CHECK"},
+    {"name": "품목 PLT 없음", "transport": "TRUCK", "pallets": [null], "total_plt": null, "expect": "PLT_DATA_CHECK"},
+    {"name": "음수 PLT", "transport": "TRUCK", "pallets": [-1, 3], "total_plt": 2, "expect": "PLT_DATA_CHECK"},
+    {"name": "계획 total_plt 와 합계 불일치", "transport": "TRUCK", "pallets": [2], "total_plt": 3, "expect": "PLT_DATA_CHECK"},
+    {"name": "2PLT", "transport": "TRUCK", "pallets": [2], "total_plt": 2, "expect": null},
+    {"name": "여러 상품 1+1=2PLT", "transport": "TRUCK", "pallets": [1, 1], "total_plt": 2, "expect": null},
+    {"name": "4PLT(total_plt 비어 있음)", "transport": "TRUCK", "pallets": [4], "total_plt": null, "expect": null},
+    {"name": "택배 0PLT", "transport": "PARCEL", "pallets": [0], "total_plt": null, "expect": null},
+    {"name": "운송 구분 없음 1PLT", "transport": null, "pallets": [1], "total_plt": 1, "expect": "SINGLE_PLT"}
+  ]
+}

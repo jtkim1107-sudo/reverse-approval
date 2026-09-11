@@ -5,8 +5,9 @@
    규칙(사용자 명시)
    - INC4·CHA1 같은 코드만으로 표시하지 않아요. 마스터의 한글 센터명 + "센터" (예: 천안1센터).
    - 코드로 한글명을 추측하지 않아요. 마스터 이름에 한글이 없으면(예: XRC14) 매핑 없음으로 봐요.
-   - 매핑이 없으면 "센터명 확인 필요 (코드: XXX)".
-   - 코드는 보조정보로만: 화면은 작은 괄호 (CHA1) + 툴팁, CSV는 별도 "센터코드" 열.
+   - 매핑이 없으면 본문은 "센터명 확인 필요" - 영어 코드를 센터명 자리에 두지 않아요.
+   - 코드는 보조정보로만: 화면은 작은 괄호 (CHA1)·(코드: XRC14) + 툴팁, CSV는 별도 "센터코드" 열,
+     태그를 못 쓰는 선택 목록·알림 문구는 label() "천안1센터 (CHA1)" / "센터명 확인 필요 (코드: XRC14)".
    - 마스터를 못 읽으면(권한·네트워크) 전부 "센터명 확인 필요" - 추측 표시보다 안전해요. */
 (function (root) {
   "use strict";
@@ -58,7 +59,7 @@
     const known = !!master && HANGUL.test(master);
     const name = known ? (master.endsWith("센터") ? master : `${master}센터`) : null;
     if (!code && !name) return { known: false, name: null, code: null, text: "-", empty: true };
-    return { known, name, code, text: known ? name : `센터명 확인 필요 (코드: ${code || "없음"})`, empty: false };
+    return { known, name, code, text: known ? name : "센터명 확인 필요", empty: false };
   }
 
   const text = ref => resolve(ref).text;
@@ -68,20 +69,23 @@
     const r = resolve(ref);
     if (r.empty) return "-";
     if (!r.known) {
-      return `<span class="center-name unknown" title="센터 마스터(coupang_centers)에 한글 센터명이 없어요">${escHtml(r.text)}</span>`;
+      return `<span class="center-name unknown" title="센터 마스터(coupang_centers)에 한글 센터명이 없어요 - 코드 ${escHtml(r.code || "없음")}">${escHtml(r.text)}`
+        + ` <small class="center-code">(코드: ${escHtml(r.code || "없음")})</small></span>`;
     }
     return `<span class="center-name" title="센터 코드 ${escHtml(r.code || "-")}">${escHtml(r.name)}`
       + (r.code ? ` <small class="center-code">(${escHtml(r.code)})</small>` : "") + `</span>`;
   }
 
-  // <option> 처럼 태그를 못 쓰는 곳: "천안1센터 (CHA1)"
+  // <option>·알림처럼 태그를 못 쓰는 곳: "천안1센터 (CHA1)" / "센터명 확인 필요 (코드: XRC14)"
   function optionText(ref) {
     const r = resolve(ref);
-    return r.known && r.code ? `${r.name} (${r.code})` : r.text;
+    if (r.empty) return "-";
+    if (!r.known) return `센터명 확인 필요 (코드: ${r.code || "없음"})`;
+    return r.code ? `${r.name} (${r.code})` : r.name;
   }
 
   root.CoupangCenters = {
-    load, resolve, text, code, html, optionText, setRows,
+    load, resolve, text, code, html, optionText, label: optionText, setRows,
     get loaded() { return loaded; },
     get loadError() { return loadError; },
   };

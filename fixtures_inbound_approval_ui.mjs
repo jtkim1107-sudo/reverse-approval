@@ -33,14 +33,19 @@ const MASTER = [
 ];
 
 console.log("=== 1. 쿠팡 센터명(센터 마스터 하나로만) ===");
-check(CC.text("CHA1"), "센터명 확인 필요 (코드: CHA1)", "마스터를 아직 못 읽었으면 추측하지 않고 '센터명 확인 필요'");
+check(CC.text("CHA1"), "센터명 확인 필요", "마스터를 아직 못 읽었으면 추측하지 않고 '센터명 확인 필요'");
 CC.setRows(MASTER);
 check(CC.text("INC4"), "인천4센터", "알려진 코드 INC4 → 인천4센터");
 check(CC.text("cha1"), "천안1센터", "소문자 코드도 같은 센터(천안1센터)");
 check(CC.text({ id: "c-mcn1", code: "WRONG" }), "목천1센터", "destination_center_id 가 있으면 id 우선");
 check(CC.text({ id: "c-mcn1" }), "목천1센터", "id 만 있어도 센터명");
-check(CC.text("ZZZ9"), "센터명 확인 필요 (코드: ZZZ9)", "미등록 코드 → 센터명 확인 필요 (코드: ZZZ9)");
-check(CC.text("XRC14"), "센터명 확인 필요 (코드: XRC14)", "마스터 이름이 코드 그대로(한글 없음) → 추측 금지, 확인 필요");
+check(CC.text("ZZZ9"), "센터명 확인 필요", "미등록 코드 → 본문은 '센터명 확인 필요'(코드를 센터명 자리에 두지 않음)");
+check(CC.text("XRC14"), "센터명 확인 필요", "마스터 이름이 코드 그대로(한글 없음, XRC14) → 추측 금지, 확인 필요");
+const hx = CC.html("XRC14");
+check(plain(hx), "센터명 확인 필요", "미등록 센터 화면 본문 = '센터명 확인 필요'만");
+has(hx, '<small class="center-code">(코드: XRC14)</small>', "코드는 작은 보조정보 (코드: XRC14)");
+hasNot(plain(hx), "XRC14", "보조정보를 빼면 영어 코드가 센터명처럼 남지 않음");
+check(CC.optionText("XRC14"), "센터명 확인 필요 (코드: XRC14)", "선택 목록·알림 문구는 '센터명 확인 필요 (코드: XRC14)'");
 check(CC.text(""), "-", "코드·id 모두 없으면 -");
 const h = CC.html("CHA1");
 has(h, "천안1센터", "화면 HTML 에 한글 센터명");
@@ -71,24 +76,36 @@ has(d, "openRgPlanDetail('p1')", "일반 사용자도 상세(상태·사유) 조
 d = IA.decisionHtml(base, C(APPROVER, { migrated: false }));
 has(d, "disabled title=\"DB 적용 전", "DB 적용 전이면 승인·거절 버튼 잠금(직접 UPDATE 경로로 되돌리지 않음)");
 
-console.log("\n=== 3. 1PLT 단독 입고 ===");
-const one = [{ pallet_count: 1, coupang_inbound_qty: 120 }];
-check(IA.singlePltBlocked(base, one, "1톤"), true, "1PLT + 1톤 → 차단");
-check(IA.singlePltBlocked(base, one, null), true, "1PLT + 차량 미확인 → 차단(추정 통과 금지)");
-check(IA.singlePltBlocked(base, one, "5톤"), false, "1PLT + 5톤 확인 → 차단 아님(제출 게이트와 같은 기준)");
-check(IA.singlePltBlocked({ ...base, transport_type: "PARCEL" }, [{ pallet_count: 0 }], null), false, "택배는 대상 아님");
-const onePlt = { ...base, id: "p1plt", approval_status: "APPROVED" };            // 운영 e2c1ec84 와 같은 모양
-const c1 = C(APPROVER, { items: one, singlePlt: true });
+console.log("\n=== 3. 적재 기준(차량 종류와 무관) - 공통 판정표 ===");
+const CASES = JSON.parse(read("./fixtures_inbound_load_rule_cases.json")).cases;
+for (const c of CASES) {
+  const b = IA.loadBlock({ transport_type: c.transport, total_plt: c.total_plt }, c.pallets.map(x => ({ pallet_count: x })));
+  check(b ? b.code : null, c.expect, `프런트: ${c.name} → ${c.expect || "허용"}`);
+}
+for (const v of ["1톤", "2.5톤", "5톤", "11톤", null]) {
+  check(IA.loadBlock(base, [{ pallet_count: 1, vehicle_type: v }])?.code, "SINGLE_PLT", `1PLT + 차량 ${v || "미확인"} → 차단(차량 무시)`);
+}
+const one = [{ pallet_count: 1, coupang_inbound_qty: 80 }];
+const onePlt = { ...base, id: "p1plt", approval_status: "APPROVED", total_plt: 1 };            // 운영 e2c1ec84(EPP 블랙 80EA) 모양
+const c1 = C(APPROVER, { items: one, loadBlock: IA.loadBlock(onePlt, one), vehicleType: "1톤" });
 d = IA.decisionHtml(onePlt, c1);
-has(d, "openRgRejectModal('p1plt')", "승인됨+미제출 1PLT 요청 → 거절 가능(자동 삭제 안 함)");
+has(d, "openRgRejectModal('p1plt')", "승인됨+미제출 1PLT 요청 → 거절 가능(자동 삭제·자동 거절 안 함)");
 hasNot(d, "decideRgInbound('p1plt','APPROVED')", "이미 승인된 건엔 승인 버튼 없음");
 const cell = IA.approvalCellHtml(onePlt, c1);
 has(cell, "승인 불가 · 1PLT 단독 입고", "승인 칸에 '승인 불가 · 1PLT 단독 입고' 기본 표시");
 check(IA.defaultRejectReason(c1), "승인 불가 · 1PLT 단독 입고", "거절 사유 기본값 = 승인 불가 · 1PLT 단독 입고");
-check(IA.defaultRejectCode(c1), "SINGLE_PLT_LOAD", "사유 코드 SINGLE_PLT_LOAD");
-d = IA.decisionHtml({ ...base, id: "p1pend" }, C(APPROVER, { items: one, singlePlt: true }));
-has(d, `<button class="btn sm" disabled title="승인 불가 · 1PLT 단독 입고">승인</button>`, "승인 대기 1PLT → 승인 버튼 잠금");
+check(IA.defaultRejectCode(c1), "SINGLE_PLT", "사유 코드 SINGLE_PLT(DB 코드와 같음)");
+const cu = C(APPROVER, { items: [{ pallet_count: 0 }], loadBlock: IA.loadBlock(base, [{ pallet_count: 0 }]) });
+check(IA.defaultRejectReason(cu), "승인 불가 · 1PLT 미만 불완전 적재", "0PLT → 기본 사유 '1PLT 미만 불완전 적재'");
+const pend1 = { ...base, id: "p1pend", total_plt: 1 };
+d = IA.decisionHtml(pend1, C(APPROVER, { items: one, loadBlock: IA.loadBlock(pend1, one) }));
+has(d, `<button class="btn sm" disabled title="승인 불가 · 1PLT 단독 입고 - 차량 종류와 관계없이 전체 2PLT 이상만 승인">승인</button>`, "승인 대기 1PLT → 승인 버튼 잠금");
 has(d, "openRgRejectModal('p1pend')", "…거절은 가능");
+const det1 = IA.detailHtml(onePlt, c1);
+has(det1, "차량 1톤 (참고용 - 승인 판단은 차량과 무관)", "상세: 차량은 참고 정보로만");
+const two = [{ pallet_count: 2 }];
+d = IA.decisionHtml({ ...base, id: "p2" }, C(APPROVER, { items: two, loadBlock: IA.loadBlock(base, two) }));
+has(d, "decideRgInbound('p2','APPROVED')", "2PLT → 승인 버튼 활성");
 
 console.log("\n=== 4. WING 제출된 요청 · 대체된 요청 ===");
 const submitted = { ...base, id: "psub", approval_status: "APPROVED", submit_status: "SUBMIT_ATTEMPTED", internal_status: "SUCCEEDED", coupang_shipment_id: "SHIP1" };
@@ -127,11 +144,15 @@ vm.runInContext(seg + "\n;globalThis.__t = { rgActionsHtml, rgCanDecide, rgCanPr
 const T = appCtx.__t;
 const stale = { ...rej, inbound_date: "2026-09-01", inbound_time: "09:30:00" };
 check(T.rgActionsHtml(stale, new Set(), {}), "", "거절 요청 → 쿠팡 제출·재계획·재시도 버튼 0개(app.js 실제 함수)");
+const stale1 = { ...onePlt, inbound_date: "2026-09-01", inbound_time: "09:30:00" };
+check(T.rgActionsHtml(stale1, new Set(), {}, { loadBlock: IA.loadBlock(stale1, one) }), "",
+  "적재 기준 미달(1PLT) 승인 건 → 쿠팡 제출·대체 일정 버튼 없음(거절·수정 후 재요청으로)");
 check(T.rgCanPrepareReplan(stale, new Set()), false, "거절 요청은 재계획 대상 아님");
 check(T.rgCanSubmit(rej), false, "거절 요청은 쿠팡 제출 버튼 조건 불충족");
 const plansForBadge = [base, rej, onePlt, submitted];
 check(plansForBadge.filter(T.rgCanDecide).length, 1, "승인 대기 건수에서 거절 제외(배지 조건 = app.js rgCanDecide)");
-has(T.rgActionsHtml({ ...onePlt, inbound_date: "2026-09-01", inbound_time: "09:30:00" }, new Set(), {}), "openRgReplanModal", "[회귀] 거절 전 만료 슬롯 요청은 재계획 버튼 그대로");
+has(T.rgActionsHtml({ ...base, approval_status: "APPROVED", total_plt: 2, inbound_date: "2026-09-01", inbound_time: "09:30:00" }, new Set(), {}, { loadBlock: null }),
+  "openRgReplanModal", "[회귀] 2PLT 만료 슬롯 요청은 재계획 버튼 그대로");
 
 console.log("\n=== 6. 상세 모달 ===");
 const det = IA.detailHtml(rej, { ...C(STAFF), items: items2, poNo: "PO-015", coupang: 1,
@@ -151,10 +172,10 @@ const plans = [
   { ...base, id: "c3333333-x", supplier: "리파코", destination_center_id: null, destination_center_raw: "ZZZ9" },
   { ...onePlt, id: "d4444444-x", supplier: "리파코" },
 ];
-const ctxFor = p => ({ items: p.id.startsWith("d") ? one : items2, singlePlt: p.id.startsWith("d"), poNo: "PO-015" });
+const ctxFor = p => { const it = p.id.startsWith("d") ? one : items2; return { items: it, loadBlock: IA.loadBlock(p, it), poNo: "PO-015" }; };
 const rows = IA.csvRows(plans, ctxFor);
 const col = name => IA.CSV_HEADER.indexOf(name);
-check(rows.map(r => r[col("쿠팡센터")]), ["천안1센터", "인천4센터", "센터명 확인 필요 (코드: ZZZ9)", "천안1센터"], "CSV 쿠팡센터 열 = 한글명/확인 필요");
+check(rows.map(r => r[col("쿠팡센터")]), ["천안1센터", "인천4센터", "센터명 확인 필요", "천안1센터"], "CSV 쿠팡센터 열 = 한글명/'센터명 확인 필요'(코드는 옆 열)");
 check(rows.map(r => r[col("센터코드")]), ["CHA1", "INC4", "ZZZ9", "CHA1"], "CSV 센터코드는 별도 보조 열");
 check(plans.map(p => plain(CC.html({ id: p.destination_center_id, code: p.destination_center_raw }))), rows.map(r => r[col("쿠팡센터")]),
   "화면 표시(보조 코드 제외)와 CSV 센터명이 행마다 동일");
@@ -173,7 +194,7 @@ for (const [pat, label] of [
   [/esc\(center \? center\.center_name/, "입고 물류 최적화 차량"],
   [/\$\{esc\(c\.center_name\)\}<\/option>/, "TRUCK 준비대기 센터 선택"],
 ]) check(pat.test(app), false, `${label}: 코드/마스터 원문 직접 표시 없음`);
-check((app.match(/CoupangCenters\.(html|text|optionText)\(/g) || []).length >= 12, true, "센터 표시는 CoupangCenters 한 곳으로 모임");
+check((app.match(/CoupangCenters\.(html|text|optionText|label)\(/g) || []).length >= 12, true, "센터 표시는 CoupangCenters 한 곳으로 모임");
 check(/from\("inbound_plans"\)\s*\.update\(\{\s*approval_status/.test(app), false, "화면이 approval_status 를 직접 UPDATE 하는 코드 없음");
 check(/event_type: decision === "REJECTED" \? "HUMAN_REJECTED"/.test(app), false, "화면이 HUMAN_REJECTED 이벤트를 직접 쓰는 코드 없음");
 check(/sb\.rpc\("fn_decide_inbound_plan"/.test(app), true, "승인·거절은 DB RPC fn_decide_inbound_plan 으로만");

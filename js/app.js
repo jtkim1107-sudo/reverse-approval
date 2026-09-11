@@ -6330,7 +6330,7 @@ async function loadPOFreightReview(poId, currentFreightEst) {
   if (Number(currentFreightEst) === Number(result.total_freight_est)) return; // 이미 반영돼 있음
   await CoupangCenters.load(sb);
   const reasons = (result.groups || []).map(g => [
-    g.destination_center_id ? CoupangCenters.text({ id: g.destination_center_id }) : "",
+    g.destination_center_id ? CoupangCenters.label({ id: g.destination_center_id }) : "",
     g.selection_reason || "",
   ].filter(Boolean).map(esc).join(" · ")).filter(Boolean).join(" / ");
   el.innerHTML = ` <span class="chip waiting" style="display:inline-block;margin-top:4px">
@@ -7590,8 +7590,11 @@ const rgCanSubmitParcel = p =>
   p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
 
 // 승인·거절 버튼은 2026-09-11부터 InboundApproval.decisionHtml()이 따로 그려요(승인 권한자만).
-function rgActionsHtml(p, supersededIds, proposals = {}) {
+function rgActionsHtml(p, supersededIds, proposals = {}, ctx = {}) {
   if (p.approval_status === "REJECTED") return "";   // 거절은 끝 상태 - 제출·재계획·재시도 버튼 없음
+  // 2026-09-11 적재 기준 미달(전체 1PLT·1PLT 미만·PLT 불확실)은 승인·제출·재계획이 모두 불가 -
+  // 제출·대체 일정 버튼 대신 거절(승인 권한자) 후 [수정 후 재요청]만 남겨요(서버 재계획 게이트와 같은 판단).
+  if (ctx.loadBlock && p.submit_status === "NOT_SUBMITTED") return "";
   // 2026-09-07 [PARCEL 승인센터 연결] rgCanSubmit(아래)은 transport_type을 안 보고
   // approval_status/submit_status만 봐서 PARCEL도 매칭돼버림 - PARCEL 전용 분기를
   // 먼저 확인해야 submitRgInbound(TRUCK 확인문구·로직)가 아니라 반드시
@@ -7954,7 +7957,7 @@ async function requestRgReplanProposal(planId) {
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok) { toast(`제안 실패: ${body.detail || resp.status}`); return; }
     if (body.kind === "PROPOSED" && body.proposed) {
-      toast(`대체 일정 제안: ${body.proposed.edd} ${body.proposed.booking_time.slice(0,2)}:${body.proposed.booking_time.slice(2,4)} · ${CoupangCenters.text(body.proposed.fc_code)} — [제안대로 준비]로 이어가세요`);
+      toast(`대체 일정 제안: ${body.proposed.edd} ${body.proposed.booking_time.slice(0,2)}:${body.proposed.booking_time.slice(2,4)} · ${CoupangCenters.label(body.proposed.fc_code)} — [제안대로 준비]로 이어가세요`);
     } else {
       toast(`제안 없음(${body.kind}): ${body.note || body.reason || ""}`);
     }
@@ -8496,18 +8499,18 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
         <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
         <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
         <td class="num">${fmt(it.pallet_count)}${
-          Number(it.pallet_count) === 1 && p.submit_status === "NOT_SUBMITTED" && p.internal_status !== "CANCELLED" && p.approval_status !== "REJECTED"
-            ? `<br><small style="color:var(--text-sub)" title="사용자 정책: 1PLT 단독 출발 금지 - 증량 또는 혼적 필요">🚛 적재 보완 대기</small>` : ""}</td>
+          i === 0 && ctx.loadBlock && p.submit_status === "NOT_SUBMITTED" && p.internal_status !== "CANCELLED" && p.approval_status !== "REJECTED"
+            ? `<br><small style="color:var(--text-sub)" title="차량 종류와 관계없이 전체 2PLT 이상만 승인·제출">🚛 적재 보완 필요</small>` : ""}</td>
         <td>${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}</td>
         <td>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}${
           rgCanPrepareReplan(p, supersededIds)
-            ? `<br><small style="color:var(--danger,#c0392b)">⚠️ 슬롯 만료(여유 2h 미만) · 미제출</small>${rgProposalNoteHtml(rgProposals[p.id])}` : ""}</td>
+            ? `<br><small style="color:var(--danger,#c0392b)">⚠️ 슬롯 만료(여유 2h 미만) · 미제출</small>${ctx.loadBlock ? "" : rgProposalNoteHtml(rgProposals[p.id])}` : ""}</td>
         <td>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
         <td class="rg-approval-cell">${InboundApproval.approvalCellHtml(p, ctx)}</td>
         <td>${rgSubmitStatusHtml(p)}</td>
         <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
         <td>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
-        <td class="rg-actions">${i === 0 ? `${rgActionsHtml(p, supersededIds, rgProposals)} ${InboundApproval.decisionHtml(p, ctx)}` : ""}</td>
+        <td class="rg-actions">${i === 0 ? `${rgActionsHtml(p, supersededIds, rgProposals, ctx)} ${InboundApproval.decisionHtml(p, ctx)}` : ""}</td>
       </tr>`));
   });
 
@@ -8588,7 +8591,7 @@ function rgPlanCtx(p, d) {
   const po = d.poById[p.purchase_order_id] || {};
   return {
     me, items, vehicleType, migrated: d.migrated, supersededIds: d.supersededIds,
-    singlePlt: InboundApproval.singlePltBlocked(p, items, vehicleType),
+    loadBlock: InboundApproval.loadBlock(p, items),
     poDrafterId: po.drafter_id || null, poNo: po.po_no || null,
     child: d.retryByOriginId[p.id] || null,
     original: p.resubmission_of_plan_id ? d.plansById[p.resubmission_of_plan_id] || null : null,
@@ -8638,7 +8641,7 @@ async function openRgRejectModal(planId) {
   const { data: kids } = await sb.from("inbound_plans").select("id").eq("retry_of_plan_id", planId).limit(1);
   const ctx = { me, supersededIds: new Set(kids && kids.length ? [planId] : []), items: items || [],
                 vehicleType: vehicles[planId] ?? null };
-  ctx.singlePlt = InboundApproval.singlePltBlocked(p, ctx.items, ctx.vehicleType);
+  ctx.loadBlock = InboundApproval.loadBlock(p, ctx.items);
   if (!InboundApproval.canReject(p, ctx)) {
     const wing = InboundApproval.wingSubmittedLabel(p);
     toast(wing || "지금 거절할 수 있는 상태가 아니에요(이미 처리됐거나 대체된 요청)");
@@ -8676,8 +8679,8 @@ async function confirmRgReject(planId) {
   const reason = (document.getElementById("rg-reject-reason")?.value || "").trim();
   if (reason.length < 2) return toast("거절 사유를 입력해 주세요(2자 이상)");
   const codeEl = document.getElementById("rg-reject-code");
-  // 기본 사유(1PLT)를 사람이 다른 문구로 바꿨으면 사유 코드는 붙이지 않아요(문구와 코드가 어긋나지 않게).
-  const code = codeEl?.value && reason === InboundApproval.SINGLE_PLT_REASON ? codeEl.value : null;
+  // 기본 사유(적재 기준)를 사람이 다른 문구로 바꿨으면 사유 코드는 붙이지 않아요(문구와 코드가 어긋나지 않게).
+  const code = codeEl?.value && reason === InboundApproval.LOAD_LABELS[codeEl.value] ? codeEl.value : null;
   const btn = document.getElementById("rg-reject-confirm");
   if (btn) btn.disabled = true;
   const res = await rgDecideRpc(planId, "REJECTED", reason, code);
@@ -8712,7 +8715,7 @@ async function openRgPlanDetail(planId) {
     poNo: po?.po_no || null, poDrafterId: po?.drafter_id || null,
     migrated: Object.prototype.hasOwnProperty.call(p, "rejection_reason"),
   };
-  ctx.singlePlt = InboundApproval.singlePltBlocked(p, ctx.items, ctx.vehicleType);
+  ctx.loadBlock = InboundApproval.loadBlock(p, ctx.items);
   const actions = InboundApproval.decisionHtml(p, ctx).replace(/<button class="btn sm secondary" onclick="openRgPlanDetail\([^)]*\)">상세<\/button>/, "");
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
