@@ -480,7 +480,8 @@ async function updateBadge() {
   const rb = document.getElementById("badge-rginbound");
   if (rb) {
     const { count: rgCount } = await sb.from("inbound_plans").select("id", { count: "exact", head: true })
-      .eq("preflight_status", "PASSED").eq("approval_status", "PENDING_APPROVAL").eq("submit_status", "NOT_SUBMITTED");
+      .eq("preflight_status", "PASSED").eq("approval_status", "PENDING_APPROVAL").eq("submit_status", "NOT_SUBMITTED")
+      .neq("internal_status", "CANCELLED");   // 2026-09-11 취소된 요청(대체·실패 이력)은 승인 대기 건수에서 제외
     rb.textContent = rgCount || 0;
     rb.classList.toggle("hidden", !rgCount);
   }
@@ -7711,8 +7712,9 @@ async function renderParcelApprovalCard(plans, itemsByPlan) {
 // SUCCEEDED/FAILED 둘 다 아니면(SUBMITTING/PROCESSING/RECOVERY_NEEDED/UNKNOWN 등)
 // 결과가 아직 애매한 상태라 "결과확인필요"로 묶어요.
 function rgSubmitChipInfo(p) {
-  if (p.submit_status !== "SUBMIT_ATTEMPTED") return ["waiting", "미제출"];
+  if (p.submit_status !== "SUBMIT_ATTEMPTED") return p.internal_status === "CANCELLED" ? ["waiting", "미제출 · 취소됨"] : ["waiting", "미제출"];
   if (p.internal_status === "SUCCEEDED") return ["approved", "제출완료"];
+  if (p.internal_status === "CANCELLED") return ["rejected", "WING 취소됨"];   // 2026-09-11 제출 뒤 WING 에서 취소(정합 폴러 동기화)
   if (p.internal_status === "FAILED") return ["rejected", "제출실패"];
   return ["progress", "결과확인필요"];
 }
@@ -7746,7 +7748,8 @@ function rgSubmitStatusHtml(p) {
 }
 
 // 승인 대기 판정(배지 건수와 같은 조건). 실제 승인·거절 가능 여부는 InboundApproval + DB가 판정해요.
-const rgCanDecide = p => p.preflight_status === "PASSED" && p.approval_status === "PENDING_APPROVAL" && p.submit_status === "NOT_SUBMITTED";
+const rgCanDecide = p => p.preflight_status === "PASSED" && p.approval_status === "PENDING_APPROVAL" && p.submit_status === "NOT_SUBMITTED"
+  && p.internal_status !== "CANCELLED";   // 2026-09-11 취소된 요청(대체·실패 이력)은 승인 대상 아님
 const rgCanSubmit = p => p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
 // retry_of_plan_id로 이 plan을 가리키는 다른 plan이 있으면(=이미 새 슬롯으로
 // 재시도가 진행 중/완료됨) 이 plan은 대체(superseded)된 거예요 - 서버 gate

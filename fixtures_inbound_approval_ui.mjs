@@ -297,6 +297,11 @@ console.log("\n=== 10. 단일 다품목 입고 · 대체된 합배송 그룹(202
   hasNot(act, "submitRgInbound", "[핵심] 다품목 승인 요청에는 쿠팡 제출 버튼 없음(서버 게이트 1종 전용)");
   has(act, "다품목 최종 제출 보류", "대신 보류 안내");
   has(T.rgActionsHtml(appr, new Set(), {}, { loadBlock: null, items: [multi[0]] }), "submitRgInbound", "[회귀] 1종 승인 요청은 쿠팡 제출 버튼 그대로");
+  check(T.rgCanDecide({ preflight_status: "PASSED", approval_status: "PENDING_APPROVAL", submit_status: "NOT_SUBMITTED", internal_status: "CANCELLED" }), false,
+    "[핵심] 취소된 요청(자동 폴러가 만든 블랙 단일 요청)은 승인 대기 건수·대상 아님");
+  check(T.rgCanDecide({ preflight_status: "PASSED", approval_status: "PENDING_APPROVAL", submit_status: "NOT_SUBMITTED", internal_status: "PENDING" }), true,
+    "[회귀] 새 다품목 요청은 승인 대기");
+  has(IA.approvalCellHtml({ approval_status: "PENDING_APPROVAL", internal_status: "CANCELLED" }, {}), "취소됨 · 이력", "취소된 승인대기 요청은 '취소됨 · 이력'");
   const lbl = read("./js/inbound_approval.js");
   has(lbl, 'PLAN_SUPERSEDED: "새 요청으로 대체(이력)"', "이력 이벤트 이름");
 }

@@ -103,7 +103,9 @@
   // 승인 칸: 상태 칩 + (거절이면) 사유·거절자·시각 + (1PLT 규칙이면) 승인 불가 사유 + 연결 이력
   function approvalCellHtml(p, ctx = {}) {
     const chipMap = { PENDING_APPROVAL: ["progress", "승인대기"], APPROVED: ["approved", "승인됨"], REJECTED: ["rejected", "거절됨"] };
-    const [cls, label] = chipMap[p.approval_status] || ["waiting", p.approval_status || "-"];
+    let [cls, label] = chipMap[p.approval_status] || ["waiting", p.approval_status || "-"];
+    // 2026-09-11 취소된 요청(실패 이력·대체된 요청)은 승인 대기처럼 보이지 않게
+    if (p.internal_status === "CANCELLED" && p.approval_status === "PENDING_APPROVAL") [cls, label] = ["waiting", "취소됨 · 이력"];
     let html = `<span class="chip ${cls}">${label}</span>`;
     html += rejectionInfoHtml(p);
     if (ctx.loadBlock && p.approval_status !== "REJECTED" && !isWingSubmitted(p) && p.internal_status !== "CANCELLED") {
