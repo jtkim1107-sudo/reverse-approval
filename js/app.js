@@ -440,6 +440,18 @@ function inboxOf(docs) {
 }
 
 async function updateBadge() {
+  // 2026-09-11 고객문의 새 문의(미답변 + 아직 확인 안 함) 배지 - 실패해도 다른 배지는 그대로
+  (async () => {
+    const vb = document.getElementById("badge-voc");
+    if (!vb || typeof CsInquiries === "undefined") return;
+    try {
+      const data = await CsInquiries.load(sb);
+      const n = data.error ? 0 : CsInquiries.summary(data.rows).pending;
+      vb.textContent = n;
+      vb.classList.toggle("hidden", !n);
+      vb.title = data.error ? "고객문의를 불러오지 못함" : `새 문의 ${n}건`;
+    } catch (_) { /* 배지 실패는 조용히 - 고객문의 탭이 오류를 보여줘요 */ }
+  })();
   const docs = await fetchDocs({ status: "progress" });
   const n = inboxOf(docs).length;
   const b = document.getElementById("badge-inbox");
@@ -1442,13 +1454,14 @@ function productSalesTableHtml(items, { showRank = false } = {}) {
     </div>`;
 }
 
-function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null } = {}) {
+function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null, csLine = "" } = {}) {
   if (!b) {
     return `<div class="card">
       <div class="card-head"><h2>${detailed ? "매출 브리핑 상세" : "어제 매출 브리핑"}</h2></div>
       <p style="color:var(--text-sub);font-size:13.5px">
         ${esc(dateStr)} 브리핑이 아직 없습니다. <b>매일 아침 7시</b>에 자동으로 생성됩니다.
       </p>
+      ${csLine}
     </div>`;
   }
   // 2026-09-08 [사용자 지적] withdraw 보조 API 실패 하나만으로 브리핑 전체를
@@ -1519,6 +1532,7 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
       <h3 style="font-size:13px;color:var(--text-sub);margin:12px 0 6px">주문매출 TOP5</h3>
       ${top5Table}
       `}
+      ${csLine}
     </div>`;
 }
 
@@ -1583,10 +1597,14 @@ async function viewDashboard() {
   } catch (e) { console.error("오늘 로켓그로스 판매현황 카드:", e); }
 
   // 어제 매출 브리핑 카드 - 실패해도(테이블 아직 없음 등) 대시보드 나머지는 보여야 하므로 따로 감쌈
+  // 2026-09-11 고객문의(새 문의·미답변·긴급) - 대시보드 알림과 브리핑 카드가 같은 값을 써요
+  let csData = null;
+  try { csData = await CsInquiries.load(sb); } catch (e) { csData = { error: e }; }
   let briefingHtml = "";
   try {
     const yd = yesterday();
-    briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: false });
+    briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd,
+      { detailed: false, csLine: CsInquiries.briefingLineHtml(csData) });
   } catch (e) { console.error("매출 브리핑 카드:", e); }
 
   const monthSales = dashboardSales.summary?.has_rg_statistics
@@ -1606,6 +1624,7 @@ async function viewDashboard() {
 
   return `
     ${teamHtml}
+    ${CsInquiries.dashboardAlertHtml(csData)}
     ${todaySalesHtml}
     <div id="rg-sales-statistics-mount">${briefingHtml}</div>
     <div class="grid-stats">
@@ -8909,8 +8928,10 @@ async function viewVoc(tab) {
       <span style="flex:1"></span>
       <button class="btn sm secondary" onclick="route()">🔄 새로고침</button>
     </div>`;
+  // 2026-09-11 리뷰 수집 상태(review_voc_collect)는 리뷰 탭에만. 고객문의 탭은 고객문의 수집
+  // 상태(cs_inquiry_collect)를 따로 보여줘요 - 예전엔 리뷰 수집이 정상이면 문의 0건도 '정상'처럼 보였어요.
   const [banner, body] = await Promise.all([
-    renderVocStatusBanner(),
+    tab === "reviews" ? renderVocStatusBanner() : Promise.resolve(""),
     tab === "reviews" ? renderVocReviews() : renderVocInquiries(),
   ]);
   return tabBar + banner + body;
@@ -9050,65 +9071,15 @@ async function renderVocReviews() {
 }
 
 async function renderVocInquiries() {
-  const { data, error } = await sb.from("coupang_cs")
-    .select("inquiry_id,source,vendor_item_id,product_name,content,status,inquiry_at,answered_at,order_id")
-    .order("inquiry_at", { ascending: false });
-  if (error) {
-    return `<div class="card"><p style="color:var(--red)">고객문의를 불러오지 못했습니다: ${esc(error.message)}</p></div>`;
+  // 2026-09-11 GCP 가 수집·AI 분석·답변 초안을 만들어 두면 여기서 보여주고 처리 상태만 바꿔요(js/cs_inquiries.js).
+  // 쿠팡으로 답변을 보내는 버튼은 없습니다 - 초안 복사 + WING 문의 화면 바로가기.
+  CsInquiries.setUser(me?.name);
+  const data = await CsInquiries.load(sb);
+  if (data.error) {
+    return `<div class="card"><p style="color:var(--red)">고객문의를 불러오지 못했습니다: ${esc(data.error.message)}</p>
+      <p style="font-size:12.5px;color:var(--text-sub)">문의가 없는 것이 아니라 확인하지 못한 상태예요. 새로고침해 주세요.</p></div>`;
   }
-  const rows = data || [];
-  const unanswered = rows.filter(r => r.status === "unanswered");
-
-  if (!rows.length) {
-    return `
-      <div class="card">
-        <div class="card-head"><h2>고객문의</h2></div>
-        <p class="empty">표시할 문의가 없습니다.</p>
-        <p style="font-size:12.5px;color:var(--text-sub);margin-top:8px">
-          문의는 <b>coupang_cs</b> 테이블에서 읽어요. <b>위 수집 상태를 먼저 확인하세요</b> —
-          수집이 실패 중이면 이 0건은 "문의가 없다"는 뜻이 아니라 "확인하지 못했다"는 뜻이에요.<br>
-          ※ 답변 <b>등록</b> 기능은 아직 연결 전이에요 — 쿠팡 답변 등록 API가 구현되어 있지
-          않아, 현재는 조회만 가능합니다.
-        </p>
-      </div>`;
-  }
-
-  const card = r => {
-    const isUn = r.status === "unanswered";
-    return `
-      <div style="border-top:1px solid var(--line);padding:10px 0">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
-          <span class="chip ${isUn ? "waiting" : "approved"}">${isUn ? "미답변" : "답변완료"}</span>
-          <span class="chip progress">${r.source === "callcenter" ? "콜센터" : "상품 Q&A"}</span>
-          <span style="font-size:12px;color:var(--text-sub)">${esc(String(r.inquiry_at || "").slice(0, 16))}</span>
-          <span style="font-size:12px;color:var(--text-sub)">${esc(r.product_name || r.vendor_item_id || "")}</span>
-        </div>
-        <div style="font-size:13.5px;white-space:pre-wrap">${esc(r.content || "")}</div>
-      </div>`;
-  };
-
-  return `
-    <div class="grid-stats">
-      <div class="stat"><div class="stat-label">전체 문의</div><div class="stat-value">${rows.length}건</div></div>
-      <div class="stat"><div class="stat-label">미답변</div>
-        <div class="stat-value ${unanswered.length ? "amber" : ""}">${unanswered.length}건</div></div>
-      <div class="stat"><div class="stat-label">답변완료</div>
-        <div class="stat-value">${rows.length - unanswered.length}건</div></div>
-    </div>
-    ${unanswered.length ? `
-    <div class="card">
-      <div class="card-head"><h2>미답변 문의 ${unanswered.length}건</h2>
-        <span style="font-size:12px;color:var(--red)">답변이 필요해요</span></div>
-      ${unanswered.map(card).join("")}
-      <p style="font-size:12px;color:var(--text-sub);margin-top:10px">
-        ※ 답변 <b>등록</b>은 아직 연결 전이에요(쿠팡 답변 등록 API 미구현). 현재는 조회만 가능하며,
-        답변은 쿠팡 WING에서 직접 남겨주세요.
-      </p>
-    </div>` : ""}
-    <div class="card">
-      <div class="card-head"><h2>전체 문의</h2></div>
-      ${rows.map(card).join("")}
-    </div>`;
+  return CsInquiries.tabHtml(data);
 }
 
 /* ---------- 매입 거래처 ---------- */
