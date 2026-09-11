@@ -249,5 +249,57 @@ console.log("\n=== 9. 합배송(운송 묶음) - 같은 PO·목천1·같은 입�
   check(/(?<![-\w])weight\b/.test((read("./js/inbound_approval.js") + app).replace(/font-weight/g, "").replace(/^\s*\/\/.*$/gm, "")), false, "승인 화면 코드에 무게(weight) 필드 사용 없음");
 }
 
+console.log("\n=== 10. 단일 다품목 입고 · 대체된 합배송 그룹(2026-09-11) ===");
+{
+  const NEW = { id: "b28edc90-f651-4f33", vehicle_type: "5톤", vehicle_count: 1, total_pallet_count: 6, total_transport_cost: 187000, status: "ACTIVE" };
+  const OLD = { id: "e0eb258d-9666-4326", vehicle_type: "5톤", vehicle_count: 1, total_pallet_count: 6, total_transport_cost: 187000,
+                status: "SUPERSEDED", superseded_by_group_id: NEW.id, status_reason: "단일 다품목 입고로 대체" };
+  const plans10 = [
+    { id: "6869c83d-50bd", shipment_group_id: NEW.id, internal_status: "PENDING", approval_status: "PENDING_APPROVAL" },
+    { id: "34600ca0-6c74", shipment_group_id: OLD.id, internal_status: "FAILED", approval_status: "APPROVED" },
+    { id: "c1c52f5b-0d1f", shipment_group_id: OLD.id, internal_status: "CANCELLED", approval_status: "APPROVED" },
+  ];
+  const multi = [{ inventory_name: "EPP 발판", option_name: "그레이", coupang_inbound_qty: 320, pallet_count: 4 },
+                 { inventory_name: "EPP 발판", option_name: "블랙", coupang_inbound_qty: 160, pallet_count: 2 }];
+  const items10 = { "6869c83d-50bd": multi, "34600ca0-6c74": [multi[0]], "c1c52f5b-0d1f": [multi[1]] };
+  const fnSrc10 = name => { const m = app.match(new RegExp(`async function ${name}\\([\\s\\S]*?\\n}`)); if (!m) throw new Error(name); return m[0]; };
+  const g10 = vm.createContext({ console, sb: { from: () => ({ select: () => ({ in: async () => ({ data: [NEW, OLD], error: null }) }) }) } });
+  vm.runInContext(fnSrc10("loadRgShipmentGroups") + "\n;globalThis.__g = loadRgShipmentGroups;", g10);
+  const by = await g10.__g(plans10, items10);
+  const chipNew = IA.shipmentGroupChipHtml(by["6869c83d-50bd"]);
+  for (const t of ["단일 입고", "포함 상품 2개", "총 6PLT", "5톤 1대", "운송비 ₩187,000 한 번"]) has(chipNew, t, `[핵심] 단일 다품목 입고 칩: ${t}`);
+  hasNot(chipNew, "합배송 그룹", "단일 입고는 '합배송 그룹'으로 부르지 않음");
+  check(by["34600ca0-6c74"].members.length, 0, "대체된 묶음 구성원에서 실패(FAILED)·취소 요청 제외");
+  const chipOld = IA.shipmentGroupChipHtml(by["34600ca0-6c74"]);
+  for (const t of ["대체됨", "→ 새 묶음 b28edc90", "운송비 합산 안 함"]) has(chipOld, t, `[핵심] 기존 합배송 그룹 칩: ${t}`);
+  hasNot(chipOld, "대표 운송비", "대체된 묶음은 운송비를 대표값으로 보이지 않음");
+  has(IA.shipmentGroupChipHtml({ ...OLD, status: "VOID_PENDING_REBUILD", superseded_by_group_id: null, members: [] }), "무효 · 재작성 대기", "재작성 대기 표시");
+  const cctx = vm.createContext({});
+  vm.runInContext(app.match(/function rgGroupForCtx\([\s\S]*?\n}/)[0] + "\n;globalThis.__f = rgGroupForCtx;", cctx);
+  check(cctx.__f({ internal_status: "CANCELLED" }, OLD) === OLD, true, "취소 요청에도 대체된 묶음은 이력으로 표시");
+  check(cctx.__f({ internal_status: "CANCELLED" }, NEW), null, "취소 요청에 사용 중인 묶음은 붙이지 않음");
+  const dNew = IA.detailHtml({ id: "6869c83d-50bd", destination_center_id: "c-mcn1", destination_center_raw: "MCN1", inbound_date: "2026-09-14",
+                               inbound_time: "08:50:00", transport_type: "TRUCK", preflight_status: "PASSED", approval_status: "PENDING_APPROVAL",
+                               submit_status: "NOT_SUBMITTED", coupang_inbound_plan_id: "1101897524588859392" },
+                             { items: multi, shipmentGroup: by["6869c83d-50bd"], me: {} });
+  for (const t of ["EPP 발판 <small>그레이</small>", "EPP 발판 <small>블랙</small>", "320개, 160개", "전체 6PLT", "단일 입고", "5톤 1대", "1101897524588859392"])
+    has(dNew, t, `상세(다품목): ${t}`);
+  check((plain(dNew).match(/187,000/g) || []).length, 1, "[핵심] 다품목 상세에 운송비 187,000 한 번만");
+  check(IA.itemsLabel(multi), "EPP 발판 / 그레이 외 1종", "거절 창 상품 표시(다품목)");
+  check(IA.qtySum(multi), 480, "다품목 총 수량 480");
+  check(IA.loadBlock({ transport_type: "TRUCK", total_plt: 6 }, multi), null, "다품목 6PLT - 적재 기준 통과");
+  const rejMulti = { id: "r1", approval_status: "REJECTED", transport_type: "TRUCK", submit_status: "NOT_SUBMITTED" };
+  check(IA.canResubmit(rejMulti, { items: multi, me: { approver: true } }), false, "다품목 거절 요청은 [수정 후 재요청] 버튼 없음(서버 경로 없음)");
+  check(IA.canResubmit(rejMulti, { items: [multi[0]], me: { approver: true } }), true, "[회귀] 1종 거절 요청은 재요청 버튼 그대로");
+  const appr = { id: "6869c83d-50bd", approval_status: "APPROVED", submit_status: "NOT_SUBMITTED", preflight_status: "PASSED",
+                 internal_status: "PENDING", transport_type: "TRUCK", total_plt: 6, inbound_date: "2099-01-01", inbound_time: "08:50:00" };
+  const act = T.rgActionsHtml(appr, new Set(), {}, { loadBlock: null, items: multi });
+  hasNot(act, "submitRgInbound", "[핵심] 다품목 승인 요청에는 쿠팡 제출 버튼 없음(서버 게이트 1종 전용)");
+  has(act, "다품목 최종 제출 보류", "대신 보류 안내");
+  has(T.rgActionsHtml(appr, new Set(), {}, { loadBlock: null, items: [multi[0]] }), "submitRgInbound", "[회귀] 1종 승인 요청은 쿠팡 제출 버튼 그대로");
+  const lbl = read("./js/inbound_approval.js");
+  has(lbl, 'PLAN_SUPERSEDED: "새 요청으로 대체(이력)"', "이력 이벤트 이름");
+}
+
 console.log(failures ? `\n=== 결과: 실패 ${failures}건 ===` : "\n=== 결과: 전체 통과 ===");
 process.exit(failures ? 1 : 0);

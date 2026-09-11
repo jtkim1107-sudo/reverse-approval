@@ -2417,7 +2417,7 @@ let erpMonth = today().slice(0, 7);
 let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
 // 2026-09-11 입고 트럭 운송비(운송 묶음당 1건) - 판매분 배부 계산 결과(js/inbound_freight.js). loadErpBase 가 채워요.
-let erpFreight = { bySale: new Map(), records: [], costs: [], error: null };
+let erpFreight = { bySale: new Map(), records: [], history: [], costs: [], error: null };
 let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
 let monthlySalesLedgerGroups = {}; // 날짜+상품+채널 집계에서 원 주문을 여는 용도
 // 2026-09-11 매출 내역 CSV = 화면에 방금 그린 월 집계 그대로. viewSales 가 그릴 때마다 덮어써요.
@@ -5637,7 +5637,8 @@ function inboundFreightCardHtml(month) {
     return `<div class="card"><h2>입고 트럭 운송비</h2><p style="font-size:13px;color:var(--amber)">
       입고 운송비 기록을 읽지 못해 이번 공헌이익에는 입고 운송비가 빠져 있어요 (${esc(erpFreight.error)}).</p></div>`;
   }
-  if (!erpFreight.records.length) return "";
+  const hist = erpFreight.history || [];
+  if (!erpFreight.records.length && !hist.length) return "";
   const won = v => `₩${fmt(Math.round(v))}`;
   const rows = erpFreight.records.map(r => {
     const c = r.cost;
@@ -5690,6 +5691,9 @@ function inboundFreightCardHtml(month) {
         입고되면 그 수량의 재고원가에 얹고, 쿠팡 재고에서 먼저 들어온 것부터 팔린 것으로 보고
         <b>실제 판매된 수량만큼만</b> 상품별 공헌이익에서 빼요. 안 팔린 재고분은 재고원가로 남아요.</p>
       ${rows}
+      ${hist.length ? `<div style="border-top:1px dashed var(--line);margin-top:12px;padding-top:8px;font-size:12.5px;color:var(--text-sub);line-height:1.7">
+        <b>이력 (합산 안 함)</b><br>${hist.map(c => `${esc(c.purchase_orders?.po_no || "")} · 운송 묶음 <code title="${esc(c.shipment_group_id)}">${esc(String(c.shipment_group_id).slice(0, 8))}</code>
+          · ${won(c.gross_amount)} (VAT 포함) · ${esc(InboundFreight.STATUS_LABEL[c.status] || c.status)}${c.superseded_by_freight_id ? ` → 새 기록 <code>${esc(String(c.superseded_by_freight_id).slice(0, 8))}</code>` : ""}`).join("<br>")}</div>` : ""}
     </div>`;
 }
 
@@ -6507,6 +6511,8 @@ function poFreightPanelHtml(p) {
         `${esc(prodName(a.product_id))} ${fmt(a.pallet_count)}PLT ${won(a.allocated_supply)} (개당 ${won(a.perUnit)})`).join(" · ")}<br>
       <span style="color:var(--text-sub)">${esc(InboundFreight.STAGE_LABEL[r.stage] || r.stage)} ·
         공헌이익에는 공급가액만, 실제 판매된 수량만큼만 반영돼요. 운송 묶음당 한 번만 기록해요.</span>
+      ${(erpFreight.history || []).filter(h => h.purchase_order_id === p.id).map(h => `<br><small style="color:var(--text-sub)">이력: 운송 묶음
+        <code>${esc(String(h.shipment_group_id).slice(0, 8))}</code> ${won(h.gross_amount)} · ${esc(InboundFreight.STATUS_LABEL[h.status] || h.status)} (합산 안 함)</small>`).join("")}
     </div>`;
 }
 
@@ -7844,6 +7850,11 @@ function rgActionsHtml(p, supersededIds, proposals = {}, ctx = {}) {
             <button class="btn sm secondary" onclick="requestRgReplanProposal('${p.id}')">🤖 제안 받기</button>`;
   }
   if (rgCanSubmit(p) && !rgIsSuperseded(p, supersededIds)) {
+    // 2026-09-11 다품목 요청(WING 입고 1개에 상품 여러 개)은 서버 제출 게이트가 아직 상품 1종만 받아요 -
+    // 버튼을 눌러도 409로 막히므로 버튼 대신 보류 안내만(최종 제출 경로는 서버 지원 후 연결).
+    if ((ctx.items || []).length > 1) {
+      return `<small style="color:var(--text-sub)" title="서버 제출 게이트가 다품목을 지원한 뒤 제출 버튼이 열려요">⏸ 다품목 최종 제출 보류(서버 지원 전)</small>`;
+    }
     return `<button class="btn sm" onclick="submitRgInbound('${p.id}')">쿠팡 제출</button>`;
   }
   if (rgCanPrepareRetry(p, supersededIds)) {
@@ -8701,44 +8712,56 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
     const items = itemsByPlan[p.id] || [];
     const ctx = ctxFor(p);
     if (!items.length) {
+      // 2026-09-11 WING 호출 전에 취소된 선점 행(품목 없음)은 보여줄 내용이 없어 목록에서 생략(DB 이력은 그대로)
+      if (p.internal_status === "CANCELLED") return;
       rows.push(`<tr><td colspan="13"><b>${esc(p.supplier)}</b> — 품목 정보 없음</td></tr>`);
       return;
     }
     // retry_of_plan_id로 연결된 원본 plan이 있으면(슬롯 없음 등으로 새로 만든
     // 재시도 plan) 감사 추적용으로 화면에도 보이게 해요 - 원본 plan은 이미
     // plans 배열에 select("*")로 같이 조회돼 있어서 추가 쿼리 없이 바로 참조 가능.
+    // 2026-09-11 다품목 요청이 실패 요청을 대체한 경우(그레이 실패 + 블랙 취소 → 단일 다품목 입고)는 "대체 요청"으로 표시.
     const retryOrig = p.retry_of_plan_id ? plansById[p.retry_of_plan_id] : null;
     const retryNote = p.retry_of_plan_id
-      ? `<br><small style="color:var(--text-sub)">🔄 재시도 plan${retryOrig ? ` (원본 예정: ${esc(retryOrig.inbound_date || "-")} ${esc(retryOrig.inbound_time || "")})` : ""} · ${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)} → ${rgChip(RG_APPROVAL_CHIP, p.approval_status)}</small>`
+      ? `<br><small style="color:var(--text-sub)">${items.length > 1
+          ? `🔁 대체 요청 · 실패 요청 ${esc(String(p.retry_of_plan_id).slice(0, 8))}${retryOrig ? `(${esc(retryOrig.inbound_date || "-")} ${esc(String(retryOrig.inbound_time || "").slice(0, 5))})` : ""}을 단일 다품목 입고로 재작성`
+          : `🔄 재시도 plan${retryOrig ? ` (원본 예정: ${esc(retryOrig.inbound_date || "-")} ${esc(retryOrig.inbound_time || "")})` : ""}`} · ${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)} → ${rgChip(RG_APPROVAL_CHIP, p.approval_status)}</small>`
       : "";
     // 이 plan이 이미 대체됐으면(자신이 다른 plan의 원본) 그 후속 plan 상태를
     // 이어서 보여줘요 - "제출실패 -> 재시도 준비 -> 슬롯 선택 -> PRE-FLIGHT 진행
     // -> 승인대기"가 화면에서 끊기지 않고 다음 단계로 자연스럽게 이어지도록.
     const forwardRetry = retryByOriginId[p.id];
     const forwardNote = forwardRetry
-      ? `<br><small style="color:var(--text-sub)">→ 새 슬롯으로 재시도 plan 생성됨: ${esc(forwardRetry.inbound_date || "-")} ${esc(forwardRetry.inbound_time || "")} · ${rgChip(RG_PREFLIGHT_CHIP, forwardRetry.preflight_status)} → ${rgChip(RG_APPROVAL_CHIP, forwardRetry.approval_status)}</small>`
+      ? `<br><small style="color:var(--text-sub)">→ ${(itemsByPlan[forwardRetry.id] || []).length > 1 ? "단일 다품목 입고 대체 요청 생성됨" : "새 슬롯으로 재시도 plan 생성됨"}: ${esc(forwardRetry.inbound_date || "-")} ${esc(forwardRetry.inbound_time || "")} · ${rgChip(RG_PREFLIGHT_CHIP, forwardRetry.preflight_status)} → ${rgChip(RG_APPROVAL_CHIP, forwardRetry.approval_status)}</small>`
       : "";
-    // 승인/거절/제출 버튼은 plan 단위 액션이라, 같은 plan의 품목이 여러 줄이어도 첫 줄에만 표시
+    // 승인/거절/제출 버튼은 plan 단위 액션이라, 같은 plan의 품목이 여러 줄이어도 첫 줄에만 표시.
+    // 2026-09-11 다품목 요청(WING 입고 1개에 상품 여러 개)은 요청 단위 칸(공급처·센터·일정·상태·WING id·버튼)을
+    // 한 칸으로 합쳐서(rowspan) "승인 요청 1건 · 상품 N개"로 보이게 해요.
+    const n = items.length;
+    const span = n > 1 ? ` rowspan="${n}"` : "";
+    const multiNote = n > 1
+      ? `<br><small class="rg-multi-note">📦 승인 요청 1건 · 상품 ${n}개 · 총 ${fmt(InboundApproval.qtySum(items))}개 · ${fmt(InboundApproval.palletSum(items))}PLT</small>` : "";
     items.forEach((it, i) => rows.push(`
       <tr data-rg-plan="${esc(p.id)}">
-        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}${retryNote}${forwardNote}${
-          i === 0 && ctx.shipmentGroup && p.internal_status !== "CANCELLED" ? `<br>${InboundApproval.shipmentGroupChipHtml(ctx.shipmentGroup)}` : ""}</td>
-        <td>${esc(p.supplier)}</td>
+        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}${
+          i === 0 ? `${multiNote}${retryNote}${forwardNote}${ctx.shipmentGroup ? `<br>${InboundApproval.shipmentGroupChipHtml(ctx.shipmentGroup)}` : ""}` : ""}</td>
+        ${i === 0 ? `<td${span}>${esc(p.supplier)}</td>` : ""}
         <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
         <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
         <td class="num">${fmt(it.pallet_count)}${
           i === 0 && ctx.loadBlock && p.submit_status === "NOT_SUBMITTED" && p.internal_status !== "CANCELLED" && p.approval_status !== "REJECTED"
             ? `<br><small style="color:var(--text-sub)" title="차량 종류와 관계없이 전체 2PLT 이상만 승인·제출">🚛 적재 보완 필요</small>` : ""}</td>
-        <td>${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}</td>
-        <td>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}${
+        ${i === 0 ? `
+        <td${span}>${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}</td>
+        <td${span}>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}${
           rgCanPrepareReplan(p, supersededIds)
             ? `<br><small style="color:var(--danger,#c0392b)">⚠️ 슬롯 만료(여유 2h 미만) · 미제출</small>${ctx.loadBlock ? "" : rgProposalNoteHtml(rgProposals[p.id])}` : ""}</td>
-        <td>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
-        <td class="rg-approval-cell">${InboundApproval.approvalCellHtml(p, ctx)}</td>
-        <td>${rgSubmitStatusHtml(p)}</td>
-        <td>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
-        <td>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
-        <td class="rg-actions">${i === 0 ? `${rgActionsHtml(p, supersededIds, rgProposals, ctx)} ${InboundApproval.decisionHtml(p, ctx)}` : ""}</td>
+        <td${span}>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
+        <td class="rg-approval-cell"${span}>${InboundApproval.approvalCellHtml(p, ctx)}</td>
+        <td${span}>${rgSubmitStatusHtml(p)}</td>
+        <td${span}>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
+        <td${span}>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
+        <td class="rg-actions"${span}>${rgActionsHtml(p, supersededIds, rgProposals, ctx)} ${InboundApproval.decisionHtml(p, ctx)}</td>` : ""}
       </tr>`));
   });
 
@@ -8817,8 +8840,9 @@ async function loadRgShipmentGroups(plans, itemsByPlan) {
     const { data, error } = await sb.from("inbound_shipment_groups").select("*").in("id", ids);
     if (error) return out;
     (data || []).forEach(sp => {
+      // 2026-09-11 제출 실패(FAILED) 요청도 구성원에서 빼요 - 운송 묶음은 실제로 갈 요청만. 묶음 상태(status)는 그대로 실어 보내요.
       const members = plans
-        .filter(p => p.shipment_group_id === sp.id && p.internal_status !== "CANCELLED" && p.approval_status !== "REJECTED")
+        .filter(p => p.shipment_group_id === sp.id && !["CANCELLED", "FAILED"].includes(p.internal_status) && p.approval_status !== "REJECTED")
         .flatMap(p => (itemsByPlan[p.id] || []).map(it => ({
           planId: p.id, name: [it.inventory_name, it.option_name].filter(Boolean).join(" · ") || "-",
           qty: it.coupang_inbound_qty, plt: it.pallet_count })));
@@ -8857,8 +8881,14 @@ function rgPlanCtx(p, d) {
     poDrafterId: po.drafter_id || null, poNo: po.po_no || null,
     child: d.retryByOriginId[p.id] || null,
     original: p.resubmission_of_plan_id ? d.plansById[p.resubmission_of_plan_id] || null : null,
-    shipmentGroup: p.internal_status !== "CANCELLED" ? ((d.shipmentGroupByPlan || {})[p.id] || null) : null,
+    shipmentGroup: rgGroupForCtx(p, (d.shipmentGroupByPlan || {})[p.id] || null),
   };
+}
+// 실패 이력(CANCELLED) 요청에는 사용 중인 묶음을 붙이지 않고, 무효·대체된 묶음은 이력 표시로 붙여요.
+function rgGroupForCtx(p, group) {
+  if (!group) return null;
+  if ((group.status || "ACTIVE") !== "ACTIVE") return group;
+  return p.internal_status !== "CANCELLED" ? group : null;
 }
 
 async function rgDecideRpc(planId, decision, reason = null, reasonCode = null) {
@@ -8917,7 +8947,7 @@ async function openRgRejectModal(planId) {
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal">
         <h3>입고 요청 거절</h3>
-        <p class="rg-modal-sub"><b>${esc(it.inventory_name || "-")}</b> · ${fmt(it.coupang_inbound_qty)}개 · ${InboundApproval.palletSum(ctx.items)}PLT
+        <p class="rg-modal-sub"><b>${esc(ctx.items.length > 1 ? InboundApproval.itemsLabel(ctx.items) : (it.inventory_name || "-"))}</b> · ${fmt(InboundApproval.qtySum(ctx.items))}개 · ${InboundApproval.palletSum(ctx.items)}PLT
           · ${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}
           · ${esc(p.inbound_date || "-")} ${esc(String(p.inbound_time || "").slice(0, 5))}
           ${p.approval_status === "APPROVED" ? `<br><span class="chip approved">승인됨 · WING 미제출</span> 승인된 요청도 제출 전이면 거절할 수 있어요.` : ""}</p>
@@ -8977,7 +9007,7 @@ async function openRgPlanDetail(planId) {
     supersededIds: new Set(child ? [planId] : []), child, original,
     poNo: po?.po_no || null, poDrafterId: po?.drafter_id || null,
     migrated: Object.prototype.hasOwnProperty.call(p, "rejection_reason"),
-    shipmentGroup: p.internal_status !== "CANCELLED" ? await loadRgShipmentGroupForPlan(p) : null,
+    shipmentGroup: rgGroupForCtx(p, await loadRgShipmentGroupForPlan(p)),
   };
   ctx.loadBlock = InboundApproval.loadBlock(p, ctx.items);
   const actions = InboundApproval.decisionHtml(p, ctx).replace(/<button class="btn sm secondary" onclick="openRgPlanDetail\([^)]*\)">상세<\/button>/, "");

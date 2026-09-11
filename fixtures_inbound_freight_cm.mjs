@@ -265,5 +265,31 @@ console.log("\n=== 5. 입고 처리 화면 - 운송비 중복 기록 방지 ==="
   has(card, "입고 운송비가 빠져 있어요", "기록을 못 읽으면 공헌이익 화면에 알림");
 }
 
+console.log("\n=== 6. 대체된 기록(합배송 → 단일 다품목 입고, 2026-09-11)은 합산 안 함 ===");
+{
+  // 옛 합배송 그룹 기록(먼저 생성, SUPERSEDED) + 새 단일 입고 기록(ACTIVE) - 같은 PO·같은 상품
+  const oldC = cost({ id: "fc-old", status: "SUPERSEDED", superseded_by_freight_id: "fc-new", shipment_group_id: "e0eb258d-old" });
+  const newC = cost({ id: "fc-new", status: "ACTIVE", shipment_group_id: "b28edc90-new" });
+  const r = setup({ today: "2026-10-31", buys: buysAll, sales: salesOct, costs: [oldC, newC],
+                    allocations: [...allocs(113333, 56667, "fc-old"), ...allocs(113333, 56667, "fc-new")] });
+  check(r.records.map(x => x.cost.id), ["fc-new"], "[핵심] 계산 대상은 ACTIVE 기록 1건뿐");
+  check(r.history.map(x => x.id), ["fc-old"], "대체된 기록은 이력으로만");
+  const f = [...r.bySale.values()].reduce((s, v) => s + v.supply, 0);
+  near(f, 90 * 113333 / 320 + 35 * 56667 / 160, "[핵심] 먼저 만든 대체 기록이 있어도 배부는 새 기록 기준 한 번분");
+  const q3 = d => d >= "2026-07-01" && d <= "2026-09-30";
+  const v = ctx.InboundFreight.vatRows([oldC, newC], q3);
+  check([v.estimateCount, v.estimateVat, v.estimateSupply], [1, 17000, 170000], "[핵심] 부가세 예상도 ACTIVE 1건만(17,000 한 번)");
+  const void1 = cost({ id: "fc-void", status: "VOID_PENDING_REBUILD" });
+  const r2 = setup({ today: "2026-10-31", buys: buysAll, sales: salesOct, costs: [void1], allocations: allocs(113333, 56667, "fc-void") });
+  check([r2.records.length, r2.bySale.size], [0, 0], "무효·재작성 대기 기록만 있으면 공헌이익 차감 0");
+  setup({ today: "2026-10-31", buys: buysAll, sales: salesOct, costs: [oldC, newC], allocations: [...allocs(113333, 56667, "fc-old"), ...allocs(113333, 56667, "fc-new")] });
+  const card = vm.runInContext("inboundFreightCardHtml", ctx)("2026-10");
+  has(card, "이력 (합산 안 함)", "카드: 이력 구역");
+  has(card, "대체됨", "카드: 대체됨 표시");
+  has(card, "e0eb258d", "카드: 옛 합배송 묶음 id 이력");
+  check((card.match(/₩187,000 \(VAT 포함\) =/g) || []).length, 1, "카드 본문의 결제 총액 187,000 은 한 번만(이력 줄은 별도)");
+  check(vm.runInContext(`poFreightRecord("${PO16}")`, ctx).cost.id, "fc-new", "발주서·입고 처리는 ACTIVE 기록을 봄");
+}
+
 console.log(`\n=== 결과: ${failures ? `실패 ${failures}건` : "전체 통과"} ===`);
 process.exit(failures ? 1 : 0);

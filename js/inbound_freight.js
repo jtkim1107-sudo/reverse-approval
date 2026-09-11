@@ -31,8 +31,15 @@
   // 출력
   //   bySale   Map(saleId → { supply, units, basis })   공헌이익에서 뺄 입고 운송비(공급가액, 소수 그대로)
   //   records  기록별 상태·배분·판매/재고 내역(화면용)
-  function compute({ costs = [], allocations = [], buys = [], sales = [], transfers = [],
+  // 2026-09-11 기록 상태: ACTIVE 만 계산(공헌이익·재고원가·부가세). VOID_PENDING_REBUILD(무효·재작성 대기)·
+  // SUPERSEDED(새 입고로 대체됨)는 이력(history)으로만 돌려줘요 - 같은 트럭 운송비를 두 번 세지 않게.
+  const isActive = c => (c.status || "ACTIVE") === "ACTIVE";
+  const STATUS_LABEL = { VOID_PENDING_REBUILD: "무효 · 재작성 대기", SUPERSEDED: "대체됨" };
+
+  function compute({ costs: allCosts = [], allocations = [], buys = [], sales = [], transfers = [],
                      products = [], isCoupangSale = () => true, today = "9999-12-31" } = {}) {
+    const costs = allCosts.filter(isActive);
+    const history = allCosts.filter(c => !isActive(c));
     const upTo = arr => arr.filter(x => String(x.date || "") <= today);
     const prodById = new Map(products.map(p => [p.id, p]));
     // 판매 1줄이 쿠팡 재고의 어느 기본 상품을 몇 개 줄이는지(연동 세트는 낱개 × 구성 수량)
@@ -144,7 +151,7 @@
       const dates = r.allocs.flatMap(a => a.receiptDates).sort();
       r.firstReceiptDate = dates[0] || null;
     }
-    return { bySale, records };
+    return { bySale, records, history };
   }
 
   // 월 합계(판매분 차감액) - 화면 요약용
@@ -153,7 +160,8 @@
   }
 
   // 부가세: 실제 청구(ACTUAL)만 청구일 기준으로 매입세액에 넣고, 예상은 따로 보여줘요.
-  function vatRows(costs, inRange) {
+  function vatRows(allCosts, inRange) {
+    const costs = (allCosts || []).filter(isActive);
     const actual = costs.filter(c => c.basis === "ACTUAL" && c.invoice_date && inRange(c.invoice_date));
     const estimate = costs.filter(c => c.basis !== "ACTUAL");
     const sum = (arr, k) => arr.reduce((s, c) => s + Number(c[k] || 0), 0);
@@ -168,5 +176,5 @@
   };
   const basisLabel = b => (b === "ACTUAL" ? "실제 청구" : b === "MIXED" ? "예상·실제 혼합" : "예상");
 
-  global.InboundFreight = { compute, soldInMonth, vatRows, STAGE_LABEL, basisLabel };
+  global.InboundFreight = { compute, soldInMonth, vatRows, STAGE_LABEL, STATUS_LABEL, basisLabel, isActive };
 })(typeof window !== "undefined" ? window : globalThis);

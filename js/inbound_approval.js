@@ -81,7 +81,9 @@
   function canResubmit(p, ctx = {}) {
     const me = ctx.me || {};
     const drafter = ctx.poDrafterId || null;
+    // 2026-09-11 [수정 후 재요청]은 상품 1종 요청만(수량 한 칸) - 다품목 요청은 서버 재요청 경로가 없어 버튼을 내지 않아요.
     return p.approval_status === "REJECTED" && (p.transport_type || "TRUCK") === "TRUCK"
+      && (ctx.items || []).length <= 1
       && !isWingSubmitted(p) && !isSuperseded(p, ctx.supersededIds)
       && (me.approver === true || (!!me.id && me.id === drafter));
   }
@@ -148,6 +150,7 @@
     HUMAN_APPROVED: "승인", HUMAN_REJECTED: "거절", SUBMIT_ATTEMPTED: "WING 제출 시도",
     SUBMIT_SUCCEEDED: "WING 제출 성공", SUBMIT_FAILED: "WING 제출 실패", STATUS_POLLED: "WING 상태 확인",
     RECOVERY_CHECK: "복구·재계획 확인", INBOUND_MAIL_SENT: "입고 메일 발송", INBOUND_MAIL_FAILED: "입고 메일 실패",
+    SHIPMENT_CANCELLED_AFTER_SUCCESS: "WING 입고 취소 확인", PLAN_SUPERSEDED: "새 요청으로 대체(이력)",
   };
 
   function eventLine(e) {
@@ -159,6 +162,8 @@
       note = d.approved_by_name || d.decided_by || d.approved_by || "";
     } else if (e.event_type === "PREFLIGHT_STARTED" && d.resubmission) {
       note = `거절된 요청 ${short(d.resubmission.of_plan_id)}의 수정 후 재요청`;
+    } else if (e.event_type === "PLAN_SUPERSEDED") {
+      note = d.reason || "";
     } else if (d.replan_proposal && d.replan_proposal.kind) {
       note = `재계획 ${d.replan_proposal.kind}`;
     }
@@ -172,30 +177,61 @@
   //           members: [{ planId, name, qty, plt }] } - 실패 이력(CANCELLED)·거절 요청은 호출부가 members 에서 빼요.
   // 운송비는 묶음 전체에 한 번만: 요청별 개별 제안 운송비는 합산하지 않아요(각각 승인해도 한 번).
   const won = v => `₩${Number(v || 0).toLocaleString("ko-KR")}`;
+  // 2026-09-11 묶음 상태: ACTIVE(사용 중) / VOID_PENDING_REBUILD(무효·재작성 대기) / SUPERSEDED(새 입고로 대체됨).
+  // 무효·대체된 묶음의 운송비는 어디에도 더하지 않아요(이력으로만 표시).
+  const GROUP_STATUS_LABEL = { VOID_PENDING_REBUILD: "무효 · 재작성 대기", SUPERSEDED: "대체됨" };
   function shipmentGroupSummary(group) {
     if (!group) return null;
     const members = group.members || [];
+    const status = group.status || "ACTIVE";
     return {
       id: group.id, short: short(group.id), itemCount: members.length,
+      planCount: new Set(members.map(m => m.planId)).size,
       plt: Number(group.total_pallet_count) || members.reduce((a, m) => a + (Number(m.plt) || 0), 0),
-      vehicle: group.vehicle_type || "-", cost: Number(group.total_transport_cost) || 0, members,
+      vehicle: group.vehicle_type || "-", vehicleCount: Number(group.vehicle_count) || 1,
+      cost: Number(group.total_transport_cost) || 0, members,
+      status, active: status === "ACTIVE", statusLabel: GROUP_STATUS_LABEL[status] || "",
+      supersededBy: group.superseded_by_group_id ? short(group.superseded_by_group_id) : null,
     };
   }
   function shipmentGroupChipHtml(group) {
     const g = shipmentGroupSummary(group);
     if (!g) return "";
+    if (!g.active) {
+      return `<small class="rg-group rg-group-void" title="이 운송 묶음은 더 이상 쓰지 않아요 - 운송비는 합산하지 않아요">`
+        + `🚚 운송 묶음 ${escHtml(g.short)} · ${escHtml(g.statusLabel)}${g.supersededBy ? ` → 새 묶음 ${escHtml(g.supersededBy)}` : ""} · 운송비 합산 안 함</small>`;
+    }
+    if (g.planCount <= 1) {
+      return `<small class="rg-group" title="입고 요청 1건(WING 입고 1개)에 여러 상품 - 트럭 한 대, 운송비 한 번">`
+        + `🚚 단일 입고 ${escHtml(g.short)} · 포함 상품 ${g.itemCount}개 · 총 ${g.plt}PLT · ${escHtml(g.vehicle)} ${g.vehicleCount}대 · 운송비 ${won(g.cost)} 한 번</small>`;
+    }
     return `<small class="rg-group" title="같은 트럭 한 대로 가는 요청 묶음 - 운송비는 묶음 전체에 한 번만 반영">`
       + `🚚 합배송 그룹 ${escHtml(g.short)} · 포함 상품 ${g.itemCount}개 · 총 ${g.plt}PLT · 대표 운송비 ${won(g.cost)} · 운송비 중복 반영 없음</small>`;
   }
   function shipmentGroupDetailHtml(group, p) {
     const g = shipmentGroupSummary(group);
     if (!g) return "";
+    if (!g.active) {
+      return `<b>운송 묶음 <code>${escHtml(g.short)}</code> · ${escHtml(g.statusLabel)}</b>`
+        + (g.supersededBy ? ` → 새 묶음 <code>${escHtml(g.supersededBy)}</code>` : "")
+        + `<br><span class="rg-muted">${escHtml(group.status_reason || "")}</span>`
+        + `<br>이 묶음의 운송비 ${won(g.cost)}는 합산하지 않아요(이력).`;
+    }
     const lines = g.members.map(m => `${escHtml(m.name || "-")} ${Number(m.qty || 0).toLocaleString("ko-KR")}개 · ${Number(m.plt) || 0}PLT`
-      + ` <small class="rg-muted">요청 ${escHtml(short(m.planId))}${p && m.planId === p.id ? " (이 요청)" : ""}</small>`);
-    return `<b>합배송 그룹 <code>${escHtml(g.short)}</code></b> · ${escHtml(g.vehicle)} 1대 · 총 ${g.plt}PLT`
+      + (g.planCount > 1 ? ` <small class="rg-muted">요청 ${escHtml(short(m.planId))}${p && m.planId === p.id ? " (이 요청)" : ""}</small>` : ""));
+    const head = g.planCount <= 1 ? `단일 입고 <code>${escHtml(g.short)}</code>` : `합배송 그룹 <code>${escHtml(g.short)}</code>`;
+    return `<b>${head}</b> · ${escHtml(g.vehicle)} ${g.vehicleCount}대 · 총 ${g.plt}PLT`
       + `<br>포함 상품 ${g.itemCount}개: ${lines.join(" / ")}`
-      + `<br>대표 운송비 <b>${won(g.cost)}</b> - 묶음 전체에 한 번만 반영(운송비 중복 반영 없음, 요청별 개별 제안 운송비는 합산하지 않아요)`;
+      + `<br>${g.planCount <= 1 ? "운송비" : "대표 운송비"} <b>${won(g.cost)}</b> - 트럭 한 대분 한 번만 반영(운송비 중복 반영 없음)`;
   }
+  // 요청 한 건의 상품 표시(다품목이면 "첫 상품 외 N종")
+  function itemsLabel(items) {
+    const list = items || [];
+    if (!list.length) return "-";
+    const first = [list[0].inventory_name, list[0].option_name].filter(Boolean).join(" / ") || "-";
+    return list.length > 1 ? `${first} 외 ${list.length - 1}종` : first;
+  }
+  const qtySum = items => (items || []).reduce((s, it) => s + (Number(it.coupang_inbound_qty) || 0), 0);
 
   function detailHtml(p, ctx = {}) {
     const items = ctx.items || [];
@@ -208,8 +244,8 @@
       ["상품", items.map(it => `${escHtml(it.inventory_name || "-")}${it.option_name ? ` <small>${escHtml(it.option_name)}</small>` : ""}`).join("<br>") || "-"],
       ["최종 입고수량", items.map(it => `${Number(it.coupang_inbound_qty || 0).toLocaleString("ko-KR")}개`).join(", ") || "-"],
       ["PLT", `전체 ${palletSum(items)}PLT${ctx.loadBlock ? ` · <span class="rg-block">${escHtml(ctx.loadBlock.label)}</span>` : ""}`
-        + (ctx.shipmentGroup
-          ? `<br><small class="rg-muted">차량 ${escHtml(ctx.shipmentGroup.vehicle_type || "-")} 1대(합배송 그룹 기준${ctx.vehicleType ? ` · 이 요청 단독 제안 ${escHtml(ctx.vehicleType)}은 쓰지 않음` : ""}) - 승인 판단은 차량과 무관</small>`
+        + (ctx.shipmentGroup && (ctx.shipmentGroup.status || "ACTIVE") === "ACTIVE"
+          ? `<br><small class="rg-muted">차량 ${escHtml(ctx.shipmentGroup.vehicle_type || "-")} ${Number(ctx.shipmentGroup.vehicle_count) || 1}대(운송 묶음 기준${ctx.vehicleType ? ` · 이 요청 단독 제안 ${escHtml(ctx.vehicleType)}은 쓰지 않음` : ""}) - 승인 판단은 차량과 무관</small>`
           : (ctx.vehicleType ? `<br><small class="rg-muted">차량 ${escHtml(ctx.vehicleType)} (참고용 - 승인 판단은 차량과 무관)</small>` : ""))],
       ["쿠팡센터", centerHtml],
       ["입고 예정", `${escHtml(p.inbound_date || "-")} ${escHtml(String(p.inbound_time || "").slice(0, 5))}`],
@@ -280,6 +316,6 @@
     isWingSubmitted, wingSubmittedLabel, singlePltBlocked, canApprove, canReject, canResubmit,
     defaultRejectReason, defaultRejectCode, approvalCellHtml, decisionHtml, detailHtml, rejectionInfoHtml,
     csvRows, toCsv, fmtKst, palletSum,
-    shipmentGroupSummary, shipmentGroupChipHtml, shipmentGroupDetailHtml,
+    shipmentGroupSummary, shipmentGroupChipHtml, shipmentGroupDetailHtml, itemsLabel, qtySum,
   };
 })(typeof window !== "undefined" ? window : globalThis);
