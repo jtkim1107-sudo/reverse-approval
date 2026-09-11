@@ -6354,13 +6354,19 @@ async function loadPOFreightReview(poId, currentFreightEst) {
   await CoupangCenters.load(sb);
   // 2026-09-11 새 선택 사유에는 이미 '천안1센터 (CHA1)'가 들어 있어요 - 그땐 사유만, 옛 사유('천안1 선택')엔 센터명을 앞에 붙여요.
   const reasons = (result.groups || []).map(g => {
+    // 2026-09-11 합배송 묶음(트럭 1대)은 묶음 운송비 한 번 - 요청별 개별 제안값은 합산하지 않았음을 같이 보여줘요.
+    if (g.consolidated) {
+      const ex = (g.excluded_individual_costs || []).map(v => `₩${fmt(v)}`).join("·");
+      return esc(`합배송 묶음 ${g.vehicle_type || ""} 1대·${g.total_pallet_count || "-"}PLT·${CoupangCenters.label({ id: g.destination_center_id })} - 운송비 중복 반영 없음`
+        + (ex ? `(요청별 개별 제안 ${ex} 합산 안 함)` : ""));
+    }
     const reason = g.selection_reason || "";
     const hasLabel = /센터 \(|센터명 확인 필요/.test(reason);
     return (hasLabel ? [reason] : [g.destination_center_id ? CoupangCenters.label({ id: g.destination_center_id }) : "", reason])
       .filter(Boolean).map(esc).join(" · ");
   }).filter(Boolean).join(" / ");
   el.innerHTML = ` <span class="chip waiting" style="display:inline-block;margin-top:4px">
-      🚚 TRUCK 자동선택 운송비 ₩${fmt(result.total_freight_est)}${reasons ? ` (${reasons})` : ""}
+      🚚 ${(result.groups || []).some(g => g.consolidated) ? "TRUCK 운송비(합배송 반영)" : "TRUCK 자동선택 운송비"} ₩${fmt(result.total_freight_est)}${reasons ? ` (${reasons})` : ""}
       <a onclick="applyPOFreightEstimate('${poId}', ${result.total_freight_est})" style="color:var(--brand);cursor:pointer;font-weight:600;margin-left:4px">적용 →</a>
     </span>`;
 }
