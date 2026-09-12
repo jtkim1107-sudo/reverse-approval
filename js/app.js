@@ -497,6 +497,7 @@ const routes = {
   products: { title: "제품 마스터", render: viewProducts },
   channels: { title: "판매채널·SCM 계정", render: viewChannels },
   suppliers: { title: "매입 거래처", render: viewSuppliers },
+  procurement: { title: "발주·물류 정보", render: viewProcurementInput },
   sales: { title: "매출 입력", render: viewSales, after: () => addSaleRow() },
   po: { title: "발주서", render: viewPurchaseOrders },
   podoc: { title: "발주서", render: viewPODoc },
@@ -9758,6 +9759,11 @@ async function renderVocInquiries() {
 
 /* ---------- 매입 거래처 ---------- */
 let supplierCache = [];
+
+// 2026-09-12 발주·물류 정보 입력(MISSING_PROCUREMENT_DATA) - 화면·검증은 js/procurement_input.js, 저장은 DB fn_save_product_procurement() 만
+async function viewProcurementInput() {
+  return ProcurementInput.view(sb, me);
+}
 
 async function viewSuppliers() {
   const { data, error } = await sb.from("suppliers").select("*").order("name");

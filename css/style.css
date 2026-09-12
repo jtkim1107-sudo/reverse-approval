@@ -783,3 +783,46 @@ table.rg-detail td code { word-break: break-all; }
 .po-hold-form { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
 .po-hold-form input { flex: 1 1 220px; min-width: 0; padding: 7px 10px; border: 1.5px solid var(--line); border-radius: 8px; }
 .po-hold-form input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(79, 93, 240, .12); }
+/* 2026-09-12 발주·물류 정보 입력 */
+.pi-note { color: var(--text-sub); font-size: 13px; line-height: 1.7; margin-bottom: 12px; max-width: 78ch; }
+.pi-banner { background: var(--brand-light); color: var(--brand-dark); border-radius: 9px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+.pi-banner.bad { background: var(--red-bg); color: var(--red); }
+.pi-tabs { display: flex; gap: 6px; }
+.pi-tab { border: 1.5px solid var(--line); background: var(--card); color: var(--text-sub); border-radius: 99px; padding: 5px 12px; font-size: 13px; font-weight: 600; }
+.pi-tab.on { border-color: var(--brand); background: var(--brand-light); color: var(--brand); }
+.pi-table td { vertical-align: top; padding: 10px 6px; white-space: normal; }
+.pi-table th { padding: 9px 6px; white-space: normal; vertical-align: bottom; }
+.pi-sync { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; }
+.pi-sync .chip { font-size: 11px; padding: 2px 8px; }
+.pi-table tr.pi-dirty td { background: #fafbff; }
+.pi-table tr.pi-dirty td:first-child { box-shadow: inset 3px 0 0 var(--brand); }
+.pi-name { max-width: 170px; white-space: normal !important; }
+.pi-name b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pi-sub { color: var(--text-sub); font-size: 11.5px; line-height: 1.5; }
+.pi-in { border: 1.5px solid var(--line); border-radius: 8px; padding: 6px 8px; background: #fff; font-size: 13.5px; font-variant-numeric: tabular-nums; }
+.pi-in:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(79, 93, 240, .12); }
+.pi-in.bad { border-color: var(--red); background: var(--red-bg); }
+.pi-in:disabled { background: var(--gray-bg); color: var(--text-sub); }
+.pi-inwrap { white-space: nowrap; }
+.pi-unit { margin-left: 4px; color: var(--text-sub); font-size: 12px; }
+.pi-table td.pi-code { white-space: nowrap; }
+.pi-table th .pi-sub { font-weight: 500; letter-spacing: 0; }
+.pi-err { color: var(--red); font-size: 11.5px; min-height: 0; line-height: 1.45; }
+.pi-err:empty { display: none; }
+.pi-warn { color: var(--amber); font-size: 11.5px; line-height: 1.45; margin-top: 3px; white-space: normal; max-width: 200px; }
+.pi-sugg { color: #9aa1b1; font-size: 11.5px; line-height: 1.45; margin-top: 3px; max-width: 140px; word-break: keep-all; }
+.pi-fill { border: 1px solid var(--line); background: var(--card); color: var(--text-sub); border-radius: 6px; padding: 0 6px; font-size: 11px; margin-left: 2px; }
+.pi-fill:hover { border-color: var(--brand); color: var(--brand); }
+.pi-cost-cell { min-width: 156px; }
+.pi-cost { font-size: 14px; font-variant-numeric: tabular-nums; }
+.pi-cost-cell.bad .pi-vat { border-color: var(--red); }
+.pi-vat-q { font-size: 11.5px; color: var(--text-sub); margin: 6px 0 3px; }
+.pi-vat { display: flex; align-items: center; gap: 5px; white-space: nowrap; border: 1.5px solid var(--line); border-radius: 8px; padding: 4px 8px; margin-bottom: 4px; font-size: 12.5px; cursor: pointer; }
+.pi-vat.on { border-color: var(--brand); background: var(--brand-light); color: var(--brand-dark); font-weight: 600; }
+.pi-link { border: none; background: none; color: var(--brand); font-size: 12px; padding: 0; }
+.pi-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.pi-foot > span { margin-right: auto; font-size: 13px; }
+.pi-review-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; font-size: 13px; line-height: 1.6; }
+.pi-review-cost { margin: 2px 0 6px; }
+.pi-result { padding: 7px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.pi-result.bad { color: var(--red); }
