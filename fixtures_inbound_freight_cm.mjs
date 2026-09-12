@@ -61,6 +61,9 @@ vm.runInContext(`
   ${grabFn("computeCmOfMonth")}
   ${grabFn("inboundFreightCardHtml")}
   ${grabLine(/const poFreightRecord = .*/)}
+  ${grabLine(/const poFreightInactiveOnly = [\s\S]*?;\n/)}
+  ${grabLine(/const poCurrentFreightEst = .*/)}
+  ${grabLine(/const poFreightInactiveTag = [\s\S]*?;\n/)}
   ${grabFn("poFreightPanelHtml")}
   ${grabFn("openReceiveModal")}
   ${grabFn("saveReceive")}

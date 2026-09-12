@@ -6158,7 +6158,7 @@ async function viewPurchaseOrders() {
             <td>${esc(p.supplier)}</td>
             <td>${p.deliver_to === "쿠팡" ? "쿠팡 직송" : "자사창고"}</td>
             <td class="num">₩${fmt(p.total)}</td>
-            <td class="num">${p.freight_est ? "₩" + fmt(p.freight_est) : "—"}</td>
+            <td class="num">${p.freight_est ? "₩" + fmt(p.freight_est) + poFreightInactiveTag(p) : "—"}</td>
             <td>${poChip(p.status)}</td>
             <td>${esc(userName(p.drafter_id))}</td>
             <td style="white-space:nowrap">
@@ -6405,7 +6405,7 @@ function openPODetail(id) {
               <td style="width:110px;color:var(--text-sub)">거래처</td><td>${esc(p.supplier)}${sup?.pay_terms ? ` <span class="chip waiting">${esc(sup.pay_terms)}</span>` : ""}</td></tr>
           <tr><td style="color:var(--text-sub)">입고처</td><td>${p.deliver_to === "쿠팡" ? "쿠팡 (로켓그로스 직송)" : "자사창고"}</td>
               <td style="color:var(--text-sub)">기안</td><td>${esc(userName(p.drafter_id))}</td></tr>
-          <tr><td style="color:var(--text-sub)">예상 운송비</td><td>${p.freight_est ? "₩" + fmt(p.freight_est) + (poFreightRecord(p.id) ? " <small>(VAT 포함)</small>" : "") : "—"}<span id="po-freight-review"></span></td>
+          <tr><td style="color:var(--text-sub)">예상 운송비</td><td>${p.freight_est ? "₩" + fmt(p.freight_est) + (poFreightRecord(p.id) ? " <small>(VAT 포함)</small>" : "") + poFreightInactiveTag(p) : "—"}<span id="po-freight-review"></span></td>
               <td style="color:var(--text-sub)">메모</td><td>${esc(p.memo) || "—"}</td></tr>
         </tbody></table></div>
         ${poFreightPanelHtml(p)}
@@ -6551,6 +6551,14 @@ async function loadPOFreightReview(poId, currentFreightEst) {
 
 // 2026-09-11 입고 트럭 운송비 기록(운송 묶음당 1건) - 발주서 상세·입고 처리에서 같은 기록을 봐요.
 const poFreightRecord = poId => erpFreight.records.find(r => r.cost.purchase_order_id === poId) || null;
+// 2026-09-12 [사용자 확정] 발주서에 저장된 예상 운송비(freight_est)는 그 발주의 운송비 기록이 전부 무효·대체·검토 필요
+// (살아 있는 ACTIVE 기록 없음)이면 현재 비용으로 쓰지 않아요 - 원래 값은 발주서에 감사 이력으로 그대로 두고(DB 수정 없음)
+// 입고 처리 미리 채우기·발주 완료 대금에서만 빼요. 운송비 기록을 못 읽었으면(erpFreight.error) 예전처럼 저장값을 써요.
+const poFreightInactiveOnly = poId => !erpFreight.error && !poFreightRecord(poId)
+  && (erpFreight.history || []).some(h => h.purchase_order_id === poId);
+const poCurrentFreightEst = p => (poFreightInactiveOnly(p.id) ? 0 : Number(p.freight_est || 0));
+const poFreightInactiveTag = p => (p.freight_est && poFreightInactiveOnly(p.id)
+  ? ` <small style="color:var(--text-sub)">(취소된 운송 묶음 · 현재 비용 아님)</small>` : "");
 
 function poFreightPanelHtml(p) {
   const r = poFreightRecord(p.id);
@@ -7464,9 +7472,11 @@ async function markOrdered(id) {
   if (error || !data?.length) return toast("처리에 실패했습니다");
 
   // 결제조건이 있으면 '나갈 돈'으로 미리 잡아둔다
-  const total = Number(p.total) + Number(p.freight_est || 0);
+  // 2026-09-12 취소된 운송 묶음 기준 예상 운송비는 대금에 넣지 않아요(poCurrentFreightEst)
+  const curFreight = poCurrentFreightEst(p);
+  const total = Number(p.total) + curFreight;
   if (total > 0 && confirm(
-    `발주 완료로 처리했습니다.\n\n대금 ₩${fmt(total)}${p.freight_est ? " (운송비 포함)" : ""}을(를)\n`
+    `발주 완료로 처리했습니다.\n\n대금 ₩${fmt(total)}${curFreight ? " (운송비 포함)" : ""}을(를)\n`
     + `자금일보의 '나갈 돈'에 미리 등록할까요?${sup?.pay_terms ? `\n(${p.supplier} 결제조건: ${sup.pay_terms})` : ""}`)) {
     const due = addDaysStr(today(), 30);
     await sb.from("cash_plans").insert({
@@ -7502,8 +7512,9 @@ function openReceiveModal(id) {
         <div style="font-size:12.5px;line-height:1.6;padding-top:4px">운송 묶음 기록 ₩${fmt(frRec.gross)} (${frRec.basis === "ACTUAL" ? "실제 청구" : "예상"}, VAT 포함)으로 반영돼요 —
         여기서 따로 기록하지 않아요(중복 방지). 실제 청구금액은 발주서 상세에서 등록하세요.</div></div>`
     : `<div class="field"><label>실제 운송비(원) ${vatTag("exp")}</label>
-        <input id="rc-freight" type="text" inputmode="numeric" class="comma" value="${erpFreight.error ? "" : cfv(p.freight_est || "")}">
-        ${erpFreight.error ? `<p style="font-size:12px;color:var(--amber);margin-top:4px">운송 묶음 기록을 확인하지 못해 예상 운송비를 미리 채우지 않았어요.</p>` : ""}</div>`;
+        <input id="rc-freight" type="text" inputmode="numeric" class="comma" value="${erpFreight.error || poFreightInactiveOnly(p.id) ? "" : cfv(p.freight_est || "")}">
+        ${erpFreight.error ? `<p style="font-size:12px;color:var(--amber);margin-top:4px">운송 묶음 기록을 확인하지 못해 예상 운송비를 미리 채우지 않았어요.</p>` : ""}
+        ${poFreightInactiveOnly(p.id) && p.freight_est ? `<p style="font-size:12px;color:var(--amber);margin-top:4px">발주서 예상 운송비 ₩${fmt(p.freight_est)}은 취소된 운송 묶음 기준(합산 안 함)이라 미리 채우지 않았어요 — 실제로 청구된 운송비만 입력하세요.</p>` : ""}</div>`;
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:760px;width:96vw">
