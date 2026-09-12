@@ -184,7 +184,7 @@ check([PI.errorMessage({ message: "NOT_APPROVER 승인 권한자만 발주·물�
 console.log("\n=== 7. 앱 연결 ===");
 const app = read("./js/app.js"), index = read("./index.html");
 check(/procurement: \{ title: "발주·물류 정보", render: viewProcurementInput \}/.test(app) && /async function viewProcurementInput\(\) \{\n  return ProcurementInput\.view\(sb, me\);/.test(app), true, "라우트 #/procurement");
-check(index.includes('href="#/procurement" data-route="procurement"') && index.includes('<script src="js/procurement_input.js?v=1"></script>')
+check(index.includes('href="#/procurement" data-route="procurement"') && index.includes('<script src="js/procurement_input.js?v=2"></script>')
       && index.indexOf("procurement_input.js") < index.indexOf("js/app.js"), true, "메뉴·스크립트(app.js 보다 먼저)");
 check(/product_procurement"\)\.(insert|update|upsert)/.test(read("./js/procurement_input.js") + app), false, "화면 코드 어디에도 product_procurement 직접 쓰기 없음");
 

@@ -796,7 +796,7 @@ table.rg-detail td code { word-break: break-all; }
 .pi-sync .chip { font-size: 11px; padding: 2px 8px; }
 .pi-table tr.pi-dirty td { background: #fafbff; }
 .pi-table tr.pi-dirty td:first-child { box-shadow: inset 3px 0 0 var(--brand); }
-.pi-name { max-width: 170px; white-space: normal !important; }
+.pi-name { max-width: 160px; white-space: normal !important; }
 .pi-name b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pi-sub { color: var(--text-sub); font-size: 11.5px; line-height: 1.5; }
 .pi-in { border: 1.5px solid var(--line); border-radius: 8px; padding: 6px 8px; background: #fff; font-size: 13.5px; font-variant-numeric: tabular-nums; }
@@ -805,7 +805,9 @@ table.rg-detail td code { word-break: break-all; }
 .pi-in:disabled { background: var(--gray-bg); color: var(--text-sub); }
 .pi-inwrap { white-space: nowrap; }
 .pi-unit { margin-left: 4px; color: var(--text-sub); font-size: 12px; }
-.pi-table td.pi-code { white-space: nowrap; }
+.pi-code { font-size: 11.5px; }
+.pi-table select.pi-in { max-width: 108px; }
+.pi-table .pi-sugg { max-width: 118px; }
 .pi-table th .pi-sub { font-weight: 500; letter-spacing: 0; }
 .pi-err { color: var(--red); font-size: 11.5px; min-height: 0; line-height: 1.45; }
 .pi-err:empty { display: none; }
@@ -813,7 +815,7 @@ table.rg-detail td code { word-break: break-all; }
 .pi-sugg { color: #9aa1b1; font-size: 11.5px; line-height: 1.45; margin-top: 3px; max-width: 140px; word-break: keep-all; }
 .pi-fill { border: 1px solid var(--line); background: var(--card); color: var(--text-sub); border-radius: 6px; padding: 0 6px; font-size: 11px; margin-left: 2px; }
 .pi-fill:hover { border-color: var(--brand); color: var(--brand); }
-.pi-cost-cell { min-width: 156px; }
+.pi-cost-cell { min-width: 150px; }
 .pi-cost { font-size: 14px; font-variant-numeric: tabular-nums; }
 .pi-cost-cell.bad .pi-vat { border-color: var(--red); }
 .pi-vat-q { font-size: 11.5px; color: var(--text-sub); margin: 6px 0 3px; }

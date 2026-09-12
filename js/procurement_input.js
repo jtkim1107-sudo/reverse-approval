@@ -314,9 +314,9 @@
       <td class="pi-name"><b title="${escHtml(name)}">${escHtml(name)}</b>
         <div class="pi-sub">${escHtml((v.reco && v.reco.option_name) || p.spec || "")}</div>
         <div class="pi-sub">SKU ${escHtml(v.skus.join(", ") || "—")}</div>
+        <div class="pi-sub">ERP <code class="pi-code">${escHtml(p.code || "—")}</code></div>
         <div class="pi-sync">${syncChip(pid)} <button class="pi-link" onclick="ProcurementInput.history('${pid}')">이력</button></div>
         ${val.warnings.map(w => `<div class="pi-warn">${escHtml(w)}</div>`).join("")}</td>
-      <td class="pi-code"><code>${escHtml(p.code || "—")}</code></td>
       <td class="pi-cost-cell ${errs.cost_vat_basis ? "bad" : ""}">
         <div class="pi-cost"><b>${won(p.cost_price)}</b> <span class="pi-sub">${escHtml(p.tax_type || "")}</span></div>
         ${s.last_unit_cost ? `<div class="pi-sub">최근 발주 단가 ${won(s.last_unit_cost)}</div>` : ""}
@@ -325,7 +325,7 @@
         <div class="pi-err" id="pi-err-${pid}-cost_vat_basis">${escHtml(errs.cost_vat_basis || "")}</div>
         ${supplyHtml(p.cost_price, form.cost_vat_basis)}
         ${costChanged ? `<div class="pi-warn">확인 뒤 원가가 바뀌었어요(${won(lastSeen)} → ${won(p.cost_price)}) - 다시 골라 주세요</div>` : ""}</td>
-      ${inputCell(pid, "supplier_name", form, errs, s.supplier_name, { list: "pi-suppliers", w: 128, placeholder: "공급처" })}
+      ${inputCell(pid, "supplier_name", form, errs, s.supplier_name, { list: "pi-suppliers", w: 118, placeholder: "공급처" })}
       <td><select id="pi-${pid}-orderable_unit" class="pi-in ${errs.orderable_unit ? "bad" : ""}" ${dis}
             onchange="ProcurementInput.onInput('${pid}','orderable_unit',this.value)" aria-label="발주단위">
           <option value="" ${form.orderable_unit ? "" : "selected"}>선택</option>
@@ -341,8 +341,8 @@
   function tableHtml(list, emptyMsg) {
     if (!list.length) return `<p class="empty">${emptyMsg}</p>`;
     return `<div class="table-wrap"><table class="pi-table">
-      <thead><tr><th>상품명 · SKU · BigQuery</th><th>ERP 코드</th><th>현재 cost_price<div class="pi-sub">VAT 기준 *</div></th><th>공급처 *</th><th>발주단위 *</th>
-        <th>최소발주 *</th><th>BOX 입수<div class="pi-sub">BOX 발주면 필수</div></th><th>PLT 입수<div class="pi-sub">PLT 발주면 필수</div></th><th>리드타임 *</th></tr></thead>
+      <thead><tr><th>상품명 · SKU · ERP 코드</th><th>현재 cost_price<div class="pi-sub">VAT 기준 *</div></th><th>공급처 *</th><th>발주단위 *</th>
+        <th>최소발주 *</th><th>BOX 입수<div class="pi-sub">BOX면 필수</div></th><th>PLT 입수<div class="pi-sub">PLT면 필수</div></th><th>리드타임 *</th></tr></thead>
       <tbody>${list.map(v => rowHtml(v, S.touched && S.touched.has(v.product.id))).join("")}</tbody></table></div>`;
   }
 
