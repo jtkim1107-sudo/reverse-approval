@@ -3805,6 +3805,8 @@ const INVENTORY_DECISION_META = {
   AWAITING_INBOUND: { label: "🔵 입고대기", chip: "mine" },
   OK: { label: "🟢 정상", chip: "approved" },
   DATA_CHECK: { label: "⚠️ 데이터확인", chip: "waiting" },
+  // 2026-09-13 승인 권한자가 발주·물류 정보 화면에서 등록한 재입고 제외 SKU - 추천·자동 발주·입고 초안 대상 아님
+  RESTOCK_EXCLUDED: { label: "⛔ 재입고 제외", chip: "excluded" },
 };
 const INVENTORY_DECISION_FETCH_TIMEOUT_MS = 95000; // 서버 timeout(90초)보다 살짝 여유
 
@@ -3887,6 +3889,7 @@ function inventoryDecisionLabel(d) {
 }
 
 function inventoryOutlookText(d) {
+  if (d.decision === "RESTOCK_EXCLUDED") return "재입고 안 함";
   if (d.decision === "DATA_CHECK") return "확인 필요";
   if ((d.live_stock ?? 0) <= 0) return d.incoming_qty ? "품절 · 입고대기" : "품절";
   if (d.days_of_stock_now != null) return `약 ${d.days_of_stock_now}일`;
@@ -3934,14 +3937,15 @@ async function viewInventoryDecisions() {
     </div>`;
   }
   inventoryVatStatus = await ProcurementInput.fetchVatStatus(sb, result.decisions.map(d => d.product_id));
-  const counts = { ORDER_NOW: 0, ORDER_SOON: 0, AWAITING_INBOUND: 0, OK: 0, DATA_CHECK: 0, ...result.summary };
+  const counts = { ORDER_NOW: 0, ORDER_SOON: 0, AWAITING_INBOUND: 0, OK: 0, DATA_CHECK: 0, RESTOCK_EXCLUDED: 0, ...result.summary };
   const filtered = inventoryDecisionFilter
     ? result.decisions.filter(d => d.decision === inventoryDecisionFilter)
     : result.decisions;
-  const priority = { ORDER_NOW: 0, DATA_CHECK: 1, ORDER_SOON: 2, AWAITING_INBOUND: 3, OK: 4 };
+  const priority = { ORDER_NOW: 0, DATA_CHECK: 1, ORDER_SOON: 2, AWAITING_INBOUND: 3, OK: 4, RESTOCK_EXCLUDED: 5 };
   const sorted = [...filtered].sort((a, b) => (priority[a.decision] ?? 9) - (priority[b.decision] ?? 9));
 
-  const summaryChips = Object.entries(INVENTORY_DECISION_META).map(([key, meta]) => `
+  // 재입고 제외는 0건이면 칩을 숨겨요(범용 기능 - 등록된 SKU 가 있을 때만 보임)
+  const summaryChips = Object.entries(INVENTORY_DECISION_META).filter(([key]) => key !== "RESTOCK_EXCLUDED" || counts[key]).map(([key, meta]) => `
     <button class="btn sm ${inventoryDecisionFilter === key ? "" : "secondary"}"
       onclick="inventoryDecisionFilter = (inventoryDecisionFilter === '${key}' ? null : '${key}'); route()">
       ${meta.label} ${counts[key] ?? 0}
@@ -3952,17 +3956,18 @@ async function viewInventoryDecisions() {
     const rowLabel = inventoryDecisionLabel(d);
     const stockText = inventoryStockText(d);
     const velocityText = inventoryVelocityText(d);
-    const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개${ProcurementInput.vatChipHtml(invVatOf(d))}` : "-";
+    const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개${ProcurementInput.vatChipHtml(invVatOf(d))}`
+      : inventoryReferenceShortageHtml(d);
     const sharedBadge = inventorySharedInventoryBadge(d);
     const mobileMeta = [stockText, velocityText, inventoryIncomingText(d)].join(" · ");
     return `
-      <tr data-clickable onclick="openInventoryDecisionDetail('${d.product_id}')">
+      <tr data-clickable onclick="openInventoryDecisionDetail('${esc(d.product_id || "")}','${esc(d.vendor_item_id || "")}')">
         <td class="idt-name">${esc(d.product_name || "")}${d.option_name ? `<br><small style="color:var(--text-sub);font-weight:400">${esc(d.option_name)}</small>` : ""}${sharedBadge}</td>
         <td class="idt-stock num">${esc(stockText)}</td>
         <td class="idt-velocity num">${velocityText}</td>
         <td class="idt-incoming">${inventoryIncomingText(d)}</td>
         <td class="idt-outlook">${esc(inventoryOutlookText(d))}</td>
-        <td><span class="chip ${meta.chip}">${esc(rowLabel)}</span></td>
+        <td><span class="chip ${meta.chip}">${esc(rowLabel)}</span>${inventoryAutomationBadge(d)}</td>
         <td class="idt-reco num">${recoText}</td>
         <td class="idt-mobile-meta">${esc(mobileMeta)} · ${esc(inventoryOutlookText(d))}</td>
       </tr>`;
@@ -4009,8 +4014,26 @@ async function inventoryCacheHealthHtml(result) {
   return `<p role="alert" style="font-size:12.5px;color:var(--amber);background:var(--amber-bg);border-radius:8px;padding:8px 10px;margin:0 0 10px">⚠️ ${lines.join("<br>⚠️ ")}</p>`;
 }
 
-function openInventoryDecisionDetail(productId) {
-  const d = (inventoryDecisionsCache?.decisions || []).find(x => x.product_id === productId);
+// 2026-09-13 [사용자 확정] 자동화 상태 배지 - 재고 판단(정상·입고대기 등)은 그대로 두고 옆에 따로 보여줘요.
+// 물류정보 입력 필요·SKU 사용 보류·조회 불가면 정식 추천 발주수량·자동 발주·WING 입고 초안이 막혀요(서버가 판단, 화면은 표시만).
+// 재입고 제외는 판정 칩 자체가 "⛔ 재입고 제외"라 배지를 또 붙이지 않아요.
+function inventoryAutomationBadge(d) {
+  if (!d.automation_blocked || !d.automation_label || d.decision === "RESTOCK_EXCLUDED") return "";
+  return `<br><span class="chip automation" style="margin-top:4px;display:inline-block" title="${esc(d.automation_reason || "")}">자동화: ${esc(d.automation_label)}</span>`;
+}
+
+// 2026-09-13 물류정보가 없어 정식 추천을 내지 않는 상품의 참고 부족 EA - 참고값·정식 추천수량 아님·기본 리드타임 7일 기준을 함께 표시
+function inventoryReferenceShortageHtml(d) {
+  if (d.recommended_order_qty_ea || !(Number(d.reference_shortage_ea) > 0)) return "-";
+  return `<span class="idt-ref" title="${esc(d.reference_shortage_note || "")}">참고값 ${fmt(d.reference_shortage_ea)}개</span>`
+    + `<br><small style="color:var(--text-sub);font-weight:400">정식 추천수량 아님 · 기본 리드타임 ${fmt(d.reference_lead_time_days)}일 기준</small>`;
+}
+
+// SKU(vendor_item_id)로 먼저 찾아요 - 한 상품에 SKU 가 둘 이상인 경우(독서대 등)에도 누른 SKU 의 상세가 열림
+function openInventoryDecisionDetail(productId, vendorItemId = "") {
+  const all = inventoryDecisionsCache?.decisions || [];
+  const d = (vendorItemId && all.find(x => String(x.vendor_item_id) === String(vendorItemId)))
+    || (productId && all.find(x => x.product_id === productId));
   if (!d) return;
   const meta = INVENTORY_DECISION_META[d.decision] || { label: d.decision, chip: "waiting" };
   const rowLabel = inventoryDecisionLabel(d);
@@ -4035,6 +4058,13 @@ function openInventoryDecisionDetail(productId) {
           </p>` : ""}
         ${isBase ? `<p style="font-size:12.5px;color:var(--text-sub);margin:0 0 8px">📦 이 상품은 다른 구성(세트)과 재고를 나누는 공유재고 기준상품이에요.</p>` : ""}
         <p style="font-size:13px">${esc(d.decision_reason || "")}</p>
+        ${d.decision === "RESTOCK_EXCLUDED" ? `<p style="font-size:12.5px;background:var(--gray-bg);border-radius:8px;padding:8px 10px;margin:0 0 8px">
+            ⛔ 재입고 제외 SKU${d.vendor_item_id ? ` <code>${esc(d.vendor_item_id)}</code>` : ""} - 추천 발주수량을 내지 않고 자동 발주·입고 초안 대상에서 빠져요.
+            상품과 과거 판매·재고·입고 이력은 그대로예요. 해제는 발주·물류 정보 화면에서 승인 권한자가 할 수 있어요.
+            ${d.underlying_decision ? `<br><span style="color:var(--text-sub)">제외하지 않았다면: ${esc((INVENTORY_DECISION_META[d.underlying_decision] || { label: d.underlying_decision }).label)}</span>` : ""}</p>` : ""}
+        ${d.automation_blocked && d.decision !== "RESTOCK_EXCLUDED" ? `<p style="font-size:12.5px;color:var(--amber);background:var(--amber-bg);border-radius:8px;padding:8px 10px;margin:0 0 8px">
+            ⚠️ 자동화: ${esc(d.automation_label || "")} - ${esc(d.automation_reason || "")}<br>
+            <span style="color:var(--text-sub)">재고 판단(${esc(inventoryDecisionLabel(d))})은 그대로예요. 정식 추천 발주수량·자동 발주·WING 입고 초안만 막혀요.</span></p>` : ""}
 
         <h4 style="font-size:13px;margin:14px 0 4px">현재</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
@@ -4052,7 +4082,7 @@ function openInventoryDecisionDetail(productId) {
           <tbody>${poRows}</tbody></table></div>` : `<p style="color:var(--text-sub);font-size:13px">유효한 기존 발주 없음</p>`}
         <p style="font-size:13px;margin-top:6px">현재 예상 입고일: <b>${d.incoming_date || "확정 안 됨"}</b> ${d.incoming_source ? `(${esc(inventoryIncomingSourceLabel(d.incoming_source))})` : ""}</p>
         ${d.wing_slot_date ? `<p style="font-size:12.5px;color:var(--text-sub)">WING 예약 슬롯: ${d.wing_slot_date}${d.wing_slot_date !== d.incoming_date ? " (실제 ETA와 다름 — WING 제출 이력으로 그대로 보존)" : ""}</p>` : ""}
-        ${!isChild ? `<button class="btn sm secondary" style="margin-top:6px" onclick="openIncomingRegisterModal('${d.product_id}')">📥 실제 발주/입고 정보 등록</button>` : ""}
+        ${!isChild && d.product_id ? `<button class="btn sm secondary" style="margin-top:6px" onclick="openIncomingRegisterModal('${d.product_id}')">📥 실제 발주/입고 정보 등록</button>` : ""}
 
         <h4 style="font-size:13px;margin:14px 0 4px">예측</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
@@ -4068,7 +4098,9 @@ function openInventoryDecisionDetail(productId) {
           <tr><td>리드타임 / 안전재고</td><td class="num">${d.lead_time_days ?? "-"}일 / ${d.safety_stock_days ?? "-"}일</td></tr>
           <tr><td>재발주점</td><td class="num">${d.reorder_point_qty != null ? Number(d.reorder_point_qty).toFixed(1) : "-"}개</td></tr>
           <tr><td>추천 발주수량</td><td class="num">${isChild ? "- (기준 상품에서 1건만 추천)" : d.recommended_order_qty_ea ? fmt(d.recommended_order_qty_ea) + "EA" + (d.recommended_order_qty_box ? ` / ${d.recommended_order_qty_box}BOX` : "") + (d.recommended_order_qty_plt ? ` / ${d.recommended_order_qty_plt}PLT` : "") : "-"}</td></tr>
+          ${d.reference_shortage_ea != null && !d.recommended_order_qty_ea ? `<tr><td>부족 예상(참고값)</td><td class="num">${fmt(d.reference_shortage_ea)}EA</td></tr>` : ""}
         </tbody></table></div>
+        ${d.reference_shortage_ea != null && !d.recommended_order_qty_ea ? `<p style="font-size:12px;color:var(--text-sub);margin-top:4px">${esc(d.reference_shortage_note || "")}</p>` : ""}
 
         ${d.recommended_order_qty_ea && invVatOf(d) && ProcurementInput.vatNeedsAck(invVatOf(d).status) ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ 참고용 추천 - ${esc(invVatOf(d).reason)}. 자동 발주안에는 들어가지 않아요. 경고를 확인한 뒤 직접 넣고 결재를 올려야 해요.</p>` : ""}
         ${d.data_quality_flags && d.data_quality_flags.length ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ ${d.data_quality_flags.map(esc).join(" · ")}</p>` : ""}
@@ -6197,6 +6229,7 @@ function buildInventoryPOProposal(decisions, orderDate, products, vatStatus = nu
     else if (seen.has(d.product_id)) reason = "동일 상품의 중복 추천 확인 필요";
     else if (d.supplier_name !== "리파코 주식회사") reason = "공급처 확인 필요";
     else if ((d.data_quality_flags || []).length) reason = "데이터 확인 필요";
+    else if (d.automation_blocked) reason = `${d.automation_label || "자동화 막힘"} - 정식 추천 발주수량 없음`;
     else if (Number(d.open_po_qty) > 0 || Number(d.incoming_qty) > 0 || (d.open_po_refs || []).length) reason = "기존 발주·입고 확인 필요";
     else if (!["UNIT", "BOX", "PLT"].includes(d.order_unit)) reason = "발주단위 확인 필요";
     else if (!Number.isSafeInteger(qty) || qty <= 0 || !Number.isFinite(cost) || cost <= 0) reason = "발주수량·단가 확인 필요";

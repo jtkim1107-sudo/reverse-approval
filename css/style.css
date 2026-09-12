@@ -338,6 +338,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .chip.waiting { background: var(--gray-bg); color: var(--text-sub); }
 .chip.mine { background: var(--brand-light); color: var(--brand); }
 .chip.gold { background: #fff3bf; color: #a67c00; }
+.chip.excluded { background: var(--gray-bg); color: var(--text); border: 1px dashed var(--text-sub); }   /* 2026-09-13 재입고 제외 */
+.chip.automation { background: var(--amber-bg); color: var(--amber); font-weight: 600; }   /* 2026-09-13 자동화 상태(물류정보 입력 필요 등) */
 
 /* ===== 진행 게이지 (공용) ===== */
 .bar { position: relative; height: 12px; background: var(--line); border-radius: 99px; overflow: hidden; }
@@ -835,3 +837,15 @@ table.rg-detail td code { word-break: break-all; }
 .po-vat-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 4px 0; }
 .po-vat-ack { display: flex; gap: 6px; align-items: center; font-weight: 600; margin-top: 4px; cursor: pointer; }
 .pi-vat-chip { margin-left: 4px; font-size: 11px; padding: 2px 7px; }
+/* 2026-09-13 부분 저장(물류정보 입력 필요) · 재입고·동기화 제외 SKU */
+.pi-logi { margin-top: 6px; }
+.pi-logi .chip { font-size: 11px; padding: 2px 8px; }
+.pi-logi:empty { display: none; }
+.pi-warn.pi-warn-wide { max-width: none; }
+.pi-ex-form { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+.pi-ex-reason { max-width: 260px; white-space: normal !important; font-size: 13px; }
+.pi-ex-act { white-space: nowrap; }
+.pi-ex-act .pi-link { margin-right: 6px; }
+.pi-ex-released { margin-top: 10px; font-size: 13px; }
+.pi-ex-released summary { cursor: pointer; color: var(--text-sub); margin-bottom: 4px; }
+.idt-ref { color: var(--text-sub); font-weight: 600; }
