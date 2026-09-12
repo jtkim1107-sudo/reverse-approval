@@ -356,5 +356,63 @@ console.log("\n=== 10. 단일 다품목 입고 · 대체된 합배송 그룹(202
   has(lbl, 'PLAN_SUPERSEDED: "새 요청으로 대체(이력)"', "이력 이벤트 이름");
 }
 
+console.log("\n=== 12. [2026-09-12 PO-016 취소] 발주서 자동입고 보류 · 재입고 승인 필요 · 운송비 검토 필요 ===");
+{
+  const auto = { purchase_order_id: "po-16", held: true, reason: "재입고 승인 필요 · WING 입고 취소 확인(요청 6869c83d · WING 1101897524588859392)",
+                 held_by: "자동: WING 입고 취소", held_at: "2026-09-12T02:00:00Z" };
+  const manual = { ...auto, reason: "PO 점검", held_by: "장팀장" };
+  has(IA.poHoldChipHtml(auto), "⏸ 재입고 승인 필요", "[핵심] 취소로 생긴 보류 칩 = '재입고 승인 필요'");
+  has(IA.poHoldChipHtml(manual), "⏸ 자동입고 보류", "사람이 건 보류 칩 = '자동입고 보류'");
+  has(IA.poHoldChipHtml(auto), "WING 입고 취소 확인", "칩 툴팁에 취소 사유");
+  check(IA.poHoldChipHtml({ ...auto, held: false }), "", "해제된 보류는 칩 없음");
+  check(IA.poHoldChipHtml(null), "", "보류 없음 → 칩 없음");
+  const ev = [{ action: "HOLD", reason: auto.reason, actor: "자동: WING 입고 취소", created_at: "2026-09-12T02:00:00Z" },
+              { action: "RELEASE", reason: "점검 끝", actor: "장팀장", created_at: "2026-09-11T02:00:00Z" }];
+  const secA = IA.poHoldSectionHtml(auto, { poId: "po-16", me: APPROVER, events: ev });
+  has(secA, "⏸ 재입고 승인 필요", "상세: 재입고 승인 필요"); has(secA, "시간이 지나도", "상세: 시간 경과로 재생성 안 함 안내");
+  has(secA, "[재입고 허용]을 눌러야 새 입고 요청", "상세: 재입고 허용해야 새 요청 안내");
+  has(secA, "savePoHold('po-16','RELEASE')\">재입고 허용</button>", "[핵심] 승인 권한자 → [재입고 허용] 버튼");
+  check(secA.indexOf("보류</b>") < secA.indexOf("해제(재입고 허용)</b>"), true, "보류 이력 최신순(보류 → 해제)");
+  has(secA, "자동: WING 입고 취소", "이력에 자동 보류 주체");
+  const secS = IA.poHoldSectionHtml(auto, { poId: "po-16", me: STAFF, events: ev });
+  hasNot(secS, "savePoHold", "[핵심] 일반 사용자 → 재입고 허용 버튼 없음"); has(secS, "재입고 허용는 승인 권한자만", "일반 사용자 안내");
+  has(IA.poHoldSectionHtml(manual, { poId: "po-16", me: APPROVER, events: [] }), "\">보류 해제</button>", "사람이 건 보류 → [보류 해제]");
+  has(IA.poHoldSectionHtml(null, { poId: "po-17", me: APPROVER, events: [] }), "savePoHold('po-17','HOLD')", "보류 없음 → 승인 권한자에게 '자동입고 보류'");
+  has(IA.poHoldSectionHtml(null, { poId: "po-17", me: APPROVER, migrated: false }), "DB 적용 대기", "마이그레이션 전 → DB 적용 대기(버튼 없음)");
+  const cancelled = { ...base, id: "pc", approval_status: "APPROVED", submit_status: "SUBMIT_ATTEMPTED", internal_status: "CANCELLED",
+                      coupang_shipment_id: "S1", coupang_inbound_plan_id: "1101897524588859392" };
+  const det = IA.detailHtml(cancelled, { ...C(STAFF), poHold: auto, events: [{ event_type: "SHIPMENT_CANCELLED_AFTER_SUCCESS", created_at: "2026-09-12T03:00:00Z", detail: {} }] });
+  has(det, "발주서 자동입고", "요청 상세: 발주서 자동입고 행"); has(det, "⏸ 재입고 승인 필요", "요청 상세: 재입고 승인 필요 칩");
+  has(det, "WING 입고 취소 확인", "[핵심] 요청 상세 이력: 'WING 입고 취소 확인'(기존 이벤트 이름)");
+  hasNot(IA.decisionHtml(cancelled, C(APPROVER)), "decideRgInbound", "취소된 요청 → 승인 버튼 없음");
+  check(T.rgActionsHtml(cancelled, new Set(), {}, { loadBlock: null, items: items2 }), "", "취소된 요청 → 제출·재계획·재시도 버튼 0개");
+  check(IA.GROUP_STATUS_LABEL.NEEDS_REVIEW, "검토 필요 · 실제 운송비 연결", "묶음 상태 NEEDS_REVIEW 이름");
+  const gchip = IA.shipmentGroupChipHtml({ id: "g-nr-12345", status: "NEEDS_REVIEW", total_transport_cost: 187000, members: [] });
+  has(gchip, "검토 필요 · 실제 운송비 연결", "[핵심] NEEDS_REVIEW 묶음 칩"); has(gchip, "운송비 합산 안 함", "NEEDS_REVIEW 묶음 운송비 합산 안 함");
+  has(IA.shipmentGroupChipHtml({ id: "g-v-12345", status: "VOID_PENDING_REBUILD", total_transport_cost: 187000, members: [] }), "무효 · 재작성 대기",
+      "VOID_PENDING_REBUILD 묶음 칩(기존)");
+
+  // app.js 실제 함수: 보류·재입고 허용은 DB 함수만, 사유 없는 보류는 호출 안 함, 확인창을 거침
+  const grab2 = name => { const m = app.match(new RegExp(`\\n(async )?function ${name}\\([\\s\\S]*?\\n}`)); if (!m) throw new Error(name); return m[0]; };
+  const rpcCalls = [], confirms = [];
+  const els2 = { "po-hold-reason": { value: "", focus: () => {} }, "po-hold-section": { innerHTML: "" } };
+  const qh = data => { const o = { select: () => o, eq: () => o, in: () => o, order: () => o, limit: async () => ({ data: [] }), then: r => r({ data }) }; return o; };
+  const hctx = vm.createContext({ console, InboundApproval: IA, me: APPROVER, confirm: m => (confirms.push(m), true), event: undefined,
+    toast: () => {}, document: { getElementById: id => els2[id] || null },
+    sb: { rpc: async (fn, args) => { rpcCalls.push([fn, args]); return { error: null }; }, from: () => qh([]) } });
+  vm.runInContext("let poHoldById = {};\n" + grab2("loadPoHolds") + "\n" + grab2("loadPOHoldSection") + "\n" + grab2("savePoHold")
+    + "\n;globalThis.__h = { savePoHold };", hctx);
+  await hctx.__h.savePoHold("po-16", "HOLD");
+  check(rpcCalls.length, 0, "보류 사유 없으면 DB 함수 호출 안 함");
+  await hctx.__h.savePoHold("po-16", "RELEASE");
+  check(rpcCalls[0], ["fn_release_po_inbound_hold", { p_po_id: "po-16", p_reason: null }], "[핵심] 재입고 허용 = fn_release_po_inbound_hold(사유 선택)");
+  has(confirms[0], "재입고를 허용할까요?", "재입고 허용 전 확인창");
+  els2["po-hold-reason"].value = "  PO 점검 ";
+  await hctx.__h.savePoHold("po-16", "HOLD");
+  check(rpcCalls[1], ["fn_set_po_inbound_hold", { p_po_id: "po-16", p_reason: "PO 점검" }], "수동 보류 = fn_set_po_inbound_hold(p_po_id, p_reason)");
+  hasNot(grab2("savePoHold"), 'from("po_inbound_holds").update', "화면이 보류 테이블을 직접 바꾸지 않음");
+  has(read("./js/inbound_freight.js"), 'NEEDS_REVIEW: "검토 필요 · 실제 운송비 연결(입고 취소)"', "운송비 기록 상태 NEEDS_REVIEW 이름");
+}
+
 console.log(failures ? `\n=== 결과: 실패 ${failures}건 ===` : "\n=== 결과: 전체 통과 ===");
 process.exit(failures ? 1 : 0);

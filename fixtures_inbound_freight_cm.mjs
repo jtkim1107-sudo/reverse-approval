@@ -291,5 +291,19 @@ console.log("\n=== 6. 대체된 기록(합배송 → 단일 다품목 입고, 20
   check(vm.runInContext(`poFreightRecord("${PO16}")`, ctx).cost.id, "fc-new", "발주서·입고 처리는 ACTIVE 기록을 봄");
 }
 
+console.log("\n=== 7. [2026-09-12] 입고 취소 뒤 무효(VOID_PENDING_REBUILD)·검토 필요(NEEDS_REVIEW) 기록은 합산 안 함 ===");
+{
+  const nr = cost({ id: "fc-nr", status: "NEEDS_REVIEW", basis: "ACTUAL", carrier_invoice_ref: "INV-1", invoice_date: "2026-09-16",
+                    shipment_group_id: "gnr-1234-x" });
+  const r = setup({ today: "2026-10-31", buys: buysAll, sales: salesOct, costs: [nr], allocations: allocs(113333, 56667, "fc-nr") });
+  check([r.records.length, r.bySale.size, r.history.map(x => x.id)], [0, 0, ["fc-nr"]], "[핵심] NEEDS_REVIEW 기록은 공헌이익 차감 0 · 이력으로만");
+  const q3 = d => d >= "2026-07-01" && d <= "2026-09-30";
+  const v = ctx.InboundFreight.vatRows([nr], q3);
+  check([v.estimateCount, v.estimateVat], [0, 0], "[핵심] 부가세(예상)에도 안 들어감");
+  check(ctx.InboundFreight.isActive(nr), false, "isActive = false");
+  const card = vm.runInContext("inboundFreightCardHtml", ctx)("2026-10");
+  has(card, "검토 필요 · 실제 운송비 연결(입고 취소)", "카드: 이력에 '검토 필요' 표시");
+}
+
 console.log(`\n=== 결과: ${failures ? `실패 ${failures}건` : "전체 통과"} ===`);
 process.exit(failures ? 1 : 0);

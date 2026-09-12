@@ -6070,6 +6070,18 @@ async function viewReport() {
    발주(예정) 과 매입(실적)은 분리한다. 발주만 하고 안 들어온 물건이 재고로 잡히면 안 되기 때문.
    흐름: 작성 → 결재 → 발주 완료 → 입고 처리(부분 가능) → 매입 자동 생성 */
 let poCache = [], poItemCache = {};
+// 2026-09-12 [PO-016 취소] 발주서 자동입고 보류(po_inbound_holds, held=true 행만) - 제출 뒤 WING 취소가 확인되면
+// 입고 대사 폴러가 "재입고 승인 필요"로 자동 보류해요. 테이블이 아직 없으면(DB 적용 전) 조용히 빈 값.
+let poHoldById = {};
+async function loadPoHolds(poIds = null) {
+  try {
+    let q = sb.from("po_inbound_holds").select("purchase_order_id,held,reason,held_by,held_at,released_by,released_at").eq("held", true);
+    if (poIds) q = q.in("purchase_order_id", poIds);
+    const { data, error } = await q;
+    if (error) return {};
+    return Object.fromEntries((data || []).map(h => [h.purchase_order_id, h]));
+  } catch (e) { return {}; }
+}
 
 const PO_STATUS = {
   progress: { label: "결재 대기", chip: "progress" },
@@ -6084,11 +6096,13 @@ const poChip = s => { const t = PO_STATUS[s] || PO_STATUS.progress;
   return `<span class="chip ${t.chip}">${t.label}</span>`; };
 
 async function loadPOs() {
-  const [poRes, itRes] = await Promise.all([
+  const [poRes, itRes, holds] = await Promise.all([
     sb.from("purchase_orders").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("purchase_order_items").select("*"),
+    loadPoHolds(),
   ]);
   poCache = poRes.data || [];
+  poHoldById = holds;
   poItemCache = {};
   (itRes.data || []).forEach(it => { (poItemCache[it.po_id] ||= []).push(it); });
   return poCache;
@@ -6121,7 +6135,7 @@ async function viewPurchaseOrders() {
         <thead><tr><th>발주번호</th><th>거래처</th><th>입고처</th><th class="num">발주 수량</th><th class="num">미입고</th><th>상태</th><th></th></tr></thead>
         <tbody>${open.map(p => `
           <tr>
-            <td><b>${esc(p.po_no)}</b><br><small style="color:var(--text-sub)">${esc(p.date)}</small></td>
+            <td><b>${esc(p.po_no)}</b> ${InboundApproval.poHoldChipHtml(poHoldById[p.id])}<br><small style="color:var(--text-sub)">${esc(p.date)}</small></td>
             <td>${esc(p.supplier)}</td>
             <td>${p.deliver_to === "쿠팡" ? '<span class="chip mine">쿠팡 직송</span>' : "자사창고"}</td>
             <td class="num">${fmt(poOrdered(p.id))}</td>
@@ -6139,7 +6153,7 @@ async function viewPurchaseOrders() {
         <thead><tr><th>발주번호</th><th>발주일</th><th>거래처</th><th>입고처</th><th class="num">금액</th><th class="num">운송비(예상)</th><th>상태</th><th>기안</th><th></th></tr></thead>
         <tbody>${poCache.length ? poCache.map(p => `
           <tr class="clickable" onclick="openPODetail('${p.id}')">
-            <td><b>${esc(p.po_no)}</b></td>
+            <td><b>${esc(p.po_no)}</b> ${InboundApproval.poHoldChipHtml(poHoldById[p.id])}</td>
             <td>${esc(p.date)}</td>
             <td>${esc(p.supplier)}</td>
             <td>${p.deliver_to === "쿠팡" ? "쿠팡 직송" : "자사창고"}</td>
@@ -6384,7 +6398,7 @@ function openPODetail(id) {
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:820px;width:96vw">
         <div class="card-head" style="margin-bottom:10px">
-          <h3>${esc(p.po_no)}</h3>${poChip(p.status)}
+          <h3>${esc(p.po_no)}</h3>${poChip(p.status)} ${InboundApproval.poHoldChipHtml(poHoldById[p.id])}
         </div>
         <div class="table-wrap"><table><tbody>
           <tr><td style="width:110px;color:var(--text-sub)">발주일</td><td>${esc(p.date)}</td>
@@ -6395,6 +6409,7 @@ function openPODetail(id) {
               <td style="color:var(--text-sub)">메모</td><td>${esc(p.memo) || "—"}</td></tr>
         </tbody></table></div>
         ${poFreightPanelHtml(p)}
+        <div id="po-hold-section"></div>
 
         <h3 style="font-size:15px;margin:16px 0 8px">품목</h3>
         <div class="table-wrap"><table>
@@ -6446,6 +6461,39 @@ function openPODetail(id) {
     </div>`;
   loadPOFreightReview(p.id, p.freight_est);
   loadPOLoadFillProposal(p.id, items);
+  loadPOHoldSection(p.id);
+}
+
+// 2026-09-12 [PO-016 취소] 발주서 자동입고 보류 - 보류된 발주서는 자동 폴러가 WING 초안을 새로 만들지 않아요(다른 발주서는 그대로).
+// [재입고 허용]·보류는 DB 함수만(승인 권한자·사유·이력은 DB 가 판정). 전역 스위치는 건드리지 않아요.
+async function loadPOHoldSection(poId) {
+  const [{ data: rows, error }, { data: events }] = await Promise.all([
+    sb.from("po_inbound_holds").select("*").eq("purchase_order_id", poId),
+    sb.from("po_inbound_hold_events").select("action,reason,actor,created_at").eq("purchase_order_id", poId)
+      .order("created_at", { ascending: false }).limit(20),
+  ]);
+  const el = document.getElementById("po-hold-section");
+  if (!el) return;   // 모달이 이미 닫혔으면 아무것도 안 함
+  el.innerHTML = InboundApproval.poHoldSectionHtml((rows || [])[0] || null, { poId, me, migrated: !error, events: events || [] });
+}
+
+async function savePoHold(poId, action) {
+  const input = document.getElementById("po-hold-reason");
+  const reason = (input?.value || "").trim();
+  if (action === "HOLD" && !reason) { toast("보류 사유를 입력해 주세요"); input?.focus(); return; }
+  if (!confirm(action === "HOLD"
+      ? "이 발주서의 자동 입고 초안 생성을 보류할까요?\n(이미 만들어진 WING 초안·요청은 건드리지 않아요)"
+      : "재입고를 허용할까요?\n자동 폴러가 이 발주서로 새 WING 입고 초안·승인 요청을 만들 수 있게 돼요(최종 제출은 승인 버튼으로만).")) return;
+  const btn = event?.target; if (btn) btn.disabled = true;
+  const fn = action === "HOLD" ? "fn_set_po_inbound_hold" : "fn_release_po_inbound_hold";
+  const { error } = await sb.rpc(fn, { p_po_id: poId, p_reason: reason || null });
+  if (error) {
+    if (btn) btn.disabled = false;
+    return toast(`${action === "HOLD" ? "보류" : "재입고 허용"} 실패: ${error.message || error.code}`);
+  }
+  toast(action === "HOLD" ? "자동입고 보류됨 - 자동 폴러가 이 발주서로 WING 초안을 만들지 않아요" : "재입고 허용됨 - 다음 자동 주기부터 새 입고 요청을 만들 수 있어요");
+  poHoldById = await loadPoHolds();
+  loadPOHoldSection(poId);
 }
 
 // 2026-09-09 [운송비 freight_est 연결, 사용자 명시] TRUCK 자동입고가 이미 실제 WING
@@ -8838,7 +8886,8 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
     items.forEach((it, i) => rows.push(`
       <tr data-rg-plan="${esc(p.id)}">
         <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}${
-          i === 0 ? `${multiNote}${retryNote}${forwardNote}${ctx.shipmentGroup ? `<br>${InboundApproval.shipmentGroupChipHtml(ctx.shipmentGroup)}` : ""}` : ""}</td>
+          i === 0 ? `${multiNote}${retryNote}${forwardNote}${ctx.shipmentGroup ? `<br>${InboundApproval.shipmentGroupChipHtml(ctx.shipmentGroup)}` : ""}${
+            ctx.poHold ? `<br>${InboundApproval.poHoldChipHtml(ctx.poHold)}` : ""}` : ""}</td>
         ${i === 0 ? `<td${span}>${esc(p.supplier)}</td>` : ""}
         <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
         <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
@@ -8961,8 +9010,11 @@ async function loadRgShipmentGroupForPlan(p) {
 async function loadRgPurchaseOrders(plans) {
   const ids = [...new Set(plans.map(p => p.purchase_order_id).filter(Boolean))];
   if (!ids.length) return {};
-  const { data } = await sb.from("purchase_orders").select("id,po_no,drafter_id").in("id", ids);
-  return Object.fromEntries((data || []).map(r => [r.id, r]));
+  const [{ data }, holds] = await Promise.all([
+    sb.from("purchase_orders").select("id,po_no,drafter_id").in("id", ids),
+    loadPoHolds(ids),   // 2026-09-12 발주서 자동입고 보류(재입고 승인 필요) 칩
+  ]);
+  return Object.fromEntries((data || []).map(r => [r.id, { ...r, hold: holds[r.id] || null }]));
 }
 
 function rgPlanCtx(p, d) {
@@ -8972,7 +9024,7 @@ function rgPlanCtx(p, d) {
   return {
     me, items, vehicleType, migrated: d.migrated, supersededIds: d.supersededIds,
     loadBlock: InboundApproval.loadBlock(p, items),
-    poDrafterId: po.drafter_id || null, poNo: po.po_no || null,
+    poDrafterId: po.drafter_id || null, poNo: po.po_no || null, poHold: po.hold || null,
     child: d.retryByOriginId[p.id] || null,
     original: p.resubmission_of_plan_id ? d.plansById[p.resubmission_of_plan_id] || null : null,
     shipmentGroup: rgGroupForCtx(p, (d.shipmentGroupByPlan || {})[p.id] || null),
@@ -9091,15 +9143,16 @@ async function openRgPlanDetail(planId) {
   ]);
   if (!p) return toast("입고 요청을 찾을 수 없어요");
   await CoupangCenters.load(sb);
-  const [po, original] = await Promise.all([
+  const [po, poHold, original] = await Promise.all([
     p.purchase_order_id ? sb.from("purchase_orders").select("po_no,drafter_id").eq("id", p.purchase_order_id).maybeSingle().then(r => r.data) : null,
+    p.purchase_order_id ? loadPoHolds([p.purchase_order_id]).then(h => h[p.purchase_order_id] || null) : null,
     p.resubmission_of_plan_id ? sb.from("inbound_plans").select("id,approval_status,rejection_reason").eq("id", p.resubmission_of_plan_id).maybeSingle().then(r => r.data) : null,
   ]);
   const child = (kids || [])[0] || null;
   const ctx = {
     me, items: items || [], events: events || [], vehicleType: vehicles[planId] ?? null,
     supersededIds: new Set(child ? [planId] : []), child, original,
-    poNo: po?.po_no || null, poDrafterId: po?.drafter_id || null,
+    poNo: po?.po_no || null, poDrafterId: po?.drafter_id || null, poHold,
     migrated: Object.prototype.hasOwnProperty.call(p, "rejection_reason"),
     shipmentGroup: rgGroupForCtx(p, await loadRgShipmentGroupForPlan(p)),
   };

@@ -33,8 +33,9 @@
   //   records  기록별 상태·배분·판매/재고 내역(화면용)
   // 2026-09-11 기록 상태: ACTIVE 만 계산(공헌이익·재고원가·부가세). VOID_PENDING_REBUILD(무효·재작성 대기)·
   // SUPERSEDED(새 입고로 대체됨)는 이력(history)으로만 돌려줘요 - 같은 트럭 운송비를 두 번 세지 않게.
+  // 2026-09-12 NEEDS_REVIEW(입고 취소 뒤 실제 운송비·청구서가 붙어 있어 자동 무효화하지 않음)도 계산에서 빼고 이력으로만.
   const isActive = c => (c.status || "ACTIVE") === "ACTIVE";
-  const STATUS_LABEL = { VOID_PENDING_REBUILD: "무효 · 재작성 대기", SUPERSEDED: "대체됨" };
+  const STATUS_LABEL = { VOID_PENDING_REBUILD: "무효 · 재작성 대기", SUPERSEDED: "대체됨", NEEDS_REVIEW: "검토 필요 · 실제 운송비 연결(입고 취소)" };
 
   function compute({ costs: allCosts = [], allocations = [], buys = [], sales = [], transfers = [],
                      products = [], isCoupangSale = () => true, today = "9999-12-31" } = {}) {

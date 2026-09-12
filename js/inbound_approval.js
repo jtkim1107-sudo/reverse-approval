@@ -7,7 +7,10 @@
    - 적재 기준(2026-09-11 확정, 차량 종류와 무관): TRUCK 전체 PLT 합계가 1PLT면 "승인 불가 · 1PLT 단독 입고",
      1PLT 미만이면 "승인 불가 · 1PLT 미만 불완전 적재", PLT 정보가 없거나 불확실하면 DATA_CHECK.
      승인 버튼 잠금, 거절 사유 기본값도 같은 문구. 판정표는 DB·파이썬(inbound_load_rule.py)과 같아요.
-   - 거절은 끝 상태. 수정은 [수정 후 재요청] → 새 승인 요청(원본과 연결). WING 취소 API는 부르지 않아요. */
+   - 거절은 끝 상태. 수정은 [수정 후 재요청] → 새 승인 요청(원본과 연결). WING 취소 API는 부르지 않아요.
+   - 2026-09-12 [PO-016 취소] 발주서 자동입고 보류(HOLD): 제출 뒤 WING 취소가 확인되면 입고 대사 폴러가 발주서를
+     "재입고 승인 필요"로 자동 보류해요(자동 폴러가 새 WING 초안을 만들지 않음 - 시간이 지나도). 승인 권한자가
+     [재입고 허용]을 눌러야 풀려요(DB fn_release_po_inbound_hold). 수동 보류는 fn_set_po_inbound_hold. */
 (function (root) {
   "use strict";
 
@@ -63,6 +66,45 @@
   const singlePltBlocked = (p, items) => !!loadBlock(p, items);
 
   const isSuperseded = (p, supersededIds) => !!supersededIds && supersededIds.has(p.id);
+
+  // 2026-09-12 발주서 자동입고 보류 - hold = po_inbound_holds 행({held, reason, held_by, held_at, released_by, released_at})
+  const REINBOUND_PREFIX = "재입고 승인 필요";
+  const isReinboundHold = hold => !!hold && hold.held === true && String(hold.reason || "").startsWith(REINBOUND_PREFIX);
+  function poHoldChipHtml(hold) {
+    if (!hold || hold.held !== true) return "";
+    const who = [hold.held_by, hold.held_at ? fmtKst(hold.held_at) : null].filter(Boolean).join(" · ");
+    const label = isReinboundHold(hold) ? "⏸ 재입고 승인 필요" : "⏸ 자동입고 보류";
+    return `<span class="chip po-hold" title="${escHtml(`${hold.reason || ""}${who ? ` (${who})` : ""} - 자동 입고 초안 생성 안 함`)}">${label}</span>`;
+  }
+  const HOLD_ACTION_LABEL = { HOLD: "보류", RELEASE: "해제(재입고 허용)" };
+  // 발주서 상세의 보류 영역. ctx = { poId, me, migrated, events }
+  function poHoldSectionHtml(hold, ctx = {}) {
+    const me = ctx.me || {};
+    if (ctx.migrated === false) {
+      return `<div class="po-hold-box"><b>⏸ 자동입고 보류</b> <span class="chip waiting">DB 적용 대기</span>
+        <br><small class="rg-muted">보류 기능 마이그레이션(20260912_po_inbound_hold.sql) 적용 뒤에 쓸 수 있어요.</small></div>`;
+    }
+    const held = !!hold && hold.held === true;
+    const reinbound = isReinboundHold(hold);
+    const events = (ctx.events || []).slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    const status = held
+      ? `${poHoldChipHtml(hold)} 사유 <b>${escHtml(hold.reason || "-")}</b>`
+        + `<br><small class="rg-muted">${escHtml([hold.held_by, fmtKst(hold.held_at)].filter(Boolean).join(" · "))} - 자동 폴러가 이 발주서로 WING 초안을 만들지 않아요(시간이 지나도).`
+        + ` ${reinbound ? "[재입고 허용]을 눌러야 새 입고 요청이 만들어져요." : ""}</small>`
+      : `<span class="chip approved">자동입고 정상</span>${hold && hold.released_at
+          ? ` <small class="rg-muted">마지막 해제 ${escHtml([hold.released_by, fmtKst(hold.released_at)].filter(Boolean).join(" · "))}</small>` : ""}`;
+    const pid = escHtml(ctx.poId || "");
+    const releaseLabel = reinbound ? "재입고 허용" : "보류 해제";
+    const form = me.approver === true
+      ? `<div class="po-hold-form"><input id="po-hold-reason" class="input" maxlength="300" placeholder="${held ? `${releaseLabel} 사유(선택)` : "보류 사유(필수)"}">
+          <button class="btn sm ${held ? "green" : "danger"}" onclick="savePoHold('${pid}','${held ? "RELEASE" : "HOLD"}')">${held ? releaseLabel : "자동입고 보류"}</button></div>`
+      : `<small class="rg-muted">${held ? `${releaseLabel}는` : "보류 설정은"} 승인 권한자만 할 수 있어요.</small>`;
+    const hist = events.length
+      ? `<ol class="rg-events">${events.map(e => `<li><span class="rg-ev-time">${escHtml(fmtKst(e.created_at))}</span> <b>${escHtml(HOLD_ACTION_LABEL[e.action] || e.action)}</b>`
+          + ` <span class="rg-ev-note">${escHtml([e.reason, e.actor].filter(Boolean).join(" · "))}</span></li>`).join("")}</ol>`
+      : `<p class="rg-muted">보류 이력이 없어요.</p>`;
+    return `<div class="po-hold-box"><b>⏸ 자동입고 보류</b> ${status}${form}<h4 class="rg-detail-h">보류 이력</h4>${hist}</div>`;
+  }
 
   function canApprove(p, ctx = {}) {
     return p.approval_status === "PENDING_APPROVAL" && p.preflight_status === "PASSED"
@@ -180,8 +222,9 @@
   // 운송비는 묶음 전체에 한 번만: 요청별 개별 제안 운송비는 합산하지 않아요(각각 승인해도 한 번).
   const won = v => `₩${Number(v || 0).toLocaleString("ko-KR")}`;
   // 2026-09-11 묶음 상태: ACTIVE(사용 중) / VOID_PENDING_REBUILD(무효·재작성 대기) / SUPERSEDED(새 입고로 대체됨).
-  // 무효·대체된 묶음의 운송비는 어디에도 더하지 않아요(이력으로만 표시).
-  const GROUP_STATUS_LABEL = { VOID_PENDING_REBUILD: "무효 · 재작성 대기", SUPERSEDED: "대체됨" };
+  // 2026-09-12 NEEDS_REVIEW: 입고가 취소됐는데 실제 운송비·청구서가 붙어 있어 자동 무효화하지 않은 묶음(사람 확인).
+  // 무효·대체·검토 필요 묶음의 운송비는 어디에도 더하지 않아요(이력으로만 표시).
+  const GROUP_STATUS_LABEL = { VOID_PENDING_REBUILD: "무효 · 재작성 대기", SUPERSEDED: "대체됨", NEEDS_REVIEW: "검토 필요 · 실제 운송비 연결" };
   function shipmentGroupSummary(group) {
     if (!group) return null;
     const members = group.members || [];
@@ -258,6 +301,7 @@
       ["WING 초안 id", p.coupang_inbound_plan_id ? `<code>${escHtml(p.coupang_inbound_plan_id)}</code>` : "-"],
     ];
     if (ctx.shipmentGroup) rows.splice(6, 0, ["운송 묶음", shipmentGroupDetailHtml(ctx.shipmentGroup, p)]);
+    if (ctx.poHold) rows.splice(1, 0, ["발주서 자동입고", `${poHoldChipHtml(ctx.poHold)} <small class="rg-muted">${escHtml(ctx.poHold.reason || "")}</small>`]);
     if (p.coupang_shipment_id) rows.push(["shipmentId", `<code>${escHtml(p.coupang_shipment_id)}</code>`]);
     if (p.approved_by_name) rows.push(["승인자", `${escHtml(p.approved_by_name)} · ${escHtml(fmtKst(p.approved_at))}`]);
     if (p.approval_status === "REJECTED") {
@@ -319,5 +363,6 @@
     defaultRejectReason, defaultRejectCode, approvalCellHtml, decisionHtml, detailHtml, rejectionInfoHtml,
     csvRows, toCsv, fmtKst, palletSum,
     shipmentGroupSummary, shipmentGroupChipHtml, shipmentGroupDetailHtml, itemsLabel, qtySum,
+    poHoldChipHtml, poHoldSectionHtml, isReinboundHold, GROUP_STATUS_LABEL,
   };
 })(typeof window !== "undefined" ? window : globalThis);
