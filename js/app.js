@@ -3835,6 +3835,11 @@ async function fetchInventoryDecisions(forceRefresh = false) {
 
 let inventoryDecisionsCache = null; // fetch 결과 원본 - 상세 패널이 재조회 없이 여기서 찾아 씀
 let inventoryDecisionFilter = null; // 요약 칩 클릭 필터(5단계 중 하나 또는 null=전체)
+// 2026-09-12 VAT 확인 대기 - 서버 판단에 procurement_vat_status 가 있으면 그걸, 없으면 화면이 직접 읽은 값(js/procurement_input.js)
+let inventoryVatStatus = {};
+const invVatOf = d => d.procurement_vat_status
+  ? { status: d.procurement_vat_status, reason: d.procurement_vat_reason || "" }
+  : inventoryVatStatus[d.product_id];
 // 2026-09-08 [재고·발주 성능개선 3A, 사용자 명시] stockFlowRefresh()가 켜고, 다음
 // viewInventoryDecisions() 진입이 소비하자마자 끔(1회성) - [새로고침] 버튼을 눌렀을
 // 때만 서버에 강제 재조회를 요청하기 위한 플래그.
@@ -3928,6 +3933,7 @@ async function viewInventoryDecisions() {
       <button class="btn sm secondary" onclick="stockFlowRefresh()">🔄 다시 시도</button>
     </div>`;
   }
+  inventoryVatStatus = await ProcurementInput.fetchVatStatus(sb, result.decisions.map(d => d.product_id));
   const counts = { ORDER_NOW: 0, ORDER_SOON: 0, AWAITING_INBOUND: 0, OK: 0, DATA_CHECK: 0, ...result.summary };
   const filtered = inventoryDecisionFilter
     ? result.decisions.filter(d => d.decision === inventoryDecisionFilter)
@@ -3946,7 +3952,7 @@ async function viewInventoryDecisions() {
     const rowLabel = inventoryDecisionLabel(d);
     const stockText = inventoryStockText(d);
     const velocityText = inventoryVelocityText(d);
-    const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개` : "-";
+    const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개${ProcurementInput.vatChipHtml(invVatOf(d))}` : "-";
     const sharedBadge = inventorySharedInventoryBadge(d);
     const mobileMeta = [stockText, velocityText, inventoryIncomingText(d)].join(" · ");
     return `
@@ -4064,6 +4070,7 @@ function openInventoryDecisionDetail(productId) {
           <tr><td>추천 발주수량</td><td class="num">${isChild ? "- (기준 상품에서 1건만 추천)" : d.recommended_order_qty_ea ? fmt(d.recommended_order_qty_ea) + "EA" + (d.recommended_order_qty_box ? ` / ${d.recommended_order_qty_box}BOX` : "") + (d.recommended_order_qty_plt ? ` / ${d.recommended_order_qty_plt}PLT` : "") : "-"}</td></tr>
         </tbody></table></div>
 
+        ${d.recommended_order_qty_ea && invVatOf(d) && ProcurementInput.vatNeedsAck(invVatOf(d).status) ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ 참고용 추천 - ${esc(invVatOf(d).reason)}. 자동 발주안에는 들어가지 않아요. 경고를 확인한 뒤 직접 넣고 결재를 올려야 해요.</p>` : ""}
         ${d.data_quality_flags && d.data_quality_flags.length ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ ${d.data_quality_flags.map(esc).join(" · ")}</p>` : ""}
         <p style="font-size:11px;color:var(--text-sub);margin-top:8px">계산시각: ${d.calculated_at || "-"}</p>
 
@@ -6173,8 +6180,10 @@ async function viewPurchaseOrders() {
 
 // A fresh canonical inventory decision supplies quantities; this layer only
 // prepares an editable form. No PO, approval, WING request or notification here.
-function buildInventoryPOProposal(decisions, orderDate, products) {
-  const lines = [], blocked = [];
+// 2026-09-12 VAT 확인 대기: vatStatus[product_id].status 가 CONFIRMED 인 상품만 발주안에 자동으로 넣어요.
+// 그 밖(미확인·조회 실패·상태 없음)은 needsAck 로 따로 보여주고, 사람이 경고를 확인하고 직접 추가해야 해요.
+function buildInventoryPOProposal(decisions, orderDate, products, vatStatus = null) {
+  const lines = [], blocked = [], needsAck = [];
   const seen = new Set();
   for (const d of decisions) {
     if (d.decision !== "ORDER_NOW" || d.shared_inventory?.role === "child") continue;
@@ -6199,12 +6208,15 @@ function buildInventoryPOProposal(decisions, orderDate, products) {
     const due = new Date(orderDate + "T00:00:00Z");
     due.setUTCDate(due.getUTCDate() + Math.floor(stock / speed) - 7);
     const dueDate = due.toISOString().slice(0, 10);
-    lines.push({ product_id: d.product_id, qty, unit_cost: cost,
-      dueDate, urgent: dueDate < orderDate, decision: d });
+    const line = { product_id: d.product_id, qty, unit_cost: cost, dueDate, urgent: dueDate < orderDate, decision: d };
+    const vat = vatStatus ? vatStatus[d.product_id] : null;
+    if (!vat || vat.status !== "CONFIRMED") needsAck.push({ ...line, vat: vat || { status: "VAT_STATUS_UNKNOWN", reason: "VAT 확인 상태 없음" } });
+    else lines.push(line);
   }
   // Duplicate physical products must not produce even one ambiguous line.
   const duplicates = new Set(blocked.filter(b => b.reason === "동일 상품의 중복 추천 확인 필요").map(b => b.product_id));
-  return { lines: lines.filter(l => !duplicates.has(l.product_id)), blocked };
+  return { lines: lines.filter(l => !duplicates.has(l.product_id)), blocked,
+           needsAck: needsAck.filter(l => !duplicates.has(l.product_id)) };
 }
 
 async function openInventoryPOModal() {
@@ -6213,9 +6225,10 @@ async function openInventoryPOModal() {
   try {
     const result = await fetchInventoryDecisions(true);
     if (!result.ok) return toast("발주안 계산 실패: " + result.error);
-    const proposal = buildInventoryPOProposal(result.decisions, today(), productPickList("buy"));
+    const vat = await ProcurementInput.fetchVatStatus(sb, result.decisions.map(d => d.product_id));
+    const proposal = buildInventoryPOProposal(result.decisions, today(), productPickList("buy"), vat);
     const checks = result.decisions.filter(d => d.decision === "DATA_CHECK").length;
-    if (!proposal.lines.length) {
+    if (!proposal.lines.length && !proposal.needsAck.length) {
       const reasons = proposal.blocked.map(b => `${b.name}: ${b.reason}`).join(" / ");
       return toast(reasons || `지금 발주할 품목이 없습니다. 데이터 확인 ${checks}건은 재고·발주 화면에서 확인해 주세요.`);
     }
@@ -6230,9 +6243,12 @@ async function openInventoryPOModal() {
 async function validateInventoryPOBeforeSave(items) {
   const result = await fetchInventoryDecisions(true);
   if (!result.ok) throw new Error("최신 재고 확인 실패: " + result.error);
-  const proposal = buildInventoryPOProposal(result.decisions, today(), productPickList("buy"));
+  const vat = await ProcurementInput.fetchVatStatus(sb, result.decisions.map(d => d.product_id));
+  const proposal = buildInventoryPOProposal(result.decisions, today(), productPickList("buy"), vat);
   for (const item of items) {
-    const fresh = proposal.lines.find(l => l.product_id === item.product_id);
+    // VAT 확인 대기 품목은 사람이 경고를 보고 직접 넣은 것만(needsAck) - 저장 때 VAT 경고 확인을 한 번 더 받아요
+    const fresh = proposal.lines.find(l => l.product_id === item.product_id)
+      || proposal.needsAck.find(l => l.product_id === item.product_id);
     if (!fresh || fresh.qty !== item.qty || fresh.unit_cost !== item.unit_cost) {
       throw new Error("판매·재고 또는 발주 조건이 바뀌었습니다. 최신 발주안을 다시 작성해 주세요.");
     }
@@ -6248,7 +6264,13 @@ function openPOModal(proposal = null) {
         <h3>📦 발주서 작성</h3>
         ${proposal ? `<p>최신 판매·재고와 기존 발주를 확인한 발주안입니다. 수량은 등록된 발주단위에 맞춘 추천값입니다.</p>
           <div id="po-assist-summary">${proposal.lines.map(l => `<p>${esc(prodName(l.product_id))}: ${fmt(l.qty)}개 · 납품희망일 ${esc(l.dueDate)}${l.urgent ? " — 기준일 경과, 가능한 긴급 입고일 확인 필요" : ""}</p>`).join("")}
-          ${proposal.blocked.map(b => `<p>${esc(b.name)}: ${esc(b.reason)} (발주안 제외)</p>`).join("")}</div>` : ""}
+          ${proposal.blocked.map(b => `<p>${esc(b.name)}: ${esc(b.reason)} (발주안 제외)</p>`).join("")}</div>
+          ${proposal.needsAck && proposal.needsAck.length ? `<div class="po-vat-box" id="po-vat-proposal">
+            <b>⚠️ VAT 기준 미확인 상품 ${proposal.needsAck.length}개 - 자동으로 발주안에 넣지 않았어요</b>
+            <p>추천 수량·단가는 기존 BigQuery 원가로 계산한 참고값이에요. 경고를 확인한 경우에만 직접 추가하세요.</p>
+            ${proposal.needsAck.map((l, i) => `<div class="po-vat-line">${esc(prodName(l.product_id))}: ${fmt(l.qty)}개 · 단가 ₩${fmt(l.unit_cost)} · ${esc(l.vat.reason)}
+              <button class="btn sm secondary" id="po-vat-add-${i}" onclick="addVatAckPOLine(${i})">경고 확인하고 발주안에 추가</button></div>`).join("")}
+          </div>` : ""}` : ""}
         <div class="form-grid">
           <div class="field"><label>발주일 *</label><input id="po-date" type="date" value="${today()}"></div>
           <div class="field"><label>납품희망일</label><input id="po-due" type="date" value=""></div>
@@ -6278,6 +6300,7 @@ function openPOModal(proposal = null) {
         <div class="total-line">상품 합계 <b id="po-total">₩0</b></div>
         ${isJeongyeol ? `<p style="font-size:13px;color:var(--text-sub)">
           ※ 상위 결재자가 없어 <b>전결</b>로 바로 승인 처리됩니다.</p>` : ""}
+        <div id="po-vat-save-warn"></div>
         <div class="modal-actions">
           <button class="btn secondary" onclick="closeModal()">취소</button>
           <button class="btn" id="btn-po-save" onclick="savePO(${isJeongyeol})">${isJeongyeol ? "발주서 등록 (전결)" : "결재 올리기"}</button>
@@ -6286,6 +6309,7 @@ function openPOModal(proposal = null) {
     </div>`;
   const rows = document.getElementById("po-rows");
   rows.dataset.inventoryProposal = proposal ? "true" : "false";
+  poProposalCtx = proposal;
   if (proposal) {
     for (const line of proposal.lines) {
       addPORow();
@@ -6296,13 +6320,50 @@ function openPOModal(proposal = null) {
       tr.querySelector(".po-qty").value = line.qty;
       tr.querySelector(".po-cost").value = fmt(line.unit_cost);
     }
-    if (!proposal.lines.some(l => l.urgent)) {
+    if (proposal.lines.length && !proposal.lines.some(l => l.urgent)) {
       document.getElementById("po-due").value = proposal.lines.map(l => l.dueDate).sort()[0];
     }
     document.getElementById("po-memo").value = "판매·재고 기반 발주안 / 납품희망일: 품절예상 7일 전 / 운송비: 센터·PLT 확인";
     calcPOTotal();
   } else addPORow();
 }
+
+// 2026-09-12 VAT 확인 대기 품목을 사람이 경고를 보고 직접 발주안에 넣어요(자동으로는 안 넣음). 저장 때 한 번 더 확인받아요.
+let poProposalCtx = null;
+function addVatAckPOLine(i) {
+  const l = poProposalCtx?.needsAck?.[i];
+  const rows = document.getElementById("po-rows");
+  if (!l || !rows) return;
+  if ([...rows.querySelectorAll(".po-prod")].some(p => p.dataset.pid === l.product_id)) return toast("이미 발주안에 있는 품목이에요");
+  if (rows.children.length === 1 && !pidOf(rows.querySelector(".po-prod")) && !numOf(rows.querySelector(".po-cost").value)) rows.innerHTML = "";
+  addPORow();
+  const tr = rows.lastElementChild;
+  const picker = tr.querySelector(".po-prod");
+  picker.dataset.pid = l.product_id;
+  picker.value = productPickLabel(erpProducts.find(p => p.id === l.product_id), "buy");
+  tr.querySelector(".po-qty").value = l.qty;
+  tr.querySelector(".po-cost").value = fmt(l.unit_cost);
+  tr.dataset.vatUnconfirmed = "1";
+  const due = document.getElementById("po-due");
+  if (due && !due.value && !l.urgent) due.value = l.dueDate;
+  const b = document.getElementById(`po-vat-add-${i}`);
+  if (b) { b.disabled = true; b.textContent = "추가됨 · 저장 때 VAT 경고 확인"; }
+  calcPOTotal();
+}
+
+// 발주서에 VAT 확인 대기 품목이 있으면 보여주는 경고 + 확인 체크박스(기안·승인 공용). data-pids 로 어떤 품목을 확인했는지 고정.
+function poVatWarnHtml(pids, vat, ackId, verb, onchange = "") {
+  const list = [...new Set(pids)].sort();
+  return `<div class="po-vat-box">
+    <b>⚠️ 매입원가 VAT 기준이 확인되지 않은 품목 ${list.length}개</b>
+    <ul>${list.map(pid => `<li>${esc(prodName(pid))} - ${esc(vat[pid]?.reason || "VAT 확인 상태 없음")}</li>`).join("")}</ul>
+    <p>단가·공헌이익이 VAT 기준에 따라 10% 달라질 수 있어요. 자동 발주 대상이 아니며, 경고를 확인한 사람만 ${verb}할 수 있어요.</p>
+    <label class="po-vat-ack"><input type="checkbox" id="${ackId}" data-pids="${list.join(",")}" ${onchange ? `onchange="${onchange}"` : ""}>
+      위 품목의 VAT 기준이 확인되지 않았음을 알고 ${verb}합니다</label>
+  </div>`;
+}
+const poVatUnconfirmed = (productIds, vat) => [...new Set(productIds)].filter(pid => ProcurementInput.vatNeedsAck(vat[pid]?.status)).sort();
+const poVatAcked = (ackId, pids) => { const el = document.getElementById(ackId); return !!el && el.checked && el.dataset.pids === pids.join(","); };
 
 function addPORow() {
   const tb = document.getElementById("po-rows");
@@ -6361,6 +6422,16 @@ async function savePO(isJeongyeol) {
       await validateInventoryPOBeforeSave(items);
     } catch (e) { btn.disabled = false; return toast(e.message); }
   }
+  // 2026-09-12 VAT 확인 대기 품목: 기안자가 경고를 확인하고 체크해야 올릴 수 있어요(확인 내용은 메모에 남김)
+  const vatNow = await ProcurementInput.fetchVatStatus(sb, items.map(i => i.product_id));
+  const vatPids = poVatUnconfirmed(items.map(i => i.product_id), vatNow);
+  if (vatPids.length && !poVatAcked("po-vat-save-ack", vatPids)) {
+    const box = document.getElementById("po-vat-save-warn");
+    if (box) box.innerHTML = poVatWarnHtml(vatPids, vatNow, "po-vat-save-ack", isJeongyeol ? "발주서를 등록(전결)" : "결재를 올리기로");
+    btn.disabled = false;
+    return toast("VAT 기준이 확인되지 않은 품목이 있어요 - 경고를 확인하고 체크한 뒤 다시 눌러 주세요");
+  }
+  const vatAckMemo = vatPids.length ? ` [VAT 미확인 확인(기안 ${me.name}): ${vatPids.map(prodName).join(", ")}]` : "";
   const { data: noData } = await sb.rpc("next_po_no");
   const line = isJeongyeol ? [] : [{ userId: document.getElementById("po-appr").value, status: "pending", date: "" }];
   const { data: po, error } = await sb.from("purchase_orders").insert({
@@ -6370,7 +6441,7 @@ async function savePO(isJeongyeol) {
     deliver_to: document.getElementById("po-deliver").value,
     freight_est: numOf(document.getElementById("po-freight").value) || 0,
     total: items.reduce((s, i) => s + i.amount, 0),
-    memo: document.getElementById("po-memo").value.trim(),
+    memo: document.getElementById("po-memo").value.trim() + vatAckMemo,
     status: isJeongyeol ? "ordered" : "progress",
     drafter_id: me.id, approval_line: line, current_step: 0,
     ordered_at: isJeongyeol ? new Date().toISOString() : null,
@@ -6445,6 +6516,7 @@ function openPODetail(id) {
           </tbody></table></div>` : `
           <p style="font-size:13px;color:var(--text-sub);margin-top:12px">전결 처리된 발주서입니다.</p>`}
 
+        <div id="po-vat-approve-warn"></div>
         <div class="modal-actions" style="flex-wrap:wrap;gap:8px">
           <button class="btn secondary" onclick="closeModal()">닫기</button>
           <button class="btn secondary" onclick="closeModal();location.hash='#/podoc/${p.id}'">📄 발주서 보기</button>
@@ -6452,7 +6524,7 @@ function openPODetail(id) {
             ? `<button class="btn" onclick="closeModal();location.hash='#/podoc/${p.id}'">📧 메일 보내기</button>` : ""}
           ${canDecide ? `
             <button class="btn danger" onclick="decidePO('${p.id}','rejected')">반려</button>
-            <button class="btn green" onclick="decidePO('${p.id}','approved')">승인</button>` : ""}
+            <button class="btn green" id="btn-po-approve" onclick="decidePO('${p.id}','approved')">승인</button>` : ""}
           ${canOrder ? `<button class="btn" onclick="markOrdered('${p.id}')">거래처에 발주 완료</button>` : ""}
           ${canReceive ? `<button class="btn" onclick="openReceiveModal('${p.id}')">입고 처리</button>` : ""}
           ${["progress", "approved"].includes(p.status) && p.drafter_id === me.id
@@ -6463,6 +6535,19 @@ function openPODetail(id) {
   loadPOFreightReview(p.id, p.freight_est);
   loadPOLoadFillProposal(p.id, items);
   loadPOHoldSection(p.id);
+  if (canDecide) loadPOVatApproveWarning(p.id, items);
+}
+
+// 2026-09-12 결재 화면 - VAT 확인 대기 품목이 있으면 경고를 보여주고, 체크해야 [승인]이 눌려요(반려는 그대로)
+async function loadPOVatApproveWarning(poId, items) {
+  const vat = await ProcurementInput.fetchVatStatus(sb, items.map(it => it.product_id));
+  const pids = poVatUnconfirmed(items.map(it => it.product_id), vat);
+  const box = document.getElementById("po-vat-approve-warn");
+  if (!pids.length || !box) return;
+  box.innerHTML = poVatWarnHtml(pids, vat, "po-vat-approve-ack", "승인",
+    "document.getElementById('btn-po-approve').disabled = !this.checked");
+  const b = document.getElementById("btn-po-approve");
+  if (b) b.disabled = true;
 }
 
 // 2026-09-12 [PO-016 취소] 발주서 자동입고 보류 - 보류된 발주서는 자동 폴러가 WING 초안을 새로 만들지 않아요(다른 발주서는 그대로).
@@ -7451,7 +7536,25 @@ async function decidePO(id, decision) {
   const line = [...(fresh.approval_line || [])];
   const step = line[fresh.current_step];
   if (!step || step.userId !== me.id) { toast("결재 차례가 아닙니다"); closeModal(); return route(); }
+  // 2026-09-12 승인 직전 VAT 확인 상태를 다시 읽어요 - 확인 대기 품목이 있으면 경고 체크가 있어야 승인(결재선에 기록)
+  let vatAck = null;
+  if (decision === "approved") {
+    const { data: its, error: ie } = await sb.from("purchase_order_items").select("product_id").eq("po_id", id);
+    if (ie) return toast("품목을 확인하지 못해 승인하지 않았어요 - 다시 시도해 주세요");
+    const vat = await ProcurementInput.fetchVatStatus(sb, (its || []).map(it => it.product_id));
+    const pids = poVatUnconfirmed((its || []).map(it => it.product_id), vat);
+    if (pids.length && !poVatAcked("po-vat-approve-ack", pids)) {
+      const box = document.getElementById("po-vat-approve-warn");
+      if (box) box.innerHTML = poVatWarnHtml(pids, vat, "po-vat-approve-ack", "승인",
+        "document.getElementById('btn-po-approve').disabled = !this.checked");
+      const b = document.getElementById("btn-po-approve");
+      if (b) b.disabled = true;
+      return toast("VAT 기준이 확인되지 않은 품목이 있어요 - 경고를 확인하고 체크한 뒤 승인해 주세요");
+    }
+    if (pids.length) vatAck = { product_ids: pids, products: pids.map(prodName), by: me.id, at: nowStr() };
+  }
   step.status = decision; step.date = nowStr();
+  if (vatAck) step.vat_unconfirmed_ack = vatAck;
   const last = fresh.current_step >= line.length - 1;
   const patch = decision === "rejected"
     ? { approval_line: line, status: "rejected" }

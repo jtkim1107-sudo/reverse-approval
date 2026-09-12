@@ -180,6 +180,63 @@
       : `<div class="pi-warn">${won(cost)} ÷ 1.1 이 나누어떨어지지 않아요 - 반올림하지 않으므로 BigQuery 반영이 '데이터 확인 필요'로 멈춰요. 원가를 확인해 주세요</div>`;
   }
 
+  // ── VAT 확인 대기(2026-09-12 사용자 확정) - 백엔드 inventory_decision.compute_procurement_vat_status 와 같은 규칙 ──
+  //  CONFIRMED: 발주정보 있음 + VAT 기준 확인 + 확인 때 본 원가 = 지금 원가
+  //  VAT_UNCONFIRMED: 발주정보는 있는데 VAT 기준 미확인(또는 확인 뒤 원가 변경) → 추천은 참고용, 자동 발주안 제외,
+  //                   사람이 경고를 확인하고 명시적으로 넣고·올리고·승인하는 것만 허용
+  //  NO_PROCUREMENT: 발주정보 없음(MISSING_PROCUREMENT_DATA - 재고판단이 이미 데이터확인으로 막음)
+  //  VAT_STATUS_UNKNOWN: 조회 실패 - 확인 못 함은 미확인과 똑같이 다룸
+  const VAT_STATUS = { CONFIRMED: "CONFIRMED", UNCONFIRMED: "VAT_UNCONFIRMED", NONE: "NO_PROCUREMENT", UNKNOWN: "VAT_STATUS_UNKNOWN" };
+  const vatNeedsAck = st => st === VAT_STATUS.UNCONFIRMED || st === VAT_STATUS.UNKNOWN;
+
+  function computeVatStatus(productIds, products, procurements, audits) {
+    const pBy = new Map((products || []).map(p => [p.id, p]));
+    const ppBy = new Map((procurements || []).map(r => [r.product_id, r]));
+    const lastSeen = new Map();
+    [...(audits || [])].sort((a, b) => (b.id || 0) - (a.id || 0)).forEach(a => {
+      if ((a.action || "UPDATE") !== "CREATE" && (a.action || "UPDATE") !== "UPDATE") return;
+      if (!lastSeen.has(a.product_id)) lastSeen.set(a.product_id, a.cost_price_seen);
+    });
+    const out = {};
+    for (const pid of productIds || []) {
+      const p = pBy.get(pid) || {};
+      const baseId = p.set_parent_id || pid;
+      const base = pBy.get(baseId) || {};
+      const pp = ppBy.get(baseId);
+      const suffix = baseId !== pid ? ` (세트 - 부모 ${base.code || ""} 기준)` : "";
+      const seen = lastSeen.get(baseId);
+      if (!pp) out[pid] = { status: VAT_STATUS.NONE, reason: "발주정보 없음" + suffix };
+      else if (!pp.cost_vat_basis) out[pid] = { status: VAT_STATUS.UNCONFIRMED, reason: "매입원가 VAT 기준 미확인" + suffix };
+      else if (seen == null || base.cost_price == null || String(Number(seen)) !== String(Number(base.cost_price)))
+        out[pid] = { status: VAT_STATUS.UNCONFIRMED, reason: `VAT 확인 뒤 원가가 바뀜(${seen ?? "-"} → ${base.cost_price ?? "-"}) - 다시 확인 필요` + suffix };
+      else out[pid] = { status: VAT_STATUS.CONFIRMED, reason: "VAT 기준 확인됨" + suffix };
+    }
+    return out;
+  }
+
+  /** ERP 에서 읽어 계산. 하나라도 실패하면 전부 VAT_STATUS_UNKNOWN(자동으로 넣지 않고 경고 확인 필요). */
+  async function fetchVatStatus(sb, productIds) {
+    const ids = [...new Set((productIds || []).filter(Boolean))];
+    if (!ids.length) return {};
+    try {
+      const q = p => p.then(r => { if (r.error) throw r.error; return r.data || []; });
+      let products = await q(sb.from("products").select("id,code,cost_price,set_parent_id").in("id", ids));
+      const baseIds = [...new Set([...ids, ...products.map(p => p.set_parent_id || p.id)])];
+      const missing = baseIds.filter(id => !products.some(p => p.id === id));
+      if (missing.length) products = products.concat(await q(sb.from("products").select("id,code,cost_price,set_parent_id").in("id", missing)));
+      const [procurements, audits] = await Promise.all([
+        q(sb.from("product_procurement").select("product_id,cost_vat_basis").in("product_id", baseIds)),
+        q(sb.from("product_procurement_audit").select("id,product_id,action,cost_price_seen").in("product_id", baseIds).in("action", ["CREATE", "UPDATE"])),
+      ]);
+      return computeVatStatus(ids, products, procurements, audits);
+    } catch (e) {
+      return Object.fromEntries(ids.map(id => [id, { status: VAT_STATUS.UNKNOWN, reason: "VAT 확인 상태를 불러오지 못했어요" }]));
+    }
+  }
+
+  const vatChipHtml = v => v && vatNeedsAck(v.status)
+    ? `<span class="chip progress pi-vat-chip" title="${escHtml(v.reason)}">참고용 · VAT 미확인</span>` : "";
+
   /** DB 오류 문구 → {code, text}. 함수가 'CODE 한국어 설명' 형식으로 올려요. */
   function errorMessage(error) {
     const msg = String((error && (error.message || error.details)) || error || "알 수 없는 오류");
@@ -563,6 +620,7 @@
   root.ProcurementInput = {
     VAT_LABEL, UNIT_LABEL, FIELD_LABEL,
     parseIntField, validateRow, formFromRow, diffRow, buildTargets, suggestionsFor, errorMessage, setPreview, supplyPreview,
+    VAT_STATUS, vatNeedsAck, computeVatStatus, fetchVatStatus, vatChipHtml,
     view, render, onInput, fill, tab: setTab, reset, review, saveAll, history, approveCost,
     _state: S,
   };
