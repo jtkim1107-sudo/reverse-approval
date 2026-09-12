@@ -177,5 +177,20 @@
   };
   const basisLabel = b => (b === "ACTUAL" ? "실제 청구" : b === "MIXED" ? "예상·실제 혼합" : "예상");
 
-  global.InboundFreight = { compute, soldInMonth, vatRows, STAGE_LABEL, STATUS_LABEL, basisLabel, isActive };
+  // 2026-09-12 [사용자 확정] 발주서 '예상 운송비' 검토(/api/purchase-orders/freight-estimate 결과) - 살아 있는(ACTIVE) 운송 묶음만
+  // 합계·적용 제안, 무효·대체된 기록은 이력(합산 안 함), NEEDS_REVIEW·결과 모르는 요청은 확인 항목으로 따로.
+  //   mode: none(보여줄 것 없음) · same(저장값과 같음) · propose(적용 제안) · inactive(살아 있는 운송 없음 - 활성 합계 0, 제안 없음)
+  function estimateReview(result, currentFreightEst) {
+    const r = result || {};
+    const history = (r.history || []).map(h => ({ ...h, label: STATUS_LABEL[h.status] || h.status }));
+    const review = r.needs_review || [];
+    const activeCount = r.active_group_count != null ? Number(r.active_group_count) : (r.groups || []).length;
+    const active = r.total_freight_est != null && activeCount > 0;
+    const activeTotal = active ? Number(r.total_freight_est) : 0;
+    const mode = active ? (Number(currentFreightEst) === activeTotal ? "same" : "propose")
+      : (history.length || review.length ? "inactive" : "none");
+    return { mode, activeTotal, activeCount: active ? activeCount : 0, history, review, canApply: mode === "propose" };
+  }
+
+  global.InboundFreight = { compute, soldInMonth, vatRows, STAGE_LABEL, STATUS_LABEL, basisLabel, isActive, estimateReview };
 })(typeof window !== "undefined" ? window : globalThis);

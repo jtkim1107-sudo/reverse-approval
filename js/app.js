@@ -6514,8 +6514,21 @@ async function loadPOFreightReview(poId, currentFreightEst) {
   } catch (e) { return; }
   const el = document.getElementById("po-freight-review");
   if (!el) return; // 모달이 이미 닫혔으면 아무것도 안 함
-  if (result.total_freight_est == null || result.plan_count === 0) return; // 연결된 TRUCK 자동입고 없음 - 조용히 스킵
-  if (Number(currentFreightEst) === Number(result.total_freight_est)) return; // 이미 반영돼 있음
+  // 2026-09-12 [사용자 확정] 살아 있는 운송 묶음만 합계·적용 제안 - 무효·대체 기록은 이력, 확인 필요는 따로(합산 안 함)
+  const rv = InboundFreight.estimateReview(result, currentFreightEst);
+  if (rv.mode === "none") return; // 연결된 TRUCK 자동입고 없음 - 조용히 스킵
+  const short = v => `<code>${esc(String(v || "").slice(0, 8))}</code>`;
+  const extra = [
+    ...rv.history.map(h => `이력: 운송 묶음 ${short(h.shipment_group_id)} ₩${fmt(h.gross_amount)} · ${esc(h.label)} (합산 안 함)`),
+    ...rv.review.map(n => n.kind === "plan"
+      ? `확인 필요: 요청 ${short(n.plan_id)} ${esc(n.status)} - 결과 확인 전이라 합계 제외`
+      : `확인 필요: 운송 묶음 ${short(n.shipment_group_id)} ${n.kind === "freight_record" ? `₩${fmt(n.gross_amount)} ` : ""}· ${esc(InboundFreight.STATUS_LABEL[n.status] || n.status)} (합산 안 함)`),
+  ].map(t => `<br><small style="color:var(--text-sub)">${t}</small>`).join("");
+  if (rv.mode === "inactive") {
+    el.innerHTML = ` <span class="chip waiting" style="display:inline-block;margin-top:4px">🚚 활성 예상 운송비 ₩0 · 살아 있는 운송 묶음 없음(적용할 제안 없음)</span>${extra}`;
+    return;
+  }
+  if (rv.mode === "same") { el.innerHTML = extra; return; } // 이미 반영돼 있음 - 이력·확인 항목만
   await CoupangCenters.load(sb);
   // 2026-09-11 새 선택 사유에는 이미 '천안1센터 (CHA1)'가 들어 있어요 - 그땐 사유만, 옛 사유('천안1 선택')엔 센터명을 앞에 붙여요.
   const reasons = (result.groups || []).map(g => {
@@ -6532,8 +6545,8 @@ async function loadPOFreightReview(poId, currentFreightEst) {
   }).filter(Boolean).join(" / ");
   el.innerHTML = ` <span class="chip waiting" style="display:inline-block;margin-top:4px">
       🚚 ${(result.groups || []).some(g => g.consolidated) ? "TRUCK 운송비(합배송 반영)" : "TRUCK 자동선택 운송비"} ₩${fmt(result.total_freight_est)}${reasons ? ` (${reasons})` : ""}
-      <a onclick="applyPOFreightEstimate('${poId}', ${result.total_freight_est})" style="color:var(--brand);cursor:pointer;font-weight:600;margin-left:4px">적용 →</a>
-    </span>`;
+      <a onclick="applyPOFreightEstimate('${poId}', ${rv.activeTotal})" style="color:var(--brand);cursor:pointer;font-weight:600;margin-left:4px">적용 →</a>
+    </span>${extra}`;
 }
 
 // 2026-09-11 입고 트럭 운송비 기록(운송 묶음당 1건) - 발주서 상세·입고 처리에서 같은 기록을 봐요.
