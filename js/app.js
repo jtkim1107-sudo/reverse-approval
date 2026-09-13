@@ -491,7 +491,7 @@ async function updateBadge() {
 
 /* ---------- 라우터 ---------- */
 const routes = {
-  dashboard: { title: "대시보드", render: viewDashboard },
+  dashboard: { title: "대시보드", render: viewDashboard, after: () => dashboardHydrate() },
   new: { title: "지출결의서 작성", render: viewNewDoc, after: () => addItemRow() },
   inbox: { title: "결재 대기함", render: viewInbox },
   drafts: { title: "내 기안함", render: viewDrafts },
@@ -1550,151 +1550,204 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
 }
 
 /* ---------- 화면: 대시보드 ---------- */
+// 2026-09-13 [대시보드 정리, 사용자 지시] 위에서부터 A 운영 상태 → B 오늘 해야 할 일 → C 매출 요약 →
+// D·G 공헌이익·광고비 → E 재고·발주 → F 입고·운송. 숫자는 기존 공통 함수 그대로(새 계산 없음):
+//   이번 달 순매출·일 매출 = buildMonthlyNetSales(공통 집계 SalesMonthlySummary) · 공헌이익 = computeCmOfMonth(공헌이익 화면과 같은 입력)
+//   광고비 = adMonthState · 재고 = /api/inventory/decisions · 입고 건수 = rgCountPlan(입고관리 화면과 같은 규칙)
+// 쓰기 호출 없음(이동·화면 새로고침·안내 보기만 - WING 수집 버튼은 매출 화면에만, 확인창 뒤). 영역마다 따로 불러와서 하나가 실패해도 나머지는 보이고,
+// 새로고침이 실패하면 0 으로 바꾸지 않고 마지막 정상값과 오류를 같이 보여줘요.
+// 팀 목표 카드·최근 문서·제품 마스터는 아래 '다른 화면' 링크로 옮겼어요(팀 목표 축하 기록은 팀 목표 화면에서).
+const DASH_SECTIONS = [["dash-todo", "오늘 해야 할 일"], ["dash-sales", "매출 요약"], ["dash-profit", "공헌이익 · 광고비"],
+  ["dash-stock", "재고·발주"], ["dash-inbound", "입고·운송"]];
+let _dashGen = 0;
+const _dashLast = {};          // 영역 id → { html, at } 마지막 정상 화면
+let _dashHealth = null;        // WING 로그인 갱신 방법 보기용(서버가 준 안내 문구)
+
 async function viewDashboard() {
-  const [docs, prodRes, saleRes, buyRes, taskRes, costRes] = await Promise.all([
-    fetchDocs(),
-    sb.from("products").select("*").order("updated_at", { ascending: false }).limit(5),
-    sb.from("sales").select("amount,date,product_id,channel,external_key"),
-    sb.from("purchases").select("amount,date"),
-    sb.from("tasks").select("assignee_id,status,due_date"),
-    sb.from("purchase_costs").select("amount,date"),
-  ]);
-  const myTasks = (taskRes.data || []).filter(t => t.assignee_id === me.id && t.status === "open").length;
-  const products = prodRes.data || [];
-  const nowMonth = today().slice(0, 7);   // erpMonth(전역)를 건드리면 사용자가 보던 달이 몰래 바뀜
-  const dashboardSales = await buildMonthlyNetSales(
-    nowMonth,
-    dedupeAutoOverManualSales(saleRes.data || []),
-    id => products.find(p => p.id === id)?.name || id,
-  );
+  const statusLast = _dashLast["dash-status"];
+  return `<div class="dash" id="dash-root">
+    <div id="dash-status-slot">${statusLast ? statusLast.html
+      : `<section class="dash-status dash-status--ok" id="dash-status" aria-busy="true">${ErpUi.badge("muted", { text: "운영 상태 불러오는 중…", small: true })}</section>`}</div>
+    <div class="dash-grid">${DASH_SECTIONS.map(([id, t]) => `<div class="dash-slot" id="${id}-slot">${ErpDashboard.loadingHtml(id, t)}</div>`).join("")}</div>
+    <nav class="dash-more" aria-label="다른 화면">
+      <a href="#/team">우리 팀 목표 ›</a><a href="#/inbox">결재 대기함 ›</a><a href="#/docs">전체 문서함 ›</a>
+      <a href="#/tasks">업무 지시 ›</a><a href="#/products">제품 마스터 ›</a><a href="#/voc/inquiries">고객문의 ›</a></nav>
+  </div>`;
+}
 
-  // 팀 카드 — 실패해도 대시보드 나머지는 보여야 하므로 따로 감싼다
-  let teamHtml = "";
-  try {
-    const st = await loadTeamMonth(nowMonth);
-    st.overdueTasks = (taskRes.data || []).filter(t => t.status === "open" && t.due_date && t.due_date < today()).length;
-    const g = computeTeamGauge(st);
-    const hy = collectHygiene(st);
-    await claimMilestones(st, g, hy);                 // 새로 달성한 게 있으면 기록
-    const cel = await fetchCelebrations(nowMonth);    // 내가 아직 못 본 축하
-    if (cel.length) {
-      const c0 = cel[0];
-      const msg = String(c0.kind).startsWith("level_")
-        ? `🎊 LEVEL UP! LV.${String(c0.kind).slice(6)} 달성`
-        : `${MILESTONE_TEXT[c0.kind]?.ico || "🎉"} ${MILESTONE_TEXT[c0.kind]?.head || "축하합니다"}`;
-      setTimeout(() => toast(msg), 400);
+function dashboardRefresh() {
+  if (!document.getElementById("dash-root")) return route();
+  const st = document.getElementById("dash-status");
+  if (st) st.setAttribute("aria-busy", "true");
+  dashboardHydrate();
+}
+
+function dashboardWingGuide() {
+  const s = _dashHealth && _dashHealth.session;
+  ErpUi.infoModal("WING 로그인 갱신 방법", `
+    ${s && s.action_hint ? `<p class="dash-note" style="font-weight:600">${esc(s.action_hint)}</p>` : ""}
+    <ol class="dash-guide">
+      <li>맥에서 WING 로그인 갱신 도구를 열고 쿠팡 WING 에 직접 로그인해요(비밀번호는 ERP 에 입력하지 않아요).</li>
+      <li>로그인이 끝나면 서버가 실제 인증(재인증·다운로드 확인)을 다시 해요. 성공하면 위쪽 경고가 자동으로 사라져요.</li>
+      <li>오늘 06:20 수집이 실패했다면 로그인 뒤 자동 복구가 한 번 다시 받아요(수동 실행 필요 없음).</li>
+    </ol>
+    <p class="rg-muted">쿠키 남은 시간만으로는 정상으로 보지 않아요. 약 24시간 기준은 추정이에요.</p>`);
+}
+
+async function dashboardHydrate() {
+  const gen = ++_dashGen;
+  const at = new Date();
+  const month = today().slice(0, 7), td = today(), yd = yesterday();
+  const live = () => gen === _dashGen && document.getElementById("dash-root");
+  const put = (id, html, ok = true) => {
+    if (!live()) return;
+    const slot = document.getElementById(`${id}-slot`);
+    if (!slot) return;
+    slot.innerHTML = html;
+    if (ok) _dashLast[id] = { html, at };
+  };
+  const fail = (id, title, e) => put(id, ErpDashboard.errorHtml(id, title, e && (e.message || e.error || String(e)), _dashLast[id]), false);
+  const rows = r => { if (r.error) throw r.error; return r.data || []; };
+  const settled = ps => Promise.allSettled(ps).then(rs => rs.map(r => (r.status === "fulfilled" ? { ok: true, v: r.value } : { ok: false, e: r.reason })));
+
+  // 원천(모두 읽기) - 공헌이익 화면과 같은 loadErpBase · 공통 집계 buildMonthlyNetSales
+  const baseP = loadErpBase();
+  const salesP = baseP.then(b => buildMonthlyNetSales(month, b.sales, id => erpProducts.find(p => p.id === id)?.name || id))
+    .then(r => { if (r.error) throw r.error; return r.summary; });
+  const healthP = globalThis.SalesRefresh.loadHealth();
+  const adsP = loadAdSources();
+  const fixedP = sb.from("fixed_costs").select("*").order("created_at").then(rows);
+  const invP = fetchInventoryDecisions().then(r => { if (!r.ok) throw new Error(r.error); return r; });
+  const plansP = Promise.all([sb.from("inbound_plans").select("*").order("created_at", { ascending: false }), sb.from("inbound_plan_items").select("*")])
+    .then(([a, b]) => ({ plans: rows(a), items: rows(b) }));
+  const jobsP = sb.from("sync_job_status").select("*").then(rows);
+  const dayStateP = globalThis.SalesRefresh.loadDayState(yd);
+  const csP = CsInquiries.load(sb).then(d => { if (d.error) throw d.error; return d; });
+
+  // A. 운영 상태
+  const statusP = settled([healthP, salesP, dayStateP, adsP, jobsP, plansP]).then(([h, sm, ds, ad, jobs, pl]) => {
+    _dashHealth = h.ok ? h.v : null;
+    const adYd = ad.ok ? (adMonthState(ad.v, yd.slice(0, 7)).days || []).find(x => x.date === yd) : null;
+    const dates = sm.ok && sm.v ? sm.v.collected_dates || [] : [];
+    const model = ErpDashboard.statusModel({
+      health: h.ok ? h.v : null, healthError: h.ok ? null : String(h.e && h.e.message || h.e),
+      dataDate: dates.length ? (dates.includes(td) ? td : dates[dates.length - 1]) : null, today: td, yesterday: yd,
+      dayState: ds.ok ? ds.v : null, adYesterday: adYd ? { status: adYd.status, lastError: adYd.lastError } : null,
+      jobs: jobs.ok ? jobs.v : [], plans: pl.ok ? pl.v.plans : null,
+    });
+    put("dash-status", ErpDashboard.statusHtml(model, { at }));
+    return model;
+  }).catch(e => { fail("dash-status", "운영 상태", e); return null; });
+
+  // E. 재고·발주 (B 의 재고 확인·물류정보 건수도 여기서)
+  const stockP = settled([invP, baseP]).then(([inv, base]) => {
+    if (!inv.ok) throw inv.e;
+    const nameOf = d => {
+      const p = base.ok ? erpProducts.find(x => x.id === d.product_id) : null;
+      return p ? ErpUi.displayName(p.code, p.name) : (d.product_name || d.vendor_item_id || "-");
+    };
+    const model = ErpDashboard.stockModel(inv.v.decisions);
+    put("dash-stock", ErpDashboard.stockHtml(model, { at, calculatedAt: inv.v.calculatedAt, stockText: inventoryStockText,
+      outlookText: inventoryOutlookText, nameOf }));
+    return model;
+  }).catch(e => { fail("dash-stock", "재고·발주", e); return null; });
+
+  // F. 입고·운송 (B 의 입고 승인 건수도 같은 규칙으로)
+  const inboundP = settled([plansP, baseP]).then(([pl, base]) => {
+    if (!pl.ok) throw pl.e;
+    const itemsByPlan = {};
+    pl.v.items.forEach(it => { (itemsByPlan[it.inbound_plan_id] ||= []).push(it); });
+    const supersededIds = new Set(pl.v.plans.filter(x => x.retry_of_plan_id).map(x => x.retry_of_plan_id));
+    const counts = rgNewCounts();
+    pl.v.plans.forEach(p => {
+      const items = itemsByPlan[p.id] || [];
+      if (items.length) rgCountPlan(counts, p, InboundApproval.loadBlock(p, items));
+    });
+    // 복구가 필요한 실패만(이미 재시도·대체된 실패는 빼요)
+    counts.failed = pl.v.plans.filter(p => p.internal_status === "FAILED" && !supersededIds.has(p.id) && (itemsByPlan[p.id] || []).length).length;
+    const freightReview = base.ok ? (erpFreight.history || []).filter(c => ["NEEDS_REVIEW", "VOID_PENDING_REBUILD"].includes(c.status)) : [];
+    const statusOf = p => {
+      const items = itemsByPlan[p.id] || [];
+      if (InboundApproval.wingSubmittedLabel(p)) return { tone: "awaiting", text: "쿠팡 제출됨 · 입고대기" };
+      if (rgCanDecide(p)) return { tone: "approval", text: "승인대기" };
+      if (InboundApproval.loadBlock(p, items) && p.submit_status === "NOT_SUBMITTED") return { tone: "check", text: "적재 보완 필요" };
+      if (p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED") return { tone: "check", text: "승인됨 · 미제출" };
+      return { tone: "none", text: "진행 중" };
+    };
+    const model = ErpDashboard.inboundModel({ plans: pl.v.plans, itemsByPlan, counts, freightReview, today: td, statusOf });
+    put("dash-inbound", ErpDashboard.inboundHtml(model, { at, fmt, itemsByPlan, itemsLabel: InboundApproval.itemsLabel,
+      qtySum: InboundApproval.qtySum, palletSum: InboundApproval.palletSum,
+      centerText: p => CoupangCenters.text({ id: p.destination_center_id, code: p.destination_center_raw }) }));
+    return model;
+  }).catch(e => { fail("dash-inbound", "입고·운송", e); return null; });
+
+  // C. 매출 요약 - 이번 달 순매출은 buildMonthlyNetSales(공통 집계) 의 total, 일 매출은 forDate(로켓그로스)
+  settled([salesP, csP]).then(async ([sm, cs]) => {
+    const csData = cs.ok ? cs.v : { error: cs.e };
+    let briefingHtml = "";
+    try { briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: false }); } catch (e) { console.error("매출 브리핑 카드:", e); }
+    const detail = `<details class="dash-detail"><summary>어제(${esc(yd)}) 판매통계 · 오전 브리핑 상세</summary>
+      <div id="rg-sales-statistics-mount">${briefingHtml}</div>
+      <div class="cs-brief-card" style="padding:8px 2px 0"><b style="font-size:13px">오전 브리핑 · 고객문의</b>${CsInquiries.briefingLineHtml(csData)}</div></details>`;
+    if (!sm.ok) throw sm.e;
+    const model = ErpDashboard.salesModel(sm.v, td, globalThis.SalesMonthlySummary.forDate);
+    let statusLine = "";
+    if (!model.empty) {
+      const state = model.shown === yd ? await dayStateP.catch(() => null) : await globalThis.SalesRefresh.loadDayState(model.shown).catch(() => null);
+      // 기준일·마지막 수집은 위 운영 상태에 있어요 - 수집이 실패했을 때만 원인 줄을 붙여요(WING 줄은 빼고 health 없이)
+      if (state && state.latest && state.latest.status !== "OK") {
+        statusLine = globalThis.SalesRefresh.statusLineHtml({ date: model.shown, state, hasData: true, today: td, health: null });
+      }
     }
-    teamHtml = celebrationHtml(cel) + teamCardHtml(st, g, hy, true) + questsHtml(st, g, hy);
-  } catch (e) { console.error("팀 카드:", e); }
+    put("dash-sales", ErpDashboard.salesHtml(model, { fmt, at, statusLine, detail }));
+  }).catch(e => fail("dash-sales", "매출 요약", e));
 
-  // 2026-09-10 [사용자 지시: "`자동 수집 상태` 카드 전체를 대시보드에서 숨겨. 자동
-  // 수집 기능 자체와 상태 기록은 삭제하지 말고 화면에서만 제거해. 그 자리에 `오늘
-  // 로켓그로스 판매현황` 카드를 표시해."] renderSyncHealthCard()와 누락 매출 화면
-  // (#/unmatched)은 그대로 두고 대시보드에서 부르지만 않아요.
-  // 숫자는 위 dashboardSales(공통 집계 SalesMonthlySummary)에서만 꺼내므로 매출 입력
-  // 화면과 같은 값입니다. 오늘 값이 아직 없으면 가장 최근 수집일을 기준일과 함께 보여줘요.
-  let todaySalesHtml = "";
-  try {
-    const td = today();
-    const summary = dashboardSales.summary;
-    const dates = summary?.collected_dates || [];
-    const shownDate = dates.includes(td) ? td : (dates[dates.length - 1] || td);
-    const day = globalThis.SalesMonthlySummary?.forDate(summary, shownDate, { rgOnly: true });
-    const [state, todayState, health] = await Promise.all([
-      globalThis.SalesRefresh?.loadDayState(shownDate),
-      shownDate === td ? null : globalThis.SalesRefresh?.loadDayState(td),
-      globalThis.SalesRefresh?.loadHealth(),
-    ]);
-    todaySalesHtml = globalThis.SalesRefresh?.todayCardHtml({
-      day, date: shownDate, today: td, state, todayState, health }) || "";
-  } catch (e) { console.error("오늘 로켓그로스 판매현황 카드:", e); }
+  // D+G. 공헌이익 · 광고비 - 공헌이익 화면(viewProfit)과 같은 입력으로 computeCmOfMonth
+  settled([baseP, adsP, fixedP]).then(([base, ad, fx]) => {
+    if (!base.ok) throw base.e;
+    if (!ad.ok) throw ad.e;
+    if (!fx.ok) throw fx.e;
+    const fixed = fx.v.filter(f => f.active !== false);
+    const cm = computeCmOfMonth(month, base.v.sales, adRowsAll(ad.v), fixed);
+    const model = ErpDashboard.profitModel(cm, adMonthState(ad.v, month), { month });
+    put("dash-profit", ErpDashboard.profitHtml(model, { fmt, at }));
+  }).catch(e => fail("dash-profit", "공헌이익 · 광고비", e));
 
-  // 어제 매출 브리핑 카드 - 실패해도(테이블 아직 없음 등) 대시보드 나머지는 보여야 하므로 따로 감쌈
-  // 2026-09-11 고객문의(새 문의·미답변·긴급) - 대시보드 알림과 브리핑 카드가 같은 값을 써요
-  let csData = null;
-  try { csData = await CsInquiries.load(sb); } catch (e) { csData = { error: e }; }
-  let briefingHtml = "";
-  try {
-    const yd = yesterday();
-    briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: false });
-  } catch (e) { console.error("매출 브리핑 카드:", e); }
-
-  const monthSales = dashboardSales.summary?.has_rg_statistics
-    ? dashboardSales.summary.total.net_amount : null;
-  const monthBuys = (buyRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
-    .reduce((s, r) => s + Number(r.amount), 0)
-    + (costRes.data || []).filter(r => (r.date || "").startsWith(nowMonth))
-    .reduce((s, r) => s + Number(r.amount), 0);
-  const inbox = inboxOf(docs).length;
-  const mine = docs.filter(d => d.drafter_id === me.id);
-  const progress = mine.filter(d => d.status === "progress").length;
-  const approved = mine.filter(d => d.status === "approved").length;
-  const thisMonth = today().slice(0, 7);
-  const monthTotal = docs
-    .filter(d => d.status === "approved" && (d.date || "").startsWith(thisMonth))
-    .reduce((s, d) => s + Number(d.total), 0);
-
-  return `
-    ${teamHtml}
-    ${CsInquiries.dashboardAlertHtml(csData)}
-    ${todaySalesHtml}
-    <div id="rg-sales-statistics-mount">${briefingHtml}</div>
-    ${/* 브리핑 영역은 판매통계 패널이 통째로 다시 그려서, 고객문의 줄은 그 바로 아래 따로 붙여요 */ ""}
-    <div class="card cs-brief-card" style="padding:10px 14px;margin-top:-4px">
-      <b style="font-size:13px">오전 브리핑 · 고객문의</b>${CsInquiries.briefingLineHtml(csData)}</div>
-    <div class="grid-stats">
-      <div class="stat" onclick="location.hash='#/inbox'">
-        <div class="stat-label">내 결재 대기</div>
-        <div class="stat-value red">${inbox}건</div>
-      </div>
-      <div class="stat" onclick="location.hash='#/tasks'">
-        <div class="stat-label">내가 받은 업무</div>
-        <div class="stat-value ${myTasks ? "red" : "green"}">${myTasks}건</div>
-      </div>
-      <div class="stat" onclick="location.hash='#/drafts'">
-        <div class="stat-label">내 기안 진행 중</div>
-        <div class="stat-value amber">${progress}건</div>
-      </div>
-      <div class="stat" onclick="location.hash='#/drafts'">
-        <div class="stat-label">내 기안 승인 완료</div>
-        <div class="stat-value green">${approved}건</div>
-      </div>
-      <div class="stat" onclick="location.hash='#/docs'">
-        <div class="stat-label">이번 달 승인 지출액</div>
-        <div class="stat-value blue">₩${fmt(monthTotal)}</div>
-      </div>
-      <div class="stat" onclick="location.hash='#/sales'">
-        <div class="stat-label">이번 달 순매출</div>
-        <div class="stat-value blue">${monthSales == null ? "수집 대기" : `₩${fmt(monthSales)}`}</div>
-        <div style="font-size:11px;color:var(--text-sub);margin-top:3px">쿠팡 판매통계 NET 기준</div>
-      </div>
-      <div class="stat" onclick="location.hash='#/purchases'">
-        <div class="stat-label">이번 달 매입</div>
-        <div class="stat-value amber">₩${fmt(monthBuys)}</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-head">
-        <h2>최근 문서</h2>
-        <button class="btn sm" onclick="location.hash='#/new'">＋ 지출결의서 작성</button>
-      </div>
-      ${docTable(docs.slice(0, 6))}
-    </div>
-
-    <div class="card">
-      <div class="card-head">
-        <h2>제품 마스터 최근 업데이트</h2>
-        <button class="btn sm secondary" onclick="location.hash='#/products'">전체 보기</button>
-      </div>
-      <div class="table-wrap rtable"><table>
-        <thead><tr><th>제품코드</th><th>제품명</th><th>규격</th><th class="num">단가</th><th>수정일</th></tr></thead>
-        <tbody>
-        ${products.map(p => `<tr><td data-label="제품코드">${esc(p.code)}</td><td data-label="제품명"><b>${esc(p.name)}</b></td><td data-label="규격">${esc(p.spec)}</td><td class="num" data-label="단가">₩${fmt(p.price)}</td><td data-label="수정일">${esc(p.updated_at)}</td></tr>`).join("")
-          || `<tr><td colspan="5" class="empty rt-empty">등록된 제품이 없습니다</td></tr>`}
-        </tbody>
-      </table></div>
-    </div>`;
+  // B. 오늘 해야 할 일 - 건수만 모아요(건수를 모르면 0 이 아니라 '확인 불가')
+  const docsP = sb.from("documents").select("*").eq("status", "progress").then(rows);
+  const posP = sb.from("purchase_orders").select("status,approval_line,current_step").then(rows);
+  const holdsP = sb.from("po_inbound_holds").select("*").eq("held", true).then(rows);
+  const exclP = sb.from("vendor_item_exclusions").select("kind,active").eq("active", true).then(rows);
+  const tasksP = sb.from("tasks").select("id", { count: "exact", head: true }).eq("assignee_id", me.id).eq("status", "open")
+    .then(r => { if (r.error) throw r.error; return r.count || 0; });
+  settled([docsP, posP, inboundP, holdsP, exclP, stockP, statusP, csP, tasksP]).then(([docs, pos, inb, holds, excl, stock, status, cs, tasks]) => {
+    const v = (x, f) => (x.ok && x.v != null ? f(x.v) : null);
+    const heldRows = holds.ok ? holds.v : [];
+    const reinb = heldRows.filter(h => InboundApproval.isReinboundHold(h)).length;
+    const exRows = excl.ok ? excl.v : [];
+    const exR = exRows.filter(e => e.kind === "RESTOCK_EXCLUDED").length;
+    const csS = cs.ok ? CsInquiries.summary(cs.v.rows) : null;
+    const collect = status.ok && status.v ? status.v.collectErrors : null;
+    const model = ErpDashboard.todoModel({
+      docs: v(docs, d => inboxOf(d).length),
+      po: v(pos, list => list.filter(p => p.status === "progress" && p.approval_line?.[p.current_step]?.userId === me.id).length),
+      inbound: v(inb, m => m.counts.pending),
+      reinbound: holds.ok ? heldRows.length : null, 
+      exclusion: excl.ok ? exRows.length : null, exclusionSub: exRows.length ? `재입고 제외 ${exR} · SKU 사용 보류 ${exRows.length - exR} · 설정 확인용` : "",
+      logistics: v(stock, m => m.logistics), stockCheck: v(stock, m => m.dataCheck), stockCheckSub: "재고 판단이 데이터 확인을 기다려요",
+      collect: collect ? collect.length : null, collectSub: collect ? collect.map(c => c.text).join(" · ") : "",
+      collectHref: collect && collect[0] ? collect[0].href : "#/sales",
+      collectTone: collect && collect.some(c => c.tone === "error") ? "error" : "check",
+      cs: csS ? csS.unanswered : null, csUrgent: csS ? csS.urgent : 0,
+      csSub: csS ? `새 문의 ${csS.pending} · 긴급 ${csS.urgent}` : "",
+      tasks: v(tasks, n => n),
+    });
+    if (holds.ok && heldRows.length !== reinb) {
+      const r = model.rows.find(x => x.key === "reinbound");
+      if (r) r.sub = `재입고 승인 ${reinb} · 사람이 건 자동입고 보류 ${heldRows.length - reinb}`;
+    }
+    put("dash-todo", ErpDashboard.todoHtml(model, { at }));
+  }).catch(e => fail("dash-todo", "오늘 해야 할 일", e));
 }
 
 /* ---------- 문서 목록 테이블 ---------- */
@@ -8138,6 +8191,18 @@ function rgSubmitStatusHtml(p) {
 const rgCanDecide = p => p.preflight_status === "PASSED" && p.approval_status === "PENDING_APPROVAL" && p.submit_status === "NOT_SUBMITTED"
   && p.internal_status !== "CANCELLED";   // 2026-09-11 취소된 요청(대체·실패 이력)은 승인 대상 아님
 const rgCanSubmit = p => p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED";
+// 2026-09-13 [대시보드 정리] 쿠팡 입고관리 위쪽 요약 건수 규칙 - 입고관리 화면과 대시보드가 같이 써요(같은 숫자).
+// 품목이 있는 요청만 세요(품목 없는 취소 선점 행은 입고관리 목록에서도 빠져요). loadBlock = InboundApproval.loadBlock(p, items).
+const rgNewCounts = () => ({ pending: 0, block: 0, approvedOpen: 0, wing: 0, rejected: 0, failed: 0 });
+function rgCountPlan(counts, p, loadBlock) {
+  const cancelled = p.internal_status === "CANCELLED";
+  if (!cancelled && rgCanDecide(p)) counts.pending++;
+  if (!cancelled && loadBlock && p.submit_status === "NOT_SUBMITTED" && p.approval_status !== "REJECTED") counts.block++;
+  if (!cancelled && p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED") counts.approvedOpen++;
+  if (InboundApproval.wingSubmittedLabel(p) && !cancelled) counts.wing++;
+  if (p.approval_status === "REJECTED") counts.rejected++;
+  if (p.internal_status === "FAILED") counts.failed++;
+}
 // retry_of_plan_id로 이 plan을 가리키는 다른 plan이 있으면(=이미 새 슬롯으로
 // 재시도가 진행 중/완료됨) 이 plan은 대체(superseded)된 거예요 - 서버 gate
 // (erp_submit_gate.submit_gate_check()의 superseded_ids 로직)와 정확히 같은
@@ -9194,7 +9259,7 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
   // WING id 는 상태 칸에 작게, 전체 이력은 [상세]. 판정·버튼 조건은 InboundApproval·rgActionsHtml 그대로.
   const rows = [];
   const snap = {};
-  const counts = { pending: 0, block: 0, approvedOpen: 0, wing: 0, rejected: 0, failed: 0 };
+  const counts = rgNewCounts();
   plans.forEach(p => {
     const items = itemsByPlan[p.id] || [];
     const ctx = ctxFor(p);
@@ -9206,12 +9271,7 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
     }
     snap[p.id] = rgPlanSnapshot(p, items, ctx.shipmentGroup);
     const cancelled = p.internal_status === "CANCELLED";
-    if (!cancelled && rgCanDecide(p)) counts.pending++;
-    if (!cancelled && ctx.loadBlock && p.submit_status === "NOT_SUBMITTED" && p.approval_status !== "REJECTED") counts.block++;
-    if (!cancelled && p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED") counts.approvedOpen++;
-    if (InboundApproval.wingSubmittedLabel(p) && !cancelled) counts.wing++;
-    if (p.approval_status === "REJECTED") counts.rejected++;
-    if (p.internal_status === "FAILED") counts.failed++;
+    rgCountPlan(counts, p, ctx.loadBlock);
     // retry_of_plan_id로 연결된 원본 plan이 있으면(슬롯 없음 등으로 새로 만든 재시도 plan) 감사 추적용으로 보여줘요.
     // 2026-09-11 다품목 요청이 실패 요청을 대체한 경우는 "대체 요청"으로 표시.
     const retryOrig = p.retry_of_plan_id ? plansById[p.retry_of_plan_id] : null;

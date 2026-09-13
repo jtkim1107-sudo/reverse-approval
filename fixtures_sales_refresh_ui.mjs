@@ -26,7 +26,8 @@ function makeEnv({ respond, jwt = "user-jwt" } = {}) {
     { dataset: { date: "2026-09-10", source: "dashboard", label: "새로고침" }, textContent: "새로고침", disabled: false, attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } },
   ];
   const win = {
-    fetchCalls: [], routeCalls: 0, toasts: [], busySeen: [],
+    fetchCalls: [], routeCalls: 0, toasts: [], busySeen: [], confirms: 0, confirmAnswer: true,
+    confirm(msg) { win.confirms += 1; win.lastConfirm = msg; return win.confirmAnswer; },   // 2026-09-13 수집 전 확인창
     sb: { auth: { getSession: async () => ({ data: { session: jwt ? { access_token: jwt } : null } }) } },
     toast(m) { win.toasts.push(m); },
     async route() { win.routeCalls += 1; },
@@ -72,6 +73,27 @@ const json = (status, body) => ({ status, json: async () => body });
   // 순차 클릭은 매번 수집
   await R.click(buttons[0]);
   check(win.fetchCalls.filter(x => x.url.endsWith("/refresh")).length === 2, "끝난 뒤 다시 누르면 다시 수집");
+  // 2026-09-13 [사용자 지시] WING 수집은 확인창을 거쳐요 - 취소하면 아무것도 보내지 않음
+  check(win.confirms === 2 && /WING/.test(win.lastConfirm) && /DB 에 저장/.test(win.lastConfirm), "누를 때마다 확인창(무엇을 하는지 안내)", win.confirms);
+  win.confirmAnswer = false;
+  const before = win.fetchCalls.length, routesBefore = win.routeCalls;
+  const r0 = await R.click(buttons[0]);
+  check(r0 === null && win.fetchCalls.length === before && win.routeCalls === routesBefore && buttons.every(b => !b.disabled), "[핵심] 확인창에서 취소 → 서버 호출 0 · 버튼 그대로");
+  win.confirmAnswer = true;
+}
+{
+  // 확인창(ErpUi)이 떠 있는 동안 다시 눌러도 확인창·호출이 늘지 않음
+  const { win, buttons, R } = makeEnv({ respond: () => json(200, { status: "UNCHANGED", ok: true, sales_date: "2026-09-10", message: "변경 없음" }) });
+  let answer;
+  win.ErpUi = { confirmModal: () => new Promise(res => { answer = res; }) };
+  win.closeModal = () => {};
+  const p1 = R.click(buttons[0]);
+  const p2 = await R.click(buttons[0]);
+  check(p2 === null && win.fetchCalls.length === 0, "확인창이 떠 있는 동안 다시 누름 → 무시", win.fetchCalls.length);
+  answer({ ok: true });
+  await p1;
+  check(win.fetchCalls.filter(x => x.url.endsWith("/refresh")).length === 1, "확인 뒤 수집 1번");
+  check(R.buttonHtml({ date: "2026-09-10", source: "sales" }).includes("WING 판매데이터 다시 수집"), "버튼 이름: 'WING 판매데이터 다시 수집'");
 }
 
 // ── 2. 실패 응답들 ──────────────────────────────────────────────────────────
@@ -300,8 +322,11 @@ const json = (status, body) => ({ status, json: async () => body });
   const sales = body("async function viewSales()", "function addSaleRow()");
   check(!/await\s+renderSyncHealthCard\(\)/.test(dash) && !dash.includes("${syncHealthHtml}"), "대시보드에서 '자동 수집 상태' 카드 호출 제거");
   check(appSrc.includes("async function renderSyncHealthCard()") && appSrc.includes("async function viewUnmatchedSales()"), "자동 수집 상태 기능·누락 매출 화면은 남김");
-  check(dash.includes("todayCardHtml") && dash.includes("{ rgOnly: true }"), "대시보드는 공통 집계로 오늘 RG 카드");
-  check(dash.indexOf("${teamHtml}") < dash.indexOf("${todaySalesHtml}") && dash.indexOf("${todaySalesHtml}") < dash.indexOf("rg-sales-statistics-mount"), "카드는 자동 수집 상태가 있던 자리");
+  // 2026-09-13 대시보드 정리: 매출 요약은 erp_dashboard.js salesModel(공통 집계 forDate · 로켓그로스), 순서는 운영 상태 → 할 일 → 매출
+  const dashJs = fs.readFileSync(new URL("./js/erp_dashboard.js", import.meta.url), "utf8");
+  check(dash.includes("SalesMonthlySummary.forDate") && dashJs.includes("forDate(summary, shown, { rgOnly: true })"), "대시보드 매출 요약은 공통 집계(forDate · 로켓그로스)");
+  check(dash.indexOf('id="dash-status-slot"') < dash.indexOf("DASH_SECTIONS.map") && /const DASH_SECTIONS = \[\["dash-todo"[\s\S]*?"dash-sales"/.test(appSrc)
+    && dash.indexOf("rg-sales-statistics-mount") > 0, "운영 상태 → 오늘 해야 할 일 → 매출 요약(판매통계 패널은 매출 요약 상세 안)");
   const head = sales.slice(sales.indexOf("<h2>매출 내역"), sales.indexOf("${refreshHtml}"));
   check(head.includes("SalesRefresh.buttonHtml") && head.indexOf("buttonHtml") < head.indexOf("</h2>"), "‘매출 내역’ 제목 옆 새로고침 버튼");
   check(sales.includes("monthlySalesRowsHtml(monthlySummary)"), "상품별·날짜별 집계 행 유지(주문 단건 나열로 되돌리지 않음)");

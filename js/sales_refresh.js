@@ -129,11 +129,33 @@
     });
   }
 
-  /* 버튼 onclick. 한 번에 하나만 돌고, 끝나면 현재 화면을 다시 그려요. */
+  /* 2026-09-13 [대시보드 정리, 사용자 지시] WING 수집은 누르기 전에 확인창을 거쳐요(읽기 전용 '화면 새로고침'과 구분).
+     ErpUi 확인창이 있으면 그걸, 없으면 브라우저 confirm. 확인하지 않으면 아무것도 보내지 않아요. */
+  let confirming = false;
+  async function confirmCollect(date) {
+    const ui = global.ErpUi;
+    const text = `GCP 서버가 쿠팡 WING 에서 ${date || "해당 날짜"} 판매통계를 다시 받아 DB 에 저장해요.`;
+    if (ui && typeof ui.confirmModal === "function") {
+      const r = await ui.confirmModal({ title: "WING 판매데이터 다시 수집", actionLabel: "다시 수집",
+        rows: [["판매일", `<b>${esc(date || "-")}</b>`]],
+        notes: [text, "몇 분 걸릴 수 있어요. 끝나면 화면을 다시 읽어요.", "화면 숫자만 다시 읽으려면 이 버튼 대신 '화면 새로고침'을 쓰세요."] });
+      if (r.ok && typeof global.closeModal === "function") global.closeModal();
+      return !!r.ok;
+    }
+    return typeof global.confirm === "function" ? !!global.confirm(`${text}\n다시 수집할까요?`) : false;
+  }
+
+  /* 버튼 onclick. 확인한 뒤 한 번에 하나만 돌고, 끝나면 현재 화면을 다시 그려요. */
   async function click(btn) {
     if (inflight) return inflight;                         // *** 중복 클릭 차단 ***
+    if (confirming) return null;                           // 확인창이 떠 있는 동안 다시 누름
     const date = btn && btn.dataset ? btn.dataset.date : null;
     const source = btn && btn.dataset ? btn.dataset.source : "";
+    confirming = true;
+    let ok = false;
+    try { ok = await confirmCollect(date); } finally { confirming = false; }
+    if (!ok) return null;
+    if (inflight) return inflight;
     setBusy(true);
     inflight = (async () => {
       let res = await requestRefresh(date, source);
@@ -160,10 +182,10 @@
 
   function isBusy() { return !!inflight; }
 
-  function buttonHtml({ date, source, small = true, label = "판매현황 새로고침" }) {
+  function buttonHtml({ date, source, small = true, label = "WING 판매데이터 다시 수집" }) {
     return `<button type="button" class="btn ${small ? "sm " : ""}secondary ${BTN_CLASS}"
       data-date="${esc(date)}" data-source="${esc(source)}" data-label="${esc(label)}"
-      title="GCP 서버가 쿠팡 WING 판매통계를 지금 다시 받아 옵니다"
+      title="GCP 서버가 쿠팡 WING 에서 판매통계를 다시 받아 DB 에 저장해요 - 누르면 확인창이 떠요"
       ${inflight ? "disabled aria-busy=\"true\"" : ""}
       onclick="SalesRefresh.click(this)">${inflight ? "수집 중…" : esc(label)}</button>`;
   }
@@ -455,7 +477,7 @@
          새로고침을 누르면 GCP가 WING에서 지금 받아 옵니다.</p>`;
     return `<div class="card" id="rg-today-sales-card" style="margin-bottom:14px">
       <div class="card-head"><h2 style="font-size:15px">오늘 로켓그로스 판매현황</h2>
-        ${buttonHtml({ date: today, source, label: "새로고침" })}</div>
+        ${buttonHtml({ date: today, source })}</div>
       ${statusLineHtml({ date: has ? day.date : (date || today), state, hasData: has, today, health })}
       ${todayNote ? `<div role="alert" style="font-size:12.5px;margin:-4px 0 8px;color:#8a4b12">${esc(todayNote)}</div>` : ""}
       ${body}

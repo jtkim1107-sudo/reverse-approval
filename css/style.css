@@ -869,7 +869,7 @@ table.rg-detail td code { word-break: break-all; }
 .erp-badge--awaiting { background: var(--blue-bg); color: var(--blue); }
 .erp-badge--check, .erp-badge--pending, .erp-badge--soon { background: var(--amber-bg); color: var(--amber); }
 .erp-badge--logistics { background: #fff; color: var(--amber); border: 1.5px dashed var(--amber); }
-.erp-badge--reinbound, .chip.po-hold.erp-badge--reinbound { background: var(--purple-bg); color: var(--purple); border-color: #d9c9fb; }
+.erp-badge--approval, .erp-badge--reinbound, .chip.po-hold.erp-badge--reinbound { background: var(--purple-bg); color: var(--purple); border-color: #d9c9fb; }
 .erp-badge--excluded, .erp-badge--rejected, .erp-badge--urgent { background: var(--red-bg); color: var(--red); }
 .erp-badge--error { background: var(--red-bg); color: var(--red); border-color: #f5b5ab; }
 .erp-badge--hold { background: var(--gray-bg); color: #4b5366; border: 1px dashed #9aa1b2; }
@@ -1033,4 +1033,114 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
   table.cm-days td.cm-cm { grid-area: cm; font-size: 12px; }
   table.cm-days td.cm-bar { grid-area: bar; }
   table.cm-days td[data-label]::before { content: attr(data-label) " "; font-size: 11px; color: var(--text-sub); font-weight: 600; }
+}
+
+/* ===== 2026-09-13 ERP 메인 대시보드 정리 (js/erp_dashboard.js) =====
+   위: 운영 상태(정상이면 한 줄) → 오늘 해야 할 일 · 매출 → 공헌이익·광고비 · 재고 → 입고. 720px 이하 한 줄 카드. */
+.dash { display: grid; gap: 14px; min-width: 0; }
+.dash .card { margin: 0; }
+.dash-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.dash-slot { min-width: 0; }
+#dash-todo-slot { grid-column: span 5; }
+#dash-sales-slot { grid-column: span 7; }
+#dash-profit-slot, #dash-stock-slot { grid-column: span 6; }
+#dash-inbound-slot { grid-column: span 12; }
+.dash-card { min-width: 0; }
+.dash-card--error { border-top: 3px solid var(--red); }
+.dash-card--check { border-top: 3px solid var(--amber); }
+.dash-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dash-head h2 { font-size: 15px; margin: 0; }
+.dash-head h2 small { font-size: 12px; color: var(--text-sub); font-weight: 600; }
+.dash-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.dash-meta { font-size: 11.5px; color: var(--text-sub); margin: 6px 0 10px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; }
+.dash-link { font-size: 12.5px; font-weight: 600; color: var(--brand); text-decoration: none; padding: 6px 4px; white-space: nowrap;
+  display: inline-flex; align-items: center; min-height: 36px; }
+.dash-link:hover { text-decoration: underline; }
+.dash a:focus-visible, .dash button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 6px; }
+.dash-loading, .dash-empty { font-size: 13px; color: var(--text-sub); margin: 8px 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.dash-stale { font-size: 12px; color: #8a4b12; background: var(--amber-bg); border-radius: 8px; padding: 6px 10px; margin: 6px 0 8px; }
+.dash-zero { font-size: 11.5px; color: var(--text-sub); margin: 8px 0 0; line-height: 1.6; }
+.dash-note { font-size: 12px; color: var(--text-sub); margin: 8px 0 0; }
+.dash-sub { color: var(--text-sub); font-size: 12px; }
+.dash-up { color: var(--green); } .dash-down { color: var(--red); } .dash-amber { color: var(--amber); }
+/* A. 운영 상태 */
+.dash-status { min-width: 0; }
+.dash-status--ok { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12.5px; padding: 8px 12px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+.dash-status-item { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
+.dash-status-item small, .dash-status-at { color: var(--text-sub); font-size: 11.5px; }
+.dash-oklist { color: #3f6b4f; font-size: 12.5px; min-width: 0; flex: 1 1 320px; line-height: 1.6; }
+.dash-okitem small { color: var(--text-sub); }
+.dash-okitem--none { color: var(--text-sub); }
+.dash-sep { color: #b9c0cc; }
+.dash-status-at { margin-left: auto; }
+.dash-iconbtn { border: 1px solid var(--line); background: var(--card); border-radius: 8px; min-width: 32px; min-height: 32px; font-size: 15px; cursor: pointer; color: var(--text-sub); }
+.dash-status--error { border: 1.5px solid var(--red); background: #fffafa; }
+.dash-status--check { border: 1.5px solid var(--amber); background: #fffcf6; }
+.dash-problems { list-style: none; margin: 10px 0 8px; padding: 0; display: grid; gap: 6px; }
+.dash-problems li { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; font-size: 13px; }
+.dash-why { color: var(--text-sub); font-size: 12.5px; min-width: 0; overflow-wrap: anywhere; }
+.dash-status-rest { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; border-top: 1px dashed var(--line); padding-top: 8px; }
+.dash-guide { font-size: 13px; line-height: 1.7; padding-left: 18px; }
+/* B. 오늘 해야 할 일 */
+.dash-todo { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.dash-todo-row { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 6px 8px; border-radius: 9px; text-decoration: none; color: inherit; }
+.dash-todo-row:hover { background: var(--bg); }
+.dash-todo-row .erp-badge { min-width: 48px; text-align: center; }
+.dash-todo-label { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; }
+.dash-todo-label small { display: block; font-weight: 400; font-size: 11.5px; color: var(--text-sub); overflow-wrap: anywhere; }
+.dash-go { color: var(--text-sub); font-size: 18px; }
+/* C. 매출 */
+.dash-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 8px; }
+.dash-kpi { background: var(--bg); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dash-kpi span { font-size: 11.5px; color: var(--text-sub); }
+.dash-kpi b { font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.dash-kpi small { font-size: 11.5px; color: var(--text-sub); }
+.dash-kpi--main b { font-size: 20px; color: var(--brand); }
+.dash-month { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 10px 0 2px; font-size: 13px; }
+.dash-month b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.dash-month small { color: var(--text-sub); font-size: 11.5px; overflow-wrap: anywhere; }
+.dash-detail { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.dash-detail > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--brand); min-height: 32px; display: flex; align-items: center; }
+.dash-detail .card { box-shadow: none; border: 1px solid var(--line); margin: 8px 0 0; }
+.dash-detail a { display: inline-flex; align-items: center; min-height: 32px; }
+/* D+G. 공헌이익 · 광고비 */
+.dash-cm { width: 100%; border-collapse: collapse; font-size: 13px; }
+.dash-cm th, .dash-cm td { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-weight: 500; }
+.dash-cm th small { display: block; font-size: 11px; color: var(--text-sub); font-weight: 400; }
+.dash-cm td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dash-cm td.num small { display: block; font-size: 11px; color: var(--text-sub); white-space: normal; }
+.dash-cm-total th, .dash-cm-total td { border-top: 2px solid var(--line); font-weight: 700; font-size: 14px; }
+.dash-cm-total b { font-size: 16px; }
+.dash-ad { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; font-size: 12.5px; margin-top: 10px; }
+.dash-ad small { color: var(--text-sub); }
+.dash-ad-notes { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+/* E·F. 재고·입고 */
+.dash-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.dash-stat { background: var(--bg); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.dash-stat b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.dash-stat small { font-size: 11px; color: var(--text-sub); overflow-wrap: anywhere; }
+.dash-risk, .dash-sched { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.dash-risk a, .dash-sched a { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: center; padding: 7px 6px;
+  border-radius: 8px; text-decoration: none; color: inherit; min-height: 40px; }
+.dash-sched a { grid-template-columns: auto minmax(0, 1fr) auto; }
+.dash-risk a:hover, .dash-sched a:hover { background: var(--bg); }
+.dash-risk-name, .dash-sched-name { font-size: 13px; font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.dash-risk-name small, .dash-sched-name small { display: block; font-weight: 400; font-size: 11.5px; color: var(--text-sub); }
+.dash-risk-num { font-size: 12px; color: var(--text-sub); grid-column: 1; }
+.dash-risk a .erp-badge { grid-column: 2; grid-row: 1 / span 2; }
+.dash-sched-date { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dash-more { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; padding: 4px 2px; }
+.dash-more a { color: var(--brand); text-decoration: none; font-weight: 600; padding: 6px 0; display: inline-flex; align-items: center; min-height: 36px; }
+@media (max-width: 1100px) {
+  #dash-todo-slot, #dash-sales-slot { grid-column: span 12; }
+}
+@media (max-width: 720px) {
+  .dash-grid { grid-template-columns: minmax(0, 1fr); }
+  #dash-todo-slot, #dash-sales-slot, #dash-profit-slot, #dash-stock-slot, #dash-inbound-slot { grid-column: 1; }
+  .dash-status-at { margin-left: 0; }
+  .dash-kpis, .dash-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-kpi--main { grid-column: 1 / -1; }
+  .dash-sched a { grid-template-columns: minmax(0, 1fr) auto; }
+  .dash-sched-date { grid-column: 1 / -1; }
 }

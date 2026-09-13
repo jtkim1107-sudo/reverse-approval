@@ -17,7 +17,8 @@ const report = body("async function viewReport()", "/* ==================== 발�
 const ai = body("async function viewAiReport()", "/* ---------- 업무 지시");
 const helper = body("async function buildMonthlyNetSales", "function monthlySalesSummaryHtml");
 
-check(dashboard.includes("buildMonthlyNetSales") && dashboard.includes("이번 달 순매출"), "대시보드는 공통 순매출 집계를 사용");
+const dashJs = fs.readFileSync(new URL("./js/erp_dashboard.js", import.meta.url), "utf8");   // 2026-09-13 대시보드 화면 부품
+check(dashboard.includes("buildMonthlyNetSales") && dashJs.includes("이번 달 순매출") && dashJs.includes("m.month.net_amount"), "대시보드는 공통 순매출 집계를 사용");
 check(dashboard.includes('id="rg-sales-statistics-mount"'), "대시보드 아침 브리핑도 판매통계 패널로 교체");
 check(!dashboard.includes("이번 달 주문매출"), "대시보드의 옛 주문매출 라벨 제거");
 check(report.includes("Promise.all(months.map(m => buildMonthlyNetSales"), "최근 6개월을 공통 순매출 집계로 계산");

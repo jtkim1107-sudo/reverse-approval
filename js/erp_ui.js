@@ -24,6 +24,7 @@
     check:     { icon: "⚠", label: "확인 필요" },
     logistics: { icon: "📦", label: "물류정보 입력 필요" },
     reinbound: { icon: "⏸", label: "재입고 승인 필요" },
+    approval:  { icon: "✎", label: "승인 필요" },
     excluded:  { icon: "⛔", label: "재입고 제외" },
     hold:      { icon: "⏸", label: "SKU 사용 보류" },
     error:     { icon: "✕", label: "오류" },
