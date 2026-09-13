@@ -3929,7 +3929,9 @@ function inventorySnapshotRef(d) {
 
 function inventoryStockText(d) {
   const unit = inventoryStockUnit(d);
-  if (d.live_stock != null) return `${fmt(d.live_stock)}${unit}`;
+  // 2026-09-14 반품 재판매 공유재고(서버 스위치가 켜졌을 때만 필드가 옴): "288개 (정상 286 + 반품 2)"
+  const resale = typeof ResaleReturn !== "undefined" ? ResaleReturn.stockSuffix(d) : "";
+  if (d.live_stock != null) return `${fmt(d.live_stock)}${unit}${resale}`;
   const snapshot = inventorySnapshotRef(d);
   if (snapshot != null) return `확인 불가 · 스냅샷 ${fmt(snapshot)}${unit}`;
   return "-";
@@ -3953,6 +3955,11 @@ function inventoryDecisionLabel(d) {
 
 function inventoryOutlookText(d) {
   if (d.decision === "RESTOCK_EXCLUDED") return "재입고 안 함";
+  // 2026-09-14 반품 재판매 SKU 행 - 자기 재고가 0 이어도 판단은 공유재고 기준(기준 SKU 를 따름)
+  if (d.resale_pool && d.resale_pool.role === "resale") {
+    if (d.decision === "DATA_CHECK") return "확인 필요";
+    return d.days_of_stock_now != null ? `공유재고 약 ${d.days_of_stock_now}일` : "기준 SKU 따름";
+  }
   if (d.decision === "DATA_CHECK") return "확인 필요";
   if ((d.live_stock ?? 0) <= 0) return d.incoming_qty ? "품절 · 입고대기" : "품절";
   if (d.days_of_stock_now != null) return `약 ${d.days_of_stock_now}일`;
@@ -4155,6 +4162,7 @@ function openInventoryDecisionDetail(productId, vendorItemId = "") {
             <a onclick="closeModal();openInventoryDecisionDetail('${d.shared_inventory.base_product_id}')" style="color:var(--brand);cursor:pointer;font-weight:600">기준 상품 보기 →</a>
           </p>` : ""}
         ${isBase ? `<p style="font-size:12.5px;color:var(--text-sub);margin:0 0 8px">📦 이 상품은 다른 구성(세트)과 재고를 나누는 공유재고 기준상품이에요.</p>` : ""}
+        ${typeof ResaleReturn !== "undefined" ? ResaleReturn.resaleNoticeHtml(d) : ""}
         <p style="font-size:13px">${esc(d.decision_reason || "")}</p>
         ${d.decision === "RESTOCK_EXCLUDED" ? `<p style="font-size:12.5px;background:var(--gray-bg);border-radius:8px;padding:8px 10px;margin:0 0 8px">
             ⛔ 재입고 제외 SKU${d.vendor_item_id ? ` <code>${esc(d.vendor_item_id)}</code>` : ""} - 추천 발주수량을 내지 않고 자동 발주·입고 초안 대상에서 빠져요.
@@ -4166,7 +4174,8 @@ function openInventoryDecisionDetail(productId, vendorItemId = "") {
 
         <h4 style="font-size:13px;margin:14px 0 4px">현재</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
-          <tr><td>${isChild ? "판매가능 세트(기준상품 재고 환산)" : "쿠팡 live 재고"}</td><td class="num">${esc(inventoryStockDetailText(d))}</td></tr>
+          ${(typeof ResaleReturn !== "undefined" && ResaleReturn.detailRowsHtml(d))
+            || `<tr><td>${isChild ? "판매가능 세트(기준상품 재고 환산)" : "쿠팡 live 재고"}</td><td class="num">${esc(inventoryStockDetailText(d))}</td></tr>`}
           <tr><td>재고 출처 / 갱신시각</td><td class="num">${esc(d.stock_source || "-")} · ${stockUpdated}</td></tr>
         </tbody></table></div>
 
