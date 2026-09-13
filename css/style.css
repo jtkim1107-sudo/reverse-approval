@@ -849,3 +849,131 @@ table.rg-detail td code { word-break: break-all; }
 .pi-ex-released { margin-top: 10px; font-size: 13px; }
 .pi-ex-released summary { cursor: pointer; color: var(--text-sub); margin-bottom: 4px; }
 .idt-ref { color: var(--text-sub); font-weight: 600; }
+
+/* ===== 2026-09-13 ERP UI 정리 - 공통 부품(js/erp_ui.js) =====
+   상태는 색 + 아이콘 + 문구로(색만으로 말하지 않음). 노트북(1280~1440px)에서 가로 스크롤을 줄이고,
+   720px 이하는 표를 카드로 바꿔요(td[data-label]). 기존 .chip·표 스타일은 그대로 두고 erp- 로만 추가해요. */
+:root {
+  --blue: #1f6fd6; --blue-bg: #e7f0fd;
+  --purple: #7445d6; --purple-bg: #f1ebfd;
+}
+.erp-badge { display: inline-block; padding: 2px 9px; border-radius: 12px;
+  font-size: 12px; font-weight: 700; line-height: 1.55; border: 1px solid transparent; vertical-align: middle; max-width: 100%;
+  white-space: nowrap; }
+.erp-badge--sm { font-size: 11.5px; font-weight: 600; padding: 1px 7px; }
+.erp-badge .erp-ico { font-size: 11px; line-height: 1; margin-right: 4px; }
+.erp-badge-reason { display: block; font-weight: 500; font-size: 11.5px; opacity: .92; white-space: normal; line-height: 1.35;
+  padding: 0 0 2px 15px; max-width: 190px; }
+.erp-badge--ok { background: var(--green-bg); color: var(--green); }
+.erp-badge--approved { background: var(--green-bg); color: var(--green); }
+.erp-badge--awaiting { background: var(--blue-bg); color: var(--blue); }
+.erp-badge--check, .erp-badge--pending, .erp-badge--soon { background: var(--amber-bg); color: var(--amber); }
+.erp-badge--logistics { background: #fff; color: var(--amber); border: 1.5px dashed var(--amber); }
+.erp-badge--reinbound, .chip.po-hold.erp-badge--reinbound { background: var(--purple-bg); color: var(--purple); border-color: #d9c9fb; }
+.erp-badge--excluded, .erp-badge--rejected, .erp-badge--urgent { background: var(--red-bg); color: var(--red); }
+.erp-badge--error { background: var(--red-bg); color: var(--red); border-color: #f5b5ab; }
+.erp-badge--hold { background: var(--gray-bg); color: #4b5366; border: 1px dashed #9aa1b2; }
+.erp-badge--muted { background: var(--gray-bg); color: var(--text-sub); }
+.erp-badge--info { background: var(--brand-light); color: var(--brand); }
+
+.erp-summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin: 0 0 14px; }
+.erp-summary--compact { grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); }
+.erp-stat { display: flex; flex-direction: column; gap: 1px; text-align: left; padding: 8px 10px; border-radius: 10px;
+  background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--line); font: inherit; color: inherit; min-width: 0; }
+button.erp-stat { cursor: pointer; }
+button.erp-stat:hover { border-color: var(--brand); }
+button.erp-stat:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.erp-stat.on { box-shadow: 0 0 0 2px var(--brand) inset; }
+.erp-stat-label { font-size: 12px; color: var(--text-sub); display: flex; gap: 5px; align-items: center; }
+.erp-stat-value { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.2; }
+.erp-stat-sub { font-size: 11.5px; color: var(--text-sub); }
+.erp-stat--ok, .erp-stat--approved { border-left-color: var(--green); }
+.erp-stat--awaiting { border-left-color: var(--blue); }
+.erp-stat--check, .erp-stat--pending, .erp-stat--soon, .erp-stat--logistics { border-left-color: var(--amber); }
+.erp-stat--reinbound { border-left-color: var(--purple); }
+.erp-stat--excluded, .erp-stat--error, .erp-stat--urgent, .erp-stat--rejected { border-left-color: var(--red); }
+.erp-stat--hold, .erp-stat--muted { border-left-color: #9aa1b2; }
+.erp-stat--info { border-left-color: var(--brand); }
+
+/* 표: 구역 머리줄 · 핵심 열 고정 · 줄바꿈 허용(노트북 가로 스크롤 줄임) */
+.erp-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.erp-table th, .erp-table td { padding: 8px 9px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: normal; }
+.erp-table thead th { position: sticky; top: 0; background: var(--card); z-index: 2; font-size: 11.5px; }
+.erp-table thead tr.erp-grp th { font-size: 11px; letter-spacing: .4px; color: var(--text-sub); border-bottom: 1px solid var(--line);
+  text-align: center; padding: 5px 6px; }
+.erp-table thead tr.erp-grp th.erp-grp-sep, .erp-table td.erp-sep, .erp-table th.erp-sep { border-left: 1px solid var(--line); }
+.erp-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.erp-table thead th { white-space: nowrap; }
+.erp-table td.erp-nowrap { white-space: nowrap; }
+.erp-table td.erp-status { min-width: 118px; }
+.erp-table .erp-sticky { min-width: 200px; max-width: 300px; }
+.pi-table.erp-table th, .pi-table.erp-table td { padding: 8px 5px; }
+.pi-table.erp-table .erp-sticky { min-width: 170px; max-width: 210px; }
+.pi-table.erp-table .pi-sugg { max-width: 104px; }
+.erp-table td.erp-incoming { min-width: 96px; }
+.erp-name .erp-inline-act { margin-top: 3px; }
+.erp-table td.erp-reco { white-space: normal; min-width: 116px; max-width: 170px; }
+.erp-table td.erp-reco small { display: block; line-height: 1.35; }
+.erp-table td.erp-reco > div { font-weight: 700; }
+.erp-table td.erp-reco > div small, .erp-table td.erp-reco > div .erp-badge { font-weight: 500; }
+.erp-linkbtn { background: none; border: none; padding: 0; color: var(--brand); font-size: 12px; font-weight: 700; cursor: pointer; }
+.erp-linkbtn:hover { text-decoration: underline; }
+.erp-linkbtn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 4px; }
+.erp-table .erp-sticky { position: sticky; left: 0; background: var(--card); z-index: 1; box-shadow: 1px 0 0 var(--line); }
+.erp-table thead .erp-sticky { z-index: 3; }
+.erp-table tbody tr:hover td { background: #fafbff; }
+.erp-table tbody tr:hover td.erp-sticky { background: #fafbff; }
+.erp-table tr.erp-row-muted td { color: var(--text-sub); }
+.erp-table tr.erp-detail-row td { background: #fbfbfe; padding: 10px 14px 14px; }
+.erp-table .erp-actions { white-space: normal; text-align: right; width: 172px; min-width: 150px; }
+.erp-table .erp-actions .btn { margin: 2px 0 2px 4px; white-space: normal; text-align: center; }
+.erp-table .erp-actions small { display: block; }
+.erp-stack { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.erp-name b { display: block; font-size: 13.5px; line-height: 1.35; overflow-wrap: anywhere; }
+.erp-name small { display: block; color: var(--text-sub); font-size: 11.5px; margin-top: 1px; overflow-wrap: anywhere; }
+.erp-rel { display: inline-block; margin-top: 4px; font-size: 11.5px; color: var(--purple); background: var(--purple-bg);
+  border-radius: 6px; padding: 1px 6px; }
+.erp-sub { display: block; font-size: 11.5px; color: var(--text-sub); }
+.erp-expand { font-size: 12px; }
+.erp-help { margin: 0 0 12px; font-size: 12.5px; color: var(--text-sub); }
+.erp-help summary { cursor: pointer; color: var(--brand); font-weight: 600; list-style: none; }
+.erp-help summary::-webkit-details-marker { display: none; }
+.erp-help summary::before { content: "ⓘ "; }
+.erp-help[open] summary { margin-bottom: 6px; }
+.erp-readonly { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-sub);
+  background: var(--gray-bg); border-radius: 99px; padding: 2px 10px; }
+.erp-section-title { font-size: 13px; font-weight: 800; margin: 14px 0 6px; display: flex; align-items: center; gap: 6px; }
+.erp-kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 13px; }
+.erp-kv dt { color: var(--text-sub); }
+.erp-kv dd { margin: 0; overflow-wrap: anywhere; }
+.erp-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 18px; }
+.erp-confirm-rows th { width: 120px; }
+
+/* 모바일: 표 → 카드 */
+@media (max-width: 720px) {
+  table.erp-cards, .erp-cards tbody, .erp-cards tfoot, .erp-cards tr, .erp-cards td { display: block; width: 100%; box-sizing: border-box; }
+  .erp-cards thead { display: none; }
+  .erp-cards tr { border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; padding: 8px 10px; background: var(--card); }
+  .erp-cards tbody tr:hover td { background: transparent; }
+  .erp-cards td { border: none; padding: 3px 0; display: flex; gap: 10px; justify-content: space-between; align-items: flex-start; text-align: right; }
+  .erp-cards td[data-label]::before { content: attr(data-label); color: var(--text-sub); font-size: 12px; font-weight: 600;
+    text-align: left; flex: 0 0 auto; max-width: 42%; }
+  .erp-cards td.erp-card-head { display: block; text-align: left; border-bottom: 1px solid var(--line); padding-bottom: 6px; margin-bottom: 4px; }
+  .erp-cards td.erp-card-head::before { display: none; }
+  .erp-cards td > .erp-stack { align-items: flex-end; }
+  .erp-cards td.erp-actions { justify-content: flex-end; flex-wrap: wrap; width: auto; }
+  .erp-cards td.erp-hide-m { display: none; }
+  .erp-cards td:empty { display: none; }
+  .erp-cards tfoot tr, .erp-cards tfoot td { background: var(--bg); }
+  .erp-cards td.num small { margin-left: 4px; }
+  .erp-cards .erp-sticky { position: static; box-shadow: none; }
+  .erp-cards tr.erp-detail-row { border-style: dashed; }
+  .erp-cards tr.erp-detail-row td { display: block; text-align: left; background: transparent; }
+  .erp-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .erp-kv { grid-template-columns: 1fr; }
+}
+.erp-items { margin: 4px 0 2px; padding-left: 16px; font-size: 12px; line-height: 1.5; }
+.erp-items li { margin: 1px 0; }
+.rg-plan-table .rg-approval-cell .rg-reject-info { margin-top: 2px; }
+.erp-cards .erp-items { text-align: left; }

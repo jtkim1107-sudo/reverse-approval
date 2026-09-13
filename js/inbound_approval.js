@@ -74,7 +74,8 @@
     if (!hold || hold.held !== true) return "";
     const who = [hold.held_by, hold.held_at ? fmtKst(hold.held_at) : null].filter(Boolean).join(" · ");
     const label = isReinboundHold(hold) ? "⏸ 재입고 승인 필요" : "⏸ 자동입고 보류";
-    return `<span class="chip po-hold" title="${escHtml(`${hold.reason || ""}${who ? ` (${who})` : ""} - 자동 입고 초안 생성 안 함`)}">${label}</span>`;
+    // 2026-09-13 [ERP UI 정리] 재입고 승인 필요 = 보라색 강조 배지(문구·아이콘 함께)
+    return `<span class="chip po-hold erp-badge erp-badge--reinbound" title="${escHtml(`${hold.reason || ""}${who ? ` (${who})` : ""} - 자동 입고 초안 생성 안 함`)}">${label}</span>`;
   }
   const HOLD_ACTION_LABEL = { HOLD: "보류", RELEASE: "해제(재입고 허용)" };
   // 발주서 상세의 보류 영역. ctx = { poId, me, migrated, events }
@@ -162,6 +163,20 @@
     return html;
   }
 
+  function processedLabel(p) {
+    if (p.internal_status === "CANCELLED") return "취소됨";
+    if (p.approval_status === "APPROVED") return "승인 완료";
+    if (p.approval_status === "REJECTED") return "거절 완료";
+    return "승인 불가";
+  }
+  function processedReason(p, ctx = {}) {
+    if (p.internal_status === "CANCELLED") return "취소된 요청(이력)이라 처리할 수 없어요";
+    if (isSuperseded(p, ctx.supersededIds)) return "새 요청으로 대체된 요청이에요";
+    if (p.approval_status === "APPROVED") return "이미 승인된 요청이에요";
+    if (p.preflight_status !== "PASSED") return "PRE-FLIGHT 를 통과해야 승인할 수 있어요";
+    return "지금 승인·거절할 수 있는 상태가 아니에요";
+  }
+
   // 승인·거절 영역(행 끝 버튼 칸에 붙어요). onclick 함수는 app.js 에 있어요.
   function decisionHtml(p, ctx = {}) {
     const me = ctx.me || {};
@@ -176,11 +191,17 @@
       if (canApprove(p, ctx)) {
         out.push(ctx.loadBlock
           ? `<button class="btn sm" disabled title="${escHtml(ctx.loadBlock.label)} - 차량 종류와 관계없이 전체 2PLT 이상만 승인">승인</button>`
-          : `<button class="btn sm green" onclick="decideRgInbound('${id}','APPROVED')"${gate}>승인</button>`);
+          : `<button class="btn sm green" data-erp-key="rg-approve-${id}" onclick="decideRgInbound('${id}','APPROVED')"${gate}>승인</button>`);
       }
       if (canReject(p, ctx)) {
         out.push(`<button class="btn sm danger" onclick="openRgRejectModal('${id}')"${gate}>거절</button>`);
       }
+      // 2026-09-13 [ERP UI 정리] 이미 처리됐거나 승인 단계가 아닌 요청은 잠긴 버튼으로(누를 수 없음 - 이유는 툴팁)
+      if (!canApprove(p, ctx) && !canReject(p, ctx)) {
+        out.push(`<button class="btn sm" disabled aria-disabled="true" title="${escHtml(processedReason(p, ctx))}">${escHtml(processedLabel(p))}</button>`);
+      }
+    } else if (p.approval_status === "REJECTED" && me.approver === true) {
+      out.push(`<button class="btn sm" disabled aria-disabled="true" title="거절은 끝 상태예요 - 필요하면 [수정 후 재요청]">거절 완료</button>`);
     }
     if (canResubmit(p, ctx)) {
       out.push(`<button class="btn sm secondary" onclick="openRgResubmitModal('${id}')">✏️ 수정 후 재요청</button>`);
@@ -357,12 +378,58 @@
     return "﻿" + [CSV_HEADER, ...rows].map(r => r.map(cell).join(",")).join("\r\n");
   }
 
+  // 2026-09-13 [ERP UI 정리] 재입고 승인 필요 목록 - 보류된 발주서(po_inbound_holds held=true)를 한곳에.
+  // rows = [{ poId, poNo, supplier, hold, items:[{name, qty, remain}], cancelNote, plans:[shortId] }]
+  // 버튼: [재입고 허용](승인 권한자 · 재입고 보류만 · PO HOLD 만 해제 - WING 초안·제출 즉시 실행 안 함) ·
+  //       [취소 사유 보기] · [변경 이력] · [발주서]. onclick 함수는 app.js(releasePoHold 등).
+  function reinboundCardHtml(rows, ctx = {}) {
+    const me = ctx.me || {};
+    const list = rows || [];
+    if (ctx.error) {
+      return `<div class="card"><div class="card-head"><h2>재입고 승인 필요</h2></div>
+        <p role="alert"><span class="erp-badge erp-badge--error"><span class="erp-ico" aria-hidden="true">✕</span>보류 목록을 불러오지 못했어요</span>
+        <span class="rg-muted">${escHtml(ctx.error)}</span></p></div>`;
+    }
+    if (!list.length) return "";
+    const body = list.map(r => {
+      const reinbound = isReinboundHold(r.hold);
+      const po = escHtml(r.poId);
+      const items = (r.items || []).map(it => `<li>${escHtml(it.name || "-")} <b>${Number(it.qty || 0).toLocaleString("ko-KR")}개</b>`
+        + (it.remain != null && it.remain !== it.qty ? ` <span class="rg-muted">(미입고 ${Number(it.remain).toLocaleString("ko-KR")})</span>` : "") + `</li>`).join("");
+      const who = [r.hold.held_by, fmtKst(r.hold.held_at)].filter(Boolean).join(" · ");
+      const act = [
+        me.approver === true
+          ? `<button class="btn sm ${reinbound ? "green" : "secondary"}" data-erp-key="po-hold-${po}" onclick="releasePoHold('${po}')">${reinbound ? "재입고 허용" : "보류 해제"}</button>`
+          : `<span class="erp-readonly" title="승인 권한자만 재입고를 허용할 수 있어요">🔒 읽기 전용</span>`,
+        `<button class="btn sm secondary" onclick="openPoHoldReason('${po}')">취소 사유 보기</button>`,
+        `<button class="btn sm secondary" onclick="openPoHoldHistory('${po}')">변경 이력</button>`,
+        `<button class="btn sm secondary" onclick="openPODetail('${po}')">발주서</button>`,
+      ].join(" ");
+      return `<tr>
+        <td class="erp-sticky erp-card-head"><b>${escHtml(r.poNo || short(r.poId))}</b><small class="erp-sub">${escHtml(r.supplier || "")}</small>${poHoldChipHtml(r.hold)}</td>
+        <td data-label="상품 · 수량"><ul class="erp-items">${items || "<li>-</li>"}</ul></td>
+        <td data-label="취소 사유"><div>${escHtml(r.hold.reason || "-")}${r.cancelNote ? `<small class="erp-sub">${escHtml(r.cancelNote)}</small>` : ""}</div></td>
+        <td data-label="보류"><div class="erp-stack"><span class="rg-muted">${escHtml(who || "-")}</span></div></td>
+        <td class="erp-actions">${act}</td></tr>`;
+    }).join("");
+    return `<div class="card" id="reinbound-card">
+      <div class="card-head"><h2>재입고 승인 필요 <span class="erp-badge erp-badge--reinbound"><span class="erp-ico" aria-hidden="true">⏸</span>${list.length}건</span></h2>
+        ${ctx.refreshOnclick ? `<button class="btn sm secondary" onclick="${ctx.refreshOnclick}">새로고침</button>` : ""}</div>
+      <details class="erp-help"><summary>재입고 허용을 누르면 무엇이 바뀌나요?</summary>
+        WING 입고가 제출 뒤 취소되면 입고 대사 폴러가 그 발주서를 <b>재입고 승인 필요</b>로 보류해요 - 시간이 지나도 자동으로 새 WING 초안을 만들지 않아요.
+        <b>[재입고 허용]</b>은 이 발주서의 보류(PO HOLD)만 풀어요. 지금 WING 초안이나 제출을 실행하지 않아요 - 다음 자동 주기에 다시 판단해 새 입고 요청을 만들고,
+        그 요청을 다시 승인해야 WING 에 제출돼요. 허용 이력이 남아요.</details>
+      <div class="erp-table-wrap"><table class="erp-table erp-cards">
+        <thead><tr><th class="erp-sticky">발주서</th><th>상품 · 수량</th><th>취소 사유</th><th>보류</th><th></th></tr></thead>
+        <tbody>${body}</tbody></table></div></div>`;
+  }
+
   root.InboundApproval = {
     SINGLE_PLT_REASON, SINGLE_PLT_CODE, LOAD_LABELS, loadBlock, WING_DONE_LABEL, WING_TRIED_LABEL, CSV_HEADER,
     isWingSubmitted, wingSubmittedLabel, singlePltBlocked, canApprove, canReject, canResubmit,
     defaultRejectReason, defaultRejectCode, approvalCellHtml, decisionHtml, detailHtml, rejectionInfoHtml,
     csvRows, toCsv, fmtKst, palletSum,
     shipmentGroupSummary, shipmentGroupChipHtml, shipmentGroupDetailHtml, itemsLabel, qtySum,
-    poHoldChipHtml, poHoldSectionHtml, isReinboundHold, GROUP_STATUS_LABEL,
+    poHoldChipHtml, poHoldSectionHtml, isReinboundHold, GROUP_STATUS_LABEL, reinboundCardHtml, processedLabel,
   };
 })(typeof window !== "undefined" ? window : globalThis);

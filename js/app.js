@@ -3797,6 +3797,7 @@ function stockFlowRefresh() {
   stockFlowCache = { purchaseReco: null, erpBase: null, rgData: null, poInfo: null };
   _stockFlowForceRefreshNext = true; // 다음 getStockFlowPurchaseReco() 호출만 서버 캐시도 강제로 우회
   inventoryDecisionsCache = null; // 통합 판단 엔진 결과도 같이 비움(재고·발주 탭이 다시 fetch함)
+  _inventoryProductIndex = null;  // 2026-09-13 상품 칸 ERP 코드·이름도 다시 읽기
   _inventoryDecisionsForceRefreshNext = true; // 2026-09-08 [성능개선 3A] 다음 fetchInventoryDecisions()만 서버 RG live 캐시도 강제로 우회
   route();
 }
@@ -3941,7 +3942,8 @@ async function viewInventoryDecisions() {
   if (!result.ok) {
     return `<div class="card">
       <div class="card-head"><h2>재고 · 발주</h2></div>
-      <p style="color:var(--red)">⚠️ 재고·발주 판단을 불러오지 못했어요: ${esc(result.error)}</p>
+      <p role="alert">${ErpUi.badge("error", { text: "재고·발주 판단을 불러오지 못했어요", reason: result.error })}</p>
+      <p class="erp-help">마지막 판단 결과를 지어내지 않아요. 잠시 뒤 다시 시도해 주세요.</p>
       <button class="btn sm secondary" onclick="stockFlowRefresh()">🔄 다시 시도</button>
     </div>`;
   }
@@ -3953,54 +3955,88 @@ async function viewInventoryDecisions() {
   const priority = { ORDER_NOW: 0, DATA_CHECK: 1, ORDER_SOON: 2, AWAITING_INBOUND: 3, OK: 4, RESTOCK_EXCLUDED: 5 };
   const sorted = [...filtered].sort((a, b) => (priority[a.decision] ?? 9) - (priority[b.decision] ?? 9));
 
-  // 재입고 제외는 0건이면 칩을 숨겨요(범용 기능 - 등록된 SKU 가 있을 때만 보임)
-  const summaryChips = Object.entries(INVENTORY_DECISION_META).filter(([key]) => key !== "RESTOCK_EXCLUDED" || counts[key]).map(([key, meta]) => `
-    <button class="btn sm ${inventoryDecisionFilter === key ? "" : "secondary"}"
-      onclick="inventoryDecisionFilter = (inventoryDecisionFilter === '${key}' ? null : '${key}'); route()">
-      ${meta.label} ${counts[key] ?? 0}
-    </button>`).join("");
+  // 2026-09-13 [ERP UI 정리] 위쪽 핵심 요약(누르면 그 상태만) · 재고 상태와 자동화 상태 분리 · 구역(재고/입고/상태/추천) ·
+  // 상품 열 고정 · 720px 이하 카드. 숫자·판정은 서버 값 그대로(화면이 다시 계산하지 않음).
+  const prodIndex = await loadInventoryProductIndex();
+  const filterClick = key => `inventoryDecisionFilter = (inventoryDecisionFilter === '${key}' ? null : '${key}'); route()`;
+  const blockedCount = result.decisions.filter(d => d.automation_blocked && d.decision !== "RESTOCK_EXCLUDED").length;
+  const vatCount = result.decisions.filter(d => d.recommended_order_qty_ea && ProcurementInput.vatNeedsAck((invVatOf(d) || {}).status)).length;
+  const summaryHtml = ErpUi.summaryHtml([
+    ...Object.keys(INVENTORY_DECISION_META).filter(key => key !== "RESTOCK_EXCLUDED" || counts[key]).map(key => ({
+      label: { ORDER_NOW: "지금 발주", ORDER_SOON: "곧 발주", AWAITING_INBOUND: "입고대기", OK: "정상", DATA_CHECK: "확인 필요", RESTOCK_EXCLUDED: "재입고 제외" }[key],
+      value: counts[key] ?? 0, kind: ErpUi.DECISION_KIND[key], active: inventoryDecisionFilter === key, onclick: filterClick(key),
+      title: "누르면 이 상태만 보여요(다시 누르면 전체)" })),
+    { label: "자동화 막힘", value: blockedCount, kind: "logistics", sub: "물류정보·SKU 보류 등", hidden: !blockedCount,
+      title: "재고 판단과 별개로 정식 추천·자동 발주·WING 초안이 막힌 상품" },
+    { label: "VAT 미확인 추천", value: vatCount, kind: "check", sub: "참고용 · 자동 발주안 제외", hidden: !vatCount },
+  ], { label: "재고 판단 요약" });
 
   const rowsHtml = sorted.map(d => {
-    const meta = INVENTORY_DECISION_META[d.decision] || { label: d.decision, chip: "waiting" };
-    const rowLabel = inventoryDecisionLabel(d);
     const stockText = inventoryStockText(d);
     const velocityText = inventoryVelocityText(d);
     const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개${ProcurementInput.vatChipHtml(invVatOf(d))}`
       : inventoryReferenceShortageHtml(d);
-    const sharedBadge = inventorySharedInventoryBadge(d);
-    const mobileMeta = [stockText, velocityText, inventoryIncomingText(d)].join(" · ");
+    const p = prodIndex[d.product_id] || null;
+    const s = d.shared_inventory;
+    const rel = s ? (s.role === "child" ? { role: "child", parentName: s.base_product_name, setQty: s.set_qty } : { role: "base" }) : null;
+    const listing = [d.product_name, d.option_name].filter(Boolean).join(" · ");
+    const skus = d.vendor_item_id ? [d.vendor_item_id] : [];
+    const open = `openInventoryDecisionDetail('${esc(d.product_id || "")}','${esc(d.vendor_item_id || "")}')`;
+    const detailBtn = `<div class="erp-inline-act"><button type="button" class="erp-linkbtn" onclick="event.stopPropagation();${open}">상세 보기 ›</button></div>`;
+    const nameCell = p
+      ? ErpUi.nameCellHtml({ code: p.code, name: p.name, option: d.option_name, skus, extra: ErpUi.relationHtml(rel) + detailBtn,
+          title: `쿠팡 상품: ${listing}${ErpUi.displayName(p.code, p.name) !== p.name ? ` · DB 상품명: ${p.name}` : ""}` })
+      : ErpUi.nameCellHtml({ name: d.product_name || d.vendor_item_id, option: d.option_name, skus,
+          extra: `<span class="erp-sub">ERP 상품 연결 없음(쿠팡 SKU 만)</span>${ErpUi.relationHtml(rel)}${detailBtn}` });
     return `
-      <tr data-clickable onclick="openInventoryDecisionDetail('${esc(d.product_id || "")}','${esc(d.vendor_item_id || "")}')">
-        <td class="idt-name">${esc(d.product_name || "")}${d.option_name ? `<br><small style="color:var(--text-sub);font-weight:400">${esc(d.option_name)}</small>` : ""}${sharedBadge}</td>
-        <td class="idt-stock num">${esc(stockText)}</td>
-        <td class="idt-velocity num">${velocityText}</td>
-        <td class="idt-incoming">${inventoryIncomingText(d)}</td>
-        <td class="idt-outlook">${esc(inventoryOutlookText(d))}</td>
-        <td><span class="chip ${meta.chip}">${esc(rowLabel)}</span>${inventoryAutomationBadge(d)}</td>
-        <td class="idt-reco num">${recoText}</td>
-        <td class="idt-mobile-meta">${esc(mobileMeta)} · ${esc(inventoryOutlookText(d))}</td>
+      <tr data-clickable onclick="${open}">
+        <td class="erp-sticky erp-card-head">${nameCell}</td>
+        <td class="num erp-sep" data-label="현재재고">${esc(stockText)}</td>
+        <td class="num" data-label="판매속도(30일)">${velocityText}</td>
+        <td class="erp-nowrap" data-label="재고전망">${esc(inventoryOutlookText(d))}</td>
+        <td class="erp-sep erp-incoming" data-label="입고예정">${inventoryIncomingText(d)}</td>
+        <td class="erp-sep erp-status" data-label="재고 상태">${ErpUi.decisionBadge(d)}</td>
+        <td class="erp-status" data-label="자동화 상태">${ErpUi.automationBadge(d)}</td>
+        <td class="num erp-sep erp-reco" data-label="추천발주"><div>${recoText}</div></td>
       </tr>`;
   }).join("");
 
   return `
     <div class="card">
       <div class="card-head">
-        <h2>재고 · 발주</h2>
+        <h2>재고 · 발주${inventoryDecisionFilter ? ` <span class="erp-readonly">필터: ${esc((INVENTORY_DECISION_META[inventoryDecisionFilter] || {}).label || inventoryDecisionFilter)}</span>` : ""}</h2>
         <span style="font-size:11px;color:var(--text-sub)">
           ${result.calculatedAt ? "계산: " + new Date(result.calculatedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
         </span>
       </div>
       ${cacheHealthHtml}
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">${summaryChips}</div>
-      <div class="table-wrap"><table class="inv-decision-table">
-        <thead><tr>
-          <th>상품</th><th class="num idt-stock">현재재고</th><th class="idt-velocity" title="최근 30일(오늘 제외) 로켓그로스 순판매수량 ÷ 30 · 판매자배송 제외">판매속도(30일)</th>
-          <th class="idt-incoming">입고예정</th><th class="idt-outlook">재고전망</th><th>판정</th><th class="num idt-reco">추천발주</th>
-        </tr></thead>
-        <tbody>${rowsHtml || `<tr><td colspan="7" style="color:var(--text-sub)">데이터 없음</td></tr>`}</tbody>
+      ${summaryHtml}
+      <details class="erp-help"><summary>표 보는 법</summary>
+        <b>재고 상태</b>는 재고·판매·입고예정으로 낸 판단이고, <b>자동화 상태</b>는 정식 추천 발주수량·자동 발주·WING 입고 초안이
+        막혔는지예요(예: 물류정보 입력 필요). 둘은 따로 판단해요. 판매속도는 최근 30일(오늘 제외) 로켓그로스 순판매수량 ÷ 30,
+        판매자배송은 빼요. 행이나 [상세]를 누르면 라이브재고·판매이력·기존발주·입고예정·예측 근거를 볼 수 있어요.</details>
+      <div class="erp-table-wrap"><table class="erp-table erp-cards inv-decision-grid">
+        <thead>
+          <tr class="erp-grp"><th class="erp-sticky"></th><th colspan="3" class="erp-grp-sep">재고</th><th class="erp-grp-sep">입고</th>
+            <th colspan="2" class="erp-grp-sep">상태</th><th class="erp-grp-sep">추천</th></tr>
+          <tr><th class="erp-sticky">상품</th><th class="num erp-sep">현재재고</th><th class="num" title="최근 30일(오늘 제외) 로켓그로스 순판매수량 ÷ 30 · 판매자배송 제외">판매속도(30일)</th>
+            <th>재고전망</th><th class="erp-sep">입고예정</th><th class="erp-sep">재고 상태</th><th>자동화 상태</th><th class="num erp-sep">추천발주</th></tr>
+        </thead>
+        <tbody>${rowsHtml || `<tr><td colspan="8" class="empty">데이터 없음</td></tr>`}</tbody>
       </table></div>
-      <p style="font-size:11.5px;color:var(--text-sub);margin-top:8px">행을 누르면 상세 근거(라이브재고/ERP장부재고/판매이력/기존발주/입고예정/예측)를 볼 수 있어요.</p>
     </div>`;
+}
+
+// 2026-09-13 [ERP UI 정리] 상품 칸에 ERP 코드·이름을 보여주려고 제품 마스터를 읽어요(읽기만 · 새로고침 전까지 재사용).
+let _inventoryProductIndex = null;
+async function loadInventoryProductIndex() {
+  if (_inventoryProductIndex) return _inventoryProductIndex;
+  try {
+    const { data, error } = await sb.from("products").select("id,code,name,set_parent_id,set_qty");
+    if (error) return {};
+    _inventoryProductIndex = Object.fromEntries((data || []).map(p => [p.id, p]));
+  } catch (e) { return {}; }
+  return _inventoryProductIndex;
 }
 
 // 2026-09-11 재고 캐시 갱신 실패를 숨기지 않아요 - 실패해도 화면은 마지막 정상 캐시를 보여주고,
@@ -5684,66 +5720,85 @@ let profitAdsCache = [], profitFixedCache = [];
 // 단위당 금액은 내부에서 소수 그대로 계산하고 여기서만 반올림해 보여줘요.
 function inboundFreightCardHtml(month) {
   if (erpFreight.error) {
-    return `<div class="card"><h2>입고 트럭 운송비</h2><p style="font-size:13px;color:var(--amber)">
+    return `<div class="card"><h2>입고 트럭 운송비</h2><p role="alert" style="font-size:13px;color:var(--amber)">
+      ${ErpUi.badge("error", { text: "운송비 기록 조회 실패" })}
       입고 운송비 기록을 읽지 못해 이번 공헌이익에는 입고 운송비가 빠져 있어요 (${esc(erpFreight.error)}).</p></div>`;
   }
   const hist = erpFreight.history || [];
   if (!erpFreight.records.length && !hist.length) return "";
   const won = v => `₩${fmt(Math.round(v))}`;
-  const rows = erpFreight.records.map(r => {
+  // 2026-09-13 [ERP UI 정리] 위쪽 요약(기록별 계산값을 더하기만 - 새 계산 없음) · 기록마다 예상/실제·단계 배지 · 배분 표는 펼쳐보기
+  const recs = erpFreight.records;
+  const sum = f => recs.reduce((a, r) => a + f(r), 0);
+  const STAGE_KIND = { BEFORE_RECEIPT: "awaiting", PARTIAL_RECEIPT: "awaiting", RECEIVED: "ok" };
+  const summary = ErpUi.summaryHtml([
+    { label: "운송 기록", value: `${recs.length}건`, kind: "info", sub: "운송 묶음(트럭 1대)당 1건" },
+    { label: "실제 청구", value: `${recs.filter(r => r.basis === "ACTUAL").length}건`, kind: "ok" },
+    { label: "예상", value: `${recs.filter(r => r.basis !== "ACTUAL").length}건`, kind: "pending", sub: "청구금액 등록 전" },
+    { label: `${month} 판매분 차감`, value: won(sum(r => InboundFreight.soldInMonth(r, month))), kind: "info", sub: "공헌이익 반영(공급가액)" },
+    { label: "재고원가로 남음", value: won(sum(r => r.inventorySupply)), kind: "muted" },
+    { label: "입고 전(예상)", value: won(sum(r => r.pendingSupply)), kind: "awaiting", sub: "공헌이익 차감 없음" },
+    { label: "이력(합산 안 함)", value: `${hist.length}건`, kind: "muted", hidden: !hist.length },
+  ], { compact: true, label: "입고 트럭 운송비 요약" });
+  const rows = recs.map(r => {
     const c = r.cost;
     const po = c.purchase_orders?.po_no || "";
     const basis = r.basis === "ACTUAL"
-      ? `<span class="chip approved">실제 청구</span>${c.carrier_invoice_ref ? ` <small>${esc(c.carrier_invoice_ref)}</small>` : ""}${c.invoice_date ? ` <small>${esc(c.invoice_date)}</small>` : ""}`
+      ? `${ErpUi.badge("ok", { text: "실제 청구" })}${c.carrier_invoice_ref ? ` <small>${esc(c.carrier_invoice_ref)}</small>` : ""}${c.invoice_date ? ` <small>${esc(c.invoice_date)}</small>` : ""}`
         + (r.estimate ? ` <small style="color:var(--text-sub)">예상 ${won(r.estimate.gross)}은 교체됨(중복 반영 없음)</small>` : "")
-      : `<span class="chip waiting">예상</span> <small style="color:var(--text-sub)">운송업체 청구금액 등록 전</small>`;
+      : `${ErpUi.badge("pending", { text: "예상" })} <small style="color:var(--text-sub)">운송업체 청구금액 등록 전</small>`;
     return `
-      <div style="border-top:1px solid var(--line);padding-top:12px;margin-top:12px">
+      <div class="erp-fr-rec" style="border-top:1px solid var(--line);padding-top:12px;margin-top:12px">
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:13.5px">
           <b>${esc(po)}</b> ${basis}
-          <span class="chip">${esc(InboundFreight.STAGE_LABEL[r.stage] || r.stage)}</span>
+          ${ErpUi.badge(STAGE_KIND[r.stage] || "info", { text: InboundFreight.STAGE_LABEL[r.stage] || r.stage })}
         </div>
-        <div style="font-size:12.5px;color:var(--text-sub);margin:6px 0 8px;line-height:1.7">
-          운송 묶음 ID <code title="${esc(c.shipment_group_id)}">${esc(String(c.shipment_group_id).slice(0, 8))}</code> ·
-          결제 총액 ${won(r.gross)} (VAT 포함) = 공급가액 ${won(r.supply)} + 매입 VAT ${won(r.vat)} ·
-          배분 근거 총 ${fmt(r.totalPlt)}PLT, ${esc(r.ratio)} (PLT 비율, 마지막 행이 원 단위 차이 흡수) ·
-          공헌이익에는 공급가액만, VAT 는 부가세 화면으로</div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>상품</th><th class="num">PLT</th><th class="num">수량</th><th class="num">배분 공급가액</th><th class="num">개당</th>
-            <th class="num">입고</th><th class="num">${esc(month)} 판매분 차감</th><th class="num">누적 판매분 차감</th>
-            <th class="num">재고원가로 남음</th><th class="num">입고 전(예상)</th></tr></thead>
-          <tbody>${r.allocs.map(a => `
-            <tr>
-              <td><b>${esc(prodName(a.product_id))}</b>${a.rounding_adjusted ? ' <small style="color:var(--text-sub)">원 단위 조정</small>' : ""}</td>
-              <td class="num">${fmt(a.pallet_count)}</td>
-              <td class="num">${fmt(a.qty)}</td>
-              <td class="num">${won(a.allocated_supply)}</td>
-              <td class="num">${won(a.perUnit)}</td>
-              <td class="num">${fmt(a.receivedQty)}</td>
-              <td class="num">${a.soldByMonth[month] ? won(a.soldByMonth[month]) : "—"}</td>
-              <td class="num">${a.soldSupply ? won(a.soldSupply) + ` <small>(${fmt(a.soldQty)}개)</small>` : "—"}</td>
-              <td class="num">${a.inventorySupply ? won(a.inventorySupply) : "—"}</td>
-              <td class="num">${a.pendingSupply ? won(a.pendingSupply) : "—"}</td>
-            </tr>`).join("")}
-          </tbody>
-          <tfoot><tr><td><b>합계</b></td><td class="num">${fmt(r.totalPlt)}</td><td class="num">${fmt(r.allocs.reduce((s, a) => s + a.qty, 0))}</td>
-            <td class="num"><b>${won(r.supply)}</b></td><td></td><td class="num">${fmt(r.receivedQty)}</td>
-            <td class="num">${won(InboundFreight.soldInMonth(r, month))}</td><td class="num">${won(r.soldSupply)}</td>
-            <td class="num">${won(r.inventorySupply)}</td><td class="num">${won(r.pendingSupply)}</td></tr></tfoot>
-        </table></div>
+        <div style="font-size:13px;margin:6px 0 2px"><b>결제 총액</b> ${won(r.gross)} (VAT 포함) = 공급가액 ${won(r.supply)} + 매입 VAT ${won(r.vat)}
+          · ${esc(month)} 판매분 차감 <b>${won(InboundFreight.soldInMonth(r, month))}</b> · 재고원가로 남음 ${won(r.inventorySupply)}</div>
+        <details class="erp-fr-detail">
+          <summary style="cursor:pointer;font-size:12.5px;color:var(--text-sub);line-height:1.7">
+            운송 묶음 ID <code title="${esc(c.shipment_group_id)}">${esc(String(c.shipment_group_id).slice(0, 8))}</code> ·
+            배분 근거 총 ${fmt(r.totalPlt)}PLT, ${esc(r.ratio)} (PLT 비율, 마지막 행이 원 단위 차이 흡수) · 상품 ${r.allocs.length}개 배분 보기 ›</summary>
+          <p style="font-size:12px;color:var(--text-sub);margin:4px 0 6px">공헌이익에는 공급가액만, VAT 는 부가세 화면으로</p>
+          <div class="erp-table-wrap"><table class="erp-table erp-cards">
+            <thead><tr><th class="erp-sticky">상품</th><th class="num">PLT</th><th class="num">수량</th><th class="num">배분 공급가액</th><th class="num">개당</th>
+              <th class="num">입고</th><th class="num">${esc(month)} 판매분 차감</th><th class="num">누적 판매분 차감</th>
+              <th class="num">재고원가로 남음</th><th class="num">입고 전(예상)</th></tr></thead>
+            <tbody>${r.allocs.map(a => `
+              <tr>
+                <td class="erp-sticky erp-card-head"><b>${esc(prodName(a.product_id))}</b>${a.rounding_adjusted ? ' <small style="color:var(--text-sub)">원 단위 조정</small>' : ""}</td>
+                <td class="num" data-label="PLT">${fmt(a.pallet_count)}</td>
+                <td class="num" data-label="수량">${fmt(a.qty)}</td>
+                <td class="num" data-label="배분 공급가액">${won(a.allocated_supply)}</td>
+                <td class="num" data-label="개당">${won(a.perUnit)}</td>
+                <td class="num" data-label="입고">${fmt(a.receivedQty)}</td>
+                <td class="num" data-label="${esc(month)} 판매분 차감">${a.soldByMonth[month] ? won(a.soldByMonth[month]) : "—"}</td>
+                <td class="num" data-label="누적 판매분 차감">${a.soldSupply ? `<span>${won(a.soldSupply)} <small>(${fmt(a.soldQty)}개)</small></span>` : "—"}</td>
+                <td class="num" data-label="재고원가로 남음">${a.inventorySupply ? won(a.inventorySupply) : "—"}</td>
+                <td class="num" data-label="입고 전(예상)">${a.pendingSupply ? won(a.pendingSupply) : "—"}</td>
+              </tr>`).join("")}
+            </tbody>
+            <tfoot><tr><td class="erp-sticky"><b>합계</b></td><td class="num" data-label="PLT">${fmt(r.totalPlt)}</td><td class="num" data-label="수량">${fmt(r.allocs.reduce((s, a) => s + a.qty, 0))}</td>
+              <td class="num" data-label="배분 공급가액"><b>${won(r.supply)}</b></td><td></td><td class="num" data-label="입고">${fmt(r.receivedQty)}</td>
+              <td class="num" data-label="${esc(month)} 판매분 차감">${won(InboundFreight.soldInMonth(r, month))}</td><td class="num" data-label="누적 판매분 차감">${won(r.soldSupply)}</td>
+              <td class="num" data-label="재고원가로 남음">${won(r.inventorySupply)}</td><td class="num" data-label="입고 전(예상)">${won(r.pendingSupply)}</td></tr></tfoot>
+          </table></div>
+        </details>
       </div>`;
   }).join("");
+  const HIST_KIND = { NEEDS_REVIEW: "check" };
   return `
     <div class="card">
-      <h2>입고 트럭 운송비</h2>
-      <p style="font-size:12.5px;color:var(--text-sub);line-height:1.7">
+      <div class="card-head"><h2>입고 트럭 운송비</h2></div>
+      ${summary}
+      <details class="erp-help"><summary>운송비는 언제 공헌이익에서 빠지나요?</summary>
         운송 묶음(트럭 1대)마다 한 번만 기록해요. 입고 전에는 예상 원가로만 보이고 공헌이익에서 빼지 않아요.
         입고되면 그 수량의 재고원가에 얹고, 쿠팡 재고에서 먼저 들어온 것부터 팔린 것으로 보고
-        <b>실제 판매된 수량만큼만</b> 상품별 공헌이익에서 빼요. 안 팔린 재고분은 재고원가로 남아요.</p>
+        <b>실제 판매된 수량만큼만</b> 상품별 공헌이익에서 빼요. 안 팔린 재고분은 재고원가로 남아요.</details>
       ${rows}
-      ${hist.length ? `<div style="border-top:1px dashed var(--line);margin-top:12px;padding-top:8px;font-size:12.5px;color:var(--text-sub);line-height:1.7">
-        <b>이력 (합산 안 함)</b><br>${hist.map(c => `${esc(c.purchase_orders?.po_no || "")} · 운송 묶음 <code title="${esc(c.shipment_group_id)}">${esc(String(c.shipment_group_id).slice(0, 8))}</code>
-          · ${won(c.gross_amount)} (VAT 포함) · ${esc(InboundFreight.STATUS_LABEL[c.status] || c.status)}${c.superseded_by_freight_id ? ` → 새 기록 <code>${esc(String(c.superseded_by_freight_id).slice(0, 8))}</code>` : ""}`).join("<br>")}</div>` : ""}
+      ${hist.length ? `<details class="erp-fr-hist" style="border-top:1px dashed var(--line);margin-top:12px;padding-top:8px;font-size:12.5px;color:var(--text-sub);line-height:1.7">
+        <summary style="cursor:pointer"><b>이력 (합산 안 함)</b> ${hist.length}건</summary>${hist.map(c => `<div>${esc(c.purchase_orders?.po_no || "")} · 운송 묶음 <code title="${esc(c.shipment_group_id)}">${esc(String(c.shipment_group_id).slice(0, 8))}</code>
+          · ${won(c.gross_amount)} (VAT 포함) · ${ErpUi.badge(HIST_KIND[c.status] || "muted", { text: InboundFreight.STATUS_LABEL[c.status] || c.status, small: true })}${c.superseded_by_freight_id ? ` → 새 기록 <code>${esc(String(c.superseded_by_freight_id).slice(0, 8))}</code>` : ""}</div>`).join("")}</details>` : ""}
     </div>`;
 }
 
@@ -6163,6 +6218,7 @@ const poOrdered = id => (poItemCache[id] || []).reduce((s, it) => s + Number(it.
 async function viewPurchaseOrders() {
   await loadErpBase();
   await loadPOs();
+  const reinbound = await loadReinboundRows();   // 2026-09-13 재입고 승인 필요 목록(읽기만)
   const waiting = poCache.filter(p => p.status === "progress" &&
     p.approval_line?.[p.current_step]?.userId === me.id).length;
   const open = poCache.filter(p => ["ordered", "partial"].includes(p.status));
@@ -6176,6 +6232,7 @@ async function viewPurchaseOrders() {
       ${waiting ? `<div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:9px;padding:10px 12px;margin-top:12px;font-size:13.5px">
         ⏳ 내 결재를 기다리는 발주서가 <b>${waiting}건</b> 있습니다.</div>` : ""}
     </div>
+    ${InboundApproval.reinboundCardHtml(reinbound.rows, { me, error: reinbound.error, refreshOnclick: "route()" })}
 
     ${open.length ? `
     <div class="card">
@@ -6592,6 +6649,113 @@ async function loadPOVatApproveWarning(poId, items) {
   if (b) b.disabled = true;
 }
 
+// 2026-09-13 [ERP UI 정리] 재입고 승인 필요 목록 - 보류된 발주서 · 상품·수량 · 취소 사유(WING 입고 취소 확인 이벤트) (읽기만)
+let _reinboundLast = { rows: [] };
+async function loadReinboundRows() {
+  try {
+    const { data: holds, error } = await sb.from("po_inbound_holds").select("*").eq("held", true);
+    if (error) return { rows: [], error: /does not exist|schema cache/i.test(error.message || "") ? null : (error.message || String(error)) };
+    if (!holds || !holds.length) { _reinboundLast = { rows: [] }; return { rows: [] }; }
+    const ids = holds.map(h => h.purchase_order_id);
+    const [{ data: pos }, { data: its }, { data: plans }] = await Promise.all([
+      sb.from("purchase_orders").select("id,po_no,supplier,status").in("id", ids),
+      sb.from("purchase_order_items").select("po_id,product_id,qty,received_qty").in("po_id", ids),
+      sb.from("inbound_plans").select("id,purchase_order_id").in("purchase_order_id", ids),
+    ]);
+    const pids = [...new Set((its || []).map(it => it.product_id).filter(Boolean))];
+    const planIds = (plans || []).map(x => x.id);
+    const [{ data: prods }, { data: evs }] = await Promise.all([
+      pids.length ? sb.from("products").select("id,code,name").in("id", pids) : Promise.resolve({ data: [] }),
+      planIds.length ? sb.from("inbound_plan_events").select("inbound_plan_id,event_type,detail,created_at")
+        .eq("event_type", "SHIPMENT_CANCELLED_AFTER_SUCCESS").in("inbound_plan_id", planIds).order("created_at", { ascending: false })
+        : Promise.resolve({ data: [] }),
+    ]);
+    const pBy = Object.fromEntries((prods || []).map(x => [x.id, x]));
+    const rows = holds.map(h => {
+      const po = (pos || []).find(x => x.id === h.purchase_order_id) || {};
+      const myPlans = new Set((plans || []).filter(x => x.purchase_order_id === h.purchase_order_id).map(x => x.id));
+      const ev = (evs || []).find(e => myPlans.has(e.inbound_plan_id));
+      return {
+        poId: h.purchase_order_id, poNo: po.po_no, supplier: po.supplier, hold: h,
+        items: (its || []).filter(it => it.po_id === h.purchase_order_id).map(it => {
+          const pr = pBy[it.product_id] || {};
+          return { name: ErpUi.displayName(pr.code, pr.name || prodName(it.product_id)), qty: Number(it.qty), remain: Number(it.qty) - Number(it.received_qty || 0) };
+        }),
+        cancelNote: ev ? `WING 입고 취소 확인 ${InboundApproval.fmtKst(ev.created_at)} · 요청 ${String(ev.inbound_plan_id).slice(0, 8)}${ev.detail && ev.detail.reason ? ` · ${ev.detail.reason}` : ""}` : "",
+      };
+    });
+    _reinboundLast = { rows };
+    return { rows };
+  } catch (e) { return { rows: [], error: e.message || String(e) }; }
+}
+
+// [재입고 허용]·[보류 해제] - DB fn_release_po_inbound_hold 1번(승인 권한자·이력은 DB 가 판정). PO HOLD 만 풀고
+// WING 초안·제출은 지금 실행하지 않아요. 확인창 직전에 보류가 아직 걸려 있는지 다시 읽어요(이미 풀렸으면 멈춤 - 중복 이력 없음).
+async function releasePoHold(poId, prefillReason = "") {
+  let hold = null;
+  const row = (_reinboundLast.rows || []).find(r => r.poId === poId);
+  const po = row || { poNo: (poCache.find(x => x.id === poId) || {}).po_no,
+    items: (poItemCache[poId] || []).map(it => ({ name: prodName(it.product_id), qty: Number(it.qty), remain: Number(it.qty) - Number(it.received_qty || 0) })) };
+  return ErpUi.run({
+    key: `po-hold-${poId}`, allowed: !!me?.approver, deniedText: "승인 권한자만 재입고를 허용할 수 있어요 - 읽기 전용이에요",
+    precheck: async () => {
+      const { data, error } = await sb.from("po_inbound_holds").select("*").eq("purchase_order_id", poId).maybeSingle();
+      if (error) return { ok: false, message: `보류 상태를 확인하지 못했어요: ${error.message || error.code}` };
+      if (!data || data.held !== true) return { ok: false, title: "처리하지 않았어요 - 이미 보류가 풀려 있어요", message: "다른 사람이 먼저 처리했을 수 있어요. 화면을 새로 읽었어요." };
+      hold = data;
+      return { ok: true };
+    },
+    confirm: () => {
+      const reinbound = InboundApproval.isReinboundHold(hold);
+      return {
+        title: reinbound ? "재입고 허용 확인" : "자동입고 보류 해제 확인", actionLabel: reinbound ? "재입고 허용" : "보류 해제",
+        rows: [["발주서", `<b>${esc(po.poNo || String(poId).slice(0, 8))}</b>`],
+               ["상품 · 수량", (po.items || []).map(it => `${esc(it.name || "-")} <b>${fmt(it.qty)}개</b>${it.remain !== it.qty ? ` <small class="rg-muted">(미입고 ${fmt(it.remain)})</small>` : ""}`).join("<br>") || "-"],
+               ["취소 사유", `${esc(hold.reason || "-")}${row && row.cancelNote ? `<br><small class="rg-muted">${esc(row.cancelNote)}</small>` : ""}`],
+               ["보류", esc([hold.held_by, InboundApproval.fmtKst(hold.held_at)].filter(Boolean).join(" · ") || "-")]],
+        notes: ["이 발주서의 보류(PO HOLD)만 풀어요. 지금 WING 입고 초안이나 제출을 실행하지 않아요.",
+                "다음 자동 주기에 다시 판단해 새 입고 요청을 만들면, 그 요청을 다시 승인해야 WING 에 제출돼요.",
+                "허용 이력이 남아요."],
+        reason: { label: `${reinbound ? "재입고 허용" : "보류 해제"} 사유`, required: false, value: prefillReason, placeholder: "예) 쿠팡 센터 재입고 가능 확인" },
+      };
+    },
+    exec: async reason => {
+      const { error } = await sb.rpc("fn_release_po_inbound_hold", { p_po_id: poId, p_reason: reason || null });
+      return error ? { ok: false, message: error.message || error.code } : { ok: true };
+    },
+    successText: "재입고 허용됨 - PO 보류만 풀었어요. 새 입고 요청이 만들어지면 다시 승인해 주세요",
+    refresh: async () => {
+      poHoldById = await loadPoHolds();
+      if (document.getElementById("po-hold-section")) loadPOHoldSection(poId);
+      await route();
+    },
+  });
+}
+
+function openPoHoldReason(poId) {
+  const r = (_reinboundLast.rows || []).find(x => x.poId === poId);
+  if (!r) return toast("보류 정보를 찾을 수 없어요 - 새로고침해 주세요");
+  ErpUi.infoModal(`취소 사유 · ${r.poNo || String(poId).slice(0, 8)}`, `<table class="rg-detail"><tbody>
+    <tr><th>상태</th><td>${InboundApproval.poHoldChipHtml(r.hold)}</td></tr>
+    <tr><th>보류 사유</th><td>${esc(r.hold.reason || "-")}</td></tr>
+    <tr><th>WING 취소</th><td>${esc(r.cancelNote || "취소 확인 이벤트 없음")}</td></tr>
+    <tr><th>보류</th><td>${esc([r.hold.held_by, InboundApproval.fmtKst(r.hold.held_at)].filter(Boolean).join(" · ") || "-")}</td></tr>
+    <tr><th>상품 · 수량</th><td>${(r.items || []).map(it => `${esc(it.name)} ${fmt(it.qty)}개`).join("<br>") || "-"}</td></tr>
+  </tbody></table><p class="rg-muted">자동 폴러는 이 발주서로 새 WING 초안을 만들지 않아요(시간이 지나도).</p>`);
+}
+
+async function openPoHoldHistory(poId) {
+  const { data: events, error } = await sb.from("po_inbound_hold_events").select("action,reason,actor,created_at")
+    .eq("purchase_order_id", poId).order("created_at", { ascending: false }).limit(50);
+  const r = (_reinboundLast.rows || []).find(x => x.poId === poId);
+  const label = { HOLD: "보류", RELEASE: "해제(재입고 허용)" };
+  ErpUi.infoModal(`변경 이력 · ${(r && r.poNo) || String(poId).slice(0, 8)}`, error
+    ? `<p role="alert">${ErpUi.badge("error", { text: "이력을 불러오지 못했어요", reason: error.message })}</p>`
+    : (events || []).length ? `<ol class="rg-events">${events.map(e => `<li><span class="rg-ev-time">${esc(InboundApproval.fmtKst(e.created_at))}</span>
+        <b>${esc(label[e.action] || e.action)}</b> <span class="rg-ev-note">${esc([e.reason, e.actor].filter(Boolean).join(" · "))}</span></li>`).join("")}</ol>`
+    : `<p class="rg-muted">이력이 없어요.</p>`);
+}
+
 // 2026-09-12 [PO-016 취소] 발주서 자동입고 보류 - 보류된 발주서는 자동 폴러가 WING 초안을 새로 만들지 않아요(다른 발주서는 그대로).
 // [재입고 허용]·보류는 DB 함수만(승인 권한자·사유·이력은 DB 가 판정). 전역 스위치는 건드리지 않아요.
 async function loadPOHoldSection(poId) {
@@ -6605,23 +6769,30 @@ async function loadPOHoldSection(poId) {
   el.innerHTML = InboundApproval.poHoldSectionHtml((rows || [])[0] || null, { poId, me, migrated: !error, events: events || [] });
 }
 
+// 2026-09-13 [ERP UI 정리] 발주서 상세의 보류·해제도 공통 안전장치(확인창·중복 클릭 방지·처리 중·실패 시 재조회)로.
 async function savePoHold(poId, action) {
   const input = document.getElementById("po-hold-reason");
-  const reason = (input?.value || "").trim();
-  if (action === "HOLD" && !reason) { toast("보류 사유를 입력해 주세요"); input?.focus(); return; }
-  if (!confirm(action === "HOLD"
-      ? "이 발주서의 자동 입고 초안 생성을 보류할까요?\n(이미 만들어진 WING 초안·요청은 건드리지 않아요)"
-      : "재입고를 허용할까요?\n자동 폴러가 이 발주서로 새 WING 입고 초안·승인 요청을 만들 수 있게 돼요(최종 제출은 승인 버튼으로만).")) return;
-  const btn = event?.target; if (btn) btn.disabled = true;
-  const fn = action === "HOLD" ? "fn_set_po_inbound_hold" : "fn_release_po_inbound_hold";
-  const { error } = await sb.rpc(fn, { p_po_id: poId, p_reason: reason || null });
-  if (error) {
-    if (btn) btn.disabled = false;
-    return toast(`${action === "HOLD" ? "보류" : "재입고 허용"} 실패: ${error.message || error.code}`);
-  }
-  toast(action === "HOLD" ? "자동입고 보류됨 - 자동 폴러가 이 발주서로 WING 초안을 만들지 않아요" : "재입고 허용됨 - 다음 자동 주기부터 새 입고 요청을 만들 수 있어요");
-  poHoldById = await loadPoHolds();
-  loadPOHoldSection(poId);
+  const typed = (input?.value || "").trim();
+  if (action !== "HOLD") return releasePoHold(poId, typed);
+  const p = poCache.find(x => x.id === poId) || {};
+  return ErpUi.run({
+    key: `po-hold-${poId}`, allowed: !!me?.approver, deniedText: "승인 권한자만 보류할 수 있어요 - 읽기 전용이에요",
+    precheck: async () => {
+      const { data } = await sb.from("po_inbound_holds").select("held").eq("purchase_order_id", poId).maybeSingle();
+      return data && data.held === true ? { ok: false, title: "처리하지 않았어요 - 이미 보류돼 있어요", message: "화면을 새로 읽었어요." } : { ok: true };
+    },
+    confirm: { title: "자동입고 보류", actionLabel: "자동입고 보류", danger: true,
+      rows: [["발주서", `<b>${esc(p.po_no || String(poId).slice(0, 8))}</b>`],
+             ["상품 · 수량", (poItemCache[poId] || []).map(it => `${esc(prodName(it.product_id))} ${fmt(it.qty)}개`).join("<br>") || "-"]],
+      notes: ["이 발주서의 자동 입고 초안 생성만 멈춰요. 이미 만들어진 WING 초안·요청은 건드리지 않아요."],
+      reason: { label: "보류 사유", required: true, value: typed } },
+    exec: async reason => {
+      const { error } = await sb.rpc("fn_set_po_inbound_hold", { p_po_id: poId, p_reason: reason });
+      return error ? { ok: false, message: error.message || error.code } : { ok: true };
+    },
+    successText: "자동입고 보류됨 - 자동 폴러가 이 발주서로 WING 초안을 만들지 않아요",
+    refresh: async () => { poHoldById = await loadPoHolds(); loadPOHoldSection(poId); },
+  });
 }
 
 // 2026-09-09 [운송비 freight_est 연결, 사용자 명시] TRUCK 자동입고가 이미 실제 WING
@@ -8056,6 +8227,7 @@ function rgActionsHtml(p, supersededIds, proposals = {}, ctx = {}) {
   // (APPROVED) 이후에만 여기 걸림 - 승인 전(PENDING_APPROVAL)은 위
   // renderParcelApprovalCard()의 전용 승인/거절 버튼에서만 처리해요.
   if (rgCanSubmitParcel(p)) {
+    if (me?.approver !== true) return `<span class="erp-readonly" title="WING 제출은 승인 권한자만 할 수 있어요(서버도 승인 권한을 확인해요)">🔒 제출은 승인 권한자만</span>`;   // 2026-09-13 [ERP UI 정리] 권한 없으면 읽기 전용(표시만 - 제출 로직 그대로)
     return `<button class="btn sm" onclick="submitParcelPlan('${p.id}')">쿠팡 제출</button>`;
   }
   // 2026-09-10 [입고 재계획] "쿠팡 제출"보다 *** 먼저 *** 확인해요. 입고예정일이
@@ -8074,6 +8246,7 @@ function rgActionsHtml(p, supersededIds, proposals = {}, ctx = {}) {
     // 2026-09-12 다품목 요청(WING 입고 1개에 상품 여러 개) - 서버 제출 게이트가 WING 초안 ↔ ERP 를 전부 대조한 뒤에만
     // 제출해요. 버튼은 확인창(두 상품·수량·PLT·센터·일시·차량·운송비)을 먼저 열고, 거기서 [최종 제출]을 눌러야 나가요.
     const items = ctx.items || [];
+    if (me?.approver !== true) return `<span class="erp-readonly" title="WING 제출은 승인 권한자만 할 수 있어요(서버도 승인 권한을 확인해요)">🔒 제출은 승인 권한자만</span>`;   // 2026-09-13 [ERP UI 정리] 권한 없으면 읽기 전용(표시만 - 제출 로직 그대로)
     if (items.length > 1) {
       return `<button class="btn sm" onclick="openRgMultiSubmitModal('${p.id}')">쿠팡 제출 · 상품 ${items.length}개 · 총 ${fmt(InboundApproval.palletSum(items))}PLT · 최종 제출</button>`;
     }
@@ -9019,73 +9192,92 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
   const ctxFor = p => rgPlanCtx(p, { itemsByPlan, supersededIds, retryByOriginId, plansById, vehicleByPlan, poById, migrated, shipmentGroupByPlan });
   _rgLast = { plans, itemsByPlan, plansById, ctxFor };
 
+  // 2026-09-13 [ERP UI 정리] 요청 1건 = 1행(다품목은 상품 칸 안에 목록) · 상태(PRE-FLIGHT/승인/WING)를 한 칸에 모음 ·
+  // WING id 는 상태 칸에 작게, 전체 이력은 [상세]. 판정·버튼 조건은 InboundApproval·rgActionsHtml 그대로.
   const rows = [];
+  const snap = {};
+  const counts = { pending: 0, block: 0, approvedOpen: 0, wing: 0, rejected: 0, failed: 0 };
   plans.forEach(p => {
     const items = itemsByPlan[p.id] || [];
     const ctx = ctxFor(p);
     if (!items.length) {
       // 2026-09-11 WING 호출 전에 취소된 선점 행(품목 없음)은 보여줄 내용이 없어 목록에서 생략(DB 이력은 그대로)
       if (p.internal_status === "CANCELLED") return;
-      rows.push(`<tr><td colspan="13"><b>${esc(p.supplier)}</b> — 품목 정보 없음</td></tr>`);
+      rows.push(`<tr><td colspan="6"><b>${esc(p.supplier)}</b> — 품목 정보 없음</td></tr>`);
       return;
     }
-    // retry_of_plan_id로 연결된 원본 plan이 있으면(슬롯 없음 등으로 새로 만든
-    // 재시도 plan) 감사 추적용으로 화면에도 보이게 해요 - 원본 plan은 이미
-    // plans 배열에 select("*")로 같이 조회돼 있어서 추가 쿼리 없이 바로 참조 가능.
-    // 2026-09-11 다품목 요청이 실패 요청을 대체한 경우(그레이 실패 + 블랙 취소 → 단일 다품목 입고)는 "대체 요청"으로 표시.
+    snap[p.id] = rgPlanSnapshot(p, items, ctx.shipmentGroup);
+    const cancelled = p.internal_status === "CANCELLED";
+    if (!cancelled && rgCanDecide(p)) counts.pending++;
+    if (!cancelled && ctx.loadBlock && p.submit_status === "NOT_SUBMITTED" && p.approval_status !== "REJECTED") counts.block++;
+    if (!cancelled && p.approval_status === "APPROVED" && p.submit_status === "NOT_SUBMITTED") counts.approvedOpen++;
+    if (InboundApproval.wingSubmittedLabel(p) && !cancelled) counts.wing++;
+    if (p.approval_status === "REJECTED") counts.rejected++;
+    if (p.internal_status === "FAILED") counts.failed++;
+    // retry_of_plan_id로 연결된 원본 plan이 있으면(슬롯 없음 등으로 새로 만든 재시도 plan) 감사 추적용으로 보여줘요.
+    // 2026-09-11 다품목 요청이 실패 요청을 대체한 경우는 "대체 요청"으로 표시.
     const retryOrig = p.retry_of_plan_id ? plansById[p.retry_of_plan_id] : null;
     const retryNote = p.retry_of_plan_id
-      ? `<br><small style="color:var(--text-sub)">${items.length > 1
+      ? `<small class="erp-sub">${items.length > 1
           ? `🔁 대체 요청 · 실패 요청 ${esc(String(p.retry_of_plan_id).slice(0, 8))}${retryOrig ? `(${esc(retryOrig.inbound_date || "-")} ${esc(String(retryOrig.inbound_time || "").slice(0, 5))})` : ""}을 단일 다품목 입고로 재작성`
           : `🔄 재시도 plan${retryOrig ? ` (원본 예정: ${esc(retryOrig.inbound_date || "-")} ${esc(retryOrig.inbound_time || "")})` : ""}`} · ${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)} → ${rgChip(RG_APPROVAL_CHIP, p.approval_status)}</small>`
       : "";
-    // 이 plan이 이미 대체됐으면(자신이 다른 plan의 원본) 그 후속 plan 상태를
-    // 이어서 보여줘요 - "제출실패 -> 재시도 준비 -> 슬롯 선택 -> PRE-FLIGHT 진행
-    // -> 승인대기"가 화면에서 끊기지 않고 다음 단계로 자연스럽게 이어지도록.
+    // 이 plan이 이미 대체됐으면(자신이 다른 plan의 원본) 그 후속 plan 상태를 이어서 보여줘요.
     const forwardRetry = retryByOriginId[p.id];
     const forwardNote = forwardRetry
-      ? `<br><small style="color:var(--text-sub)">→ ${(itemsByPlan[forwardRetry.id] || []).length > 1 ? "단일 다품목 입고 대체 요청 생성됨" : "새 슬롯으로 재시도 plan 생성됨"}: ${esc(forwardRetry.inbound_date || "-")} ${esc(forwardRetry.inbound_time || "")} · ${rgChip(RG_PREFLIGHT_CHIP, forwardRetry.preflight_status)} → ${rgChip(RG_APPROVAL_CHIP, forwardRetry.approval_status)}</small>`
+      ? `<small class="erp-sub">→ ${(itemsByPlan[forwardRetry.id] || []).length > 1 ? "단일 다품목 입고 대체 요청 생성됨" : "새 슬롯으로 재시도 plan 생성됨"}: ${esc(forwardRetry.inbound_date || "-")} ${esc(forwardRetry.inbound_time || "")} · ${rgChip(RG_PREFLIGHT_CHIP, forwardRetry.preflight_status)} → ${rgChip(RG_APPROVAL_CHIP, forwardRetry.approval_status)}</small>`
       : "";
-    // 승인/거절/제출 버튼은 plan 단위 액션이라, 같은 plan의 품목이 여러 줄이어도 첫 줄에만 표시.
-    // 2026-09-11 다품목 요청(WING 입고 1개에 상품 여러 개)은 요청 단위 칸(공급처·센터·일정·상태·WING id·버튼)을
-    // 한 칸으로 합쳐서(rowspan) "승인 요청 1건 · 상품 N개"로 보이게 해요.
     const n = items.length;
-    const span = n > 1 ? ` rowspan="${n}"` : "";
     const multiNote = n > 1
-      ? `<br><small class="rg-multi-note">📦 승인 요청 1건 · 상품 ${n}개 · 총 ${fmt(InboundApproval.qtySum(items))}개 · ${fmt(InboundApproval.palletSum(items))}PLT</small>` : "";
-    items.forEach((it, i) => rows.push(`
-      <tr data-rg-plan="${esc(p.id)}">
-        <td><b>${esc(it.inventory_name || "-")}</b>${it.option_name ? `<br><small style="color:var(--text-sub)">${esc(it.option_name)}</small>` : ""}${
-          i === 0 ? `${multiNote}${retryNote}${forwardNote}${ctx.shipmentGroup ? `<br>${InboundApproval.shipmentGroupChipHtml(ctx.shipmentGroup)}` : ""}${
-            ctx.poHold ? `<br>${InboundApproval.poHoldChipHtml(ctx.poHold)}` : ""}` : ""}</td>
-        ${i === 0 ? `<td${span}>${esc(p.supplier)}</td>` : ""}
-        <td class="num">${it.recommended_qty != null ? fmt(it.recommended_qty) : "-"}</td>
-        <td class="num"><b>${fmt(it.coupang_inbound_qty)}</b></td>
-        <td class="num">${fmt(it.pallet_count)}${
-          i === 0 && ctx.loadBlock && p.submit_status === "NOT_SUBMITTED" && p.internal_status !== "CANCELLED" && p.approval_status !== "REJECTED"
-            ? `<br><small style="color:var(--text-sub)" title="차량 종류와 관계없이 전체 2PLT 이상만 승인·제출">🚛 적재 보완 필요</small>` : ""}</td>
-        ${i === 0 ? `
-        <td${span}>${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}</td>
-        <td${span}>${esc(p.inbound_date || "-")} ${esc(p.inbound_time || "")}${
+      ? `<small class="rg-multi-note erp-sub">📦 승인 요청 1건 · 상품 ${n}개 · 총 ${fmt(InboundApproval.qtySum(items))}개 · ${fmt(InboundApproval.palletSum(items))}PLT</small>` : "";
+    const itemList = n > 1 ? `<ul class="erp-items">${items.map(it => `<li>${esc(it.inventory_name || "-")}${it.option_name ? ` <span class="erp-sub" style="display:inline">${esc(it.option_name)}</span>` : ""}
+        — <b>${fmt(it.coupang_inbound_qty)}개</b> · ${fmt(it.pallet_count)}PLT</li>`).join("")}</ul>` : "";
+    const first = items[0];
+    const title = n > 1 ? InboundApproval.itemsLabel(items) : (first.inventory_name || "-");
+    const recoSum = items.reduce((a, it) => a + (it.recommended_qty != null ? Number(it.recommended_qty) : 0), 0);
+    const hasReco = items.some(it => it.recommended_qty != null);
+    const wingIds = [p.coupang_inbound_plan_id ? `초안 <code>…${esc(String(p.coupang_inbound_plan_id).slice(-6))}</code>` : "",
+                     p.coupang_shipment_id ? `shipment <code>…${esc(String(p.coupang_shipment_id).slice(-6))}</code>` : ""].filter(Boolean).join(" · ");
+    rows.push(`
+      <tr data-rg-plan="${esc(p.id)}" class="${cancelled ? "erp-row-muted" : ""}">
+        <td class="erp-sticky erp-card-head"><div class="erp-name"><b>${esc(title)}</b>
+          <small>${[n === 1 ? first.option_name : "", p.supplier, ctx.poNo, `요청 ${String(p.id).slice(0, 8)}`].filter(Boolean).map(esc).join(" · ")}</small></div>
+          ${itemList}${multiNote}${retryNote}${forwardNote}${ctx.shipmentGroup ? InboundApproval.shipmentGroupChipHtml(ctx.shipmentGroup) : ""}${
+            ctx.poHold ? `<div>${InboundApproval.poHoldChipHtml(ctx.poHold)}</div>` : ""}</td>
+        <td class="num erp-sep" data-label="최종 입고수량"><div class="erp-stack" style="align-items:flex-end"><b>${fmt(InboundApproval.qtySum(items))}개</b>
+          ${hasReco ? `<span class="erp-sub">추천 ${fmt(recoSum)}개</span>` : ""}</div></td>
+        <td class="num" data-label="WING 실행 PLT"><div>${fmt(InboundApproval.palletSum(items))}PLT${
+          ctx.loadBlock && p.submit_status === "NOT_SUBMITTED" && !cancelled && p.approval_status !== "REJECTED"
+            ? `<span class="erp-sub" title="차량 종류와 관계없이 전체 2PLT 이상만 승인·제출">🚛 적재 보완 필요</span>` : ""}</div></td>
+        <td class="erp-sep" data-label="쿠팡센터 · 입고 예정"><div>${CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })}
+          <span class="erp-sub">${esc(p.inbound_date || "-")} ${esc(String(p.inbound_time || "").slice(0, 5))}</span>${
           rgCanPrepareReplan(p, supersededIds)
-            ? `<br><small style="color:var(--danger,#c0392b)">⚠️ 슬롯 만료(여유 2h 미만) · 미제출</small>${ctx.loadBlock ? "" : rgProposalNoteHtml(rgProposals[p.id])}` : ""}</td>
-        <td${span}>${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</td>
-        <td class="rg-approval-cell"${span}>${InboundApproval.approvalCellHtml(p, ctx)}</td>
-        <td${span}>${rgSubmitStatusHtml(p)}</td>
-        <td${span}>${p.coupang_inbound_plan_id ? `<code style="font-size:12px">${esc(p.coupang_inbound_plan_id)}</code>` : "-"}</td>
-        <td${span}>${p.coupang_shipment_id ? `<code style="font-size:12px">${esc(p.coupang_shipment_id)}</code>` : "-"}</td>
-        <td class="rg-actions"${span}>${rgActionsHtml(p, supersededIds, rgProposals, ctx)} ${InboundApproval.decisionHtml(p, ctx)}</td>` : ""}
-      </tr>`));
+            ? `<small style="color:var(--danger,#c0392b);display:block">⚠️ 슬롯 만료(여유 2h 미만) · 미제출</small>${ctx.loadBlock ? "" : rgProposalNoteHtml(rgProposals[p.id])}` : ""}</div></td>
+        <td class="erp-sep erp-status rg-approval-cell" data-label="진행 상태"><div class="erp-stack">
+          <span>PRE-FLIGHT ${rgChip(RG_PREFLIGHT_CHIP, p.preflight_status)}</span>
+          <span>${InboundApproval.approvalCellHtml(p, ctx)}</span>
+          <span>WING ${rgSubmitStatusHtml(p)}</span>${wingIds ? `<small class="erp-sub">${wingIds}</small>` : ""}</div></td>
+        <td class="rg-actions erp-actions">${rgActionsHtml(p, supersededIds, rgProposals, ctx)} ${InboundApproval.decisionHtml(p, ctx)}</td>
+      </tr>`);
   });
+  _rgLast.snap = snap;
 
-  // 2026-09-08 [쿠팡입고 waterfall 소규모 개선, 사용자 명시] truckPrepCardPromise를
-  // 호출부(viewStockFlow())가 getStockFlowRgData()와 동시에 미리 시작해뒀으면 그걸
-  // 그대로 기다리기만 함(/api/truck-inbound-prep는 plans/itemsByPlan과 무관 - 순차로
-  // 기다릴 이유가 없었음). 안 넘어오면(다른 호출부) 기존처럼 여기서 새로 시작.
-  const [truckPrepCardHtml, parcelApprovalCardHtml] = await Promise.all([
+  // 2026-09-08 [쿠팡입고 waterfall 소규모 개선, 사용자 명시] truckPrepCardPromise를 호출부가 미리 시작해뒀으면 그걸 기다리기만 함.
+  const [truckPrepCardHtml, parcelApprovalCardHtml, reinbound] = await Promise.all([
     truckPrepCardPromise || renderTruckInboundPrepCard(),
     renderParcelApprovalCard(plans, itemsByPlan),
+    loadReinboundRows(),
   ]);
+  const summary = ErpUi.summaryHtml([
+    { label: "승인대기", value: counts.pending, kind: counts.pending ? "pending" : "ok" },
+    { label: "적재 보완 필요", value: counts.block, kind: "check", hidden: !counts.block, title: "전체 2PLT 이상만 승인·제출(차량 종류 무관)" },
+    { label: "승인됨 · 미제출", value: counts.approvedOpen, kind: "awaiting", title: "제출은 [쿠팡 제출]을 따로 눌러야 해요" },
+    { label: "WING 제출", value: counts.wing, kind: "ok" },
+    { label: "재입고 승인 필요", value: (reinbound.rows || []).length, kind: "reinbound", hidden: !(reinbound.rows || []).length,
+      onclick: "document.getElementById('reinbound-card')?.scrollIntoView({behavior:'smooth'})" },
+    { label: "제출 실패", value: counts.failed, kind: "error", hidden: !counts.failed },
+    { label: "거절됨", value: counts.rejected, kind: "rejected", hidden: !counts.rejected },
+  ], { label: "쿠팡 입고 요청 요약" });
 
   return `
     <div class="card">
@@ -9094,28 +9286,31 @@ async function viewRgInbound(preloaded, truckPrepCardPromise) {
         <button class="btn sm" onclick="openParcelCreateModal()">＋ 수동 택배 입고</button>
       </div>
       ${rgCapabilitiesHtml(rgCaps)}
-      <p style="font-size:13px;color:var(--text-sub)">
+      ${summary}
+      <details class="erp-help"><summary>이 화면은 무엇을 하나요?</summary>
         쿠팡 WING 로켓그로스 자동 입고신청(PRE-FLIGHT) 진행 상태예요. 위 <b>발주서 → 입고 처리</b>(자사창고에
         실제로 도착한 수량을 직접 세어 입력하는 기능)와는 별개의 흐름입니다 — 여기는 쿠팡 시스템에 전자적으로
-        입고를 신청·승인·제출하는 상태만 보여줘요. 실제 쿠팡 제출 경로도 연결돼 있으며, 서버의 최종 제출 스위치와 1PLT 적재 검증을 모두 통과한 계획만 제출할 수 있습니다.</p>
+        입고를 신청·승인·제출하는 상태만 보여줘요. 실제 쿠팡 제출 경로도 연결돼 있으며, 서버의 최종 제출 스위치와 1PLT 적재 검증을 모두 통과한 계획만 제출할 수 있습니다.
+        <b>승인</b>은 누르기 직전에 서버에서 최신 상품·수량·센터·날짜·시간·운송비를 다시 읽어 확인창에 보여주고, 화면을 연 뒤 바뀌었으면 승인하지 않아요.</details>
     </div>
+    ${InboundApproval.reinboundCardHtml(reinbound.rows, { me, error: reinbound.error, refreshOnclick: "stockFlowRefresh()" })}
     ${parcelApprovalCardHtml}
     ${truckPrepCardHtml}
     <div class="card">
       <div class="card-head">
-        <h2>입고신청 내역 (${plans.length}건)</h2>
+        <h2>입고신청 내역 (${plans.length}건)${me?.approver ? "" : ` <span class="erp-readonly">🔒 읽기 전용</span>`}</h2>
         <button class="btn sm secondary" onclick="exportRgInboundCSV()">CSV 내보내기</button>
       </div>
       ${migrated ? "" : `<p class="rg-migrate-note"><span class="chip waiting">DB 적용 대기</span> 승인·거절은 DB 권한 검증(마이그레이션
         <code>2026-09-11_inbound_plan_rejection.sql</code>) 적용 뒤에 열려요. 그 전에는 화면에서 상태를 바꿀 수 없습니다.</p>`}
       ${me?.approver ? "" : `<p class="rg-migrate-note">승인·거절은 승인 권한자만 할 수 있어요. 여기서는 상태와 거절 사유를 확인할 수 있습니다.</p>`}
-      <div class="table-wrap"><table>
-        <thead><tr>
-          <th>상품</th><th>공급처</th><th class="num">추천수량</th><th class="num">최종 입고수량</th>
-          <th class="num">WING 실행 PLT</th><th>쿠팡센터</th><th>입고 예정일/시간</th>
-          <th>PRE-FLIGHT</th><th>승인</th><th>WING 제출</th><th>WING inboundPlanId</th><th>shipmentId</th><th></th>
-        </tr></thead>
-        <tbody>${rows.length ? rows.join("") : `<tr><td colspan="13" class="empty">입고신청 내역이 없습니다</td></tr>`}</tbody>
+      <div class="erp-table-wrap"><table class="erp-table erp-cards rg-plan-table">
+        <thead>
+          <tr class="erp-grp"><th class="erp-sticky"></th><th colspan="2" class="erp-grp-sep">수량</th><th class="erp-grp-sep">센터 · 일정</th><th class="erp-grp-sep">상태</th><th></th></tr>
+          <tr><th class="erp-sticky">상품 · 요청</th><th class="num erp-sep">최종 입고수량</th><th class="num">WING 실행 PLT</th>
+            <th class="erp-sep">쿠팡센터 · 입고 예정</th><th class="erp-sep">PRE-FLIGHT · 승인 · WING 제출</th><th></th></tr>
+        </thead>
+        <tbody>${rows.length ? rows.join("") : `<tr><td colspan="6" class="empty">입고신청 내역이 없습니다</td></tr>`}</tbody>
       </table></div>
     </div>`;
 }
@@ -9219,18 +9414,82 @@ async function rgDecideRpc(planId, decision, reason = null, reasonCode = null) {
   return { ok: true, data };
 }
 
+// 2026-09-13 [ERP UI 정리] 승인 직전 재검증 - 화면을 그릴 때의 요청 내용(스냅샷)과 방금 서버에서 다시 읽은 값을 비교해요.
+// 상품·수량·PLT·센터·날짜·시간·운송 묶음(차량·운송비)·상태가 하나라도 다르면 승인하지 않고 바뀐 내용을 보여줘요.
+function rgPlanSnapshot(p, items, group) {
+  const g = group && (group.status || "ACTIVE") === "ACTIVE" ? group : null;
+  return {
+    approval_status: p.approval_status || null, preflight_status: p.preflight_status || null,
+    submit_status: p.submit_status || null, internal_status: p.internal_status || null,
+    center: CoupangCenters.text({ id: p.destination_center_id, code: p.destination_center_raw }),
+    date: p.inbound_date || null, time: String(p.inbound_time || "").slice(0, 5) || null,
+    items: (items || []).map(it => `${it.inventory_name || "-"}${it.option_name ? ` ${it.option_name}` : ""} ${Number(it.coupang_inbound_qty || 0)}개 ${Number(it.pallet_count || 0)}PLT`).sort().join(" / "),
+    freight: g ? `${g.vehicle_type || "-"} ${Number(g.vehicle_count) || 1}대 · ₩${fmt(Number(g.total_transport_cost) || 0)}` : "운송 묶음 없음",
+  };
+}
+const RG_SNAP_LABEL = { approval_status: "승인 상태", preflight_status: "PRE-FLIGHT", submit_status: "WING 제출", internal_status: "처리 상태",
+  center: "쿠팡센터", date: "입고 날짜", time: "입고 시간", items: "상품·수량·PLT", freight: "운송(차량·운송비)" };
+function rgSnapshotDiff(before, now) {
+  if (!before || !now) return [];
+  return Object.keys(RG_SNAP_LABEL).filter(k => String(before[k] ?? "") !== String(now[k] ?? ""))
+    .map(k => ({ key: k, label: RG_SNAP_LABEL[k], before: before[k] ?? "-", after: now[k] ?? "-" }));
+}
+function rgConfirmRows(p, ctx) {
+  const items = ctx.items || [];
+  const g = ctx.shipmentGroup && (ctx.shipmentGroup.status || "ACTIVE") === "ACTIVE" ? ctx.shipmentGroup : null;
+  return [
+    ["요청", `<code>${esc(String(p.id).slice(0, 8))}</code>${ctx.poNo ? ` · 발주서 ${esc(ctx.poNo)}` : ""}`],
+    ["상품 · 수량", items.map(it => `${esc(it.inventory_name || "-")}${it.option_name ? ` <small>${esc(it.option_name)}</small>` : ""} — <b>${fmt(it.coupang_inbound_qty)}개</b> · ${fmt(it.pallet_count)}PLT`).join("<br>") || "-"],
+    ["합계", `${fmt(InboundApproval.qtySum(items))}개 · 전체 ${fmt(InboundApproval.palletSum(items))}PLT${p.transport_type === "PARCEL" ? " · 택배(PARCEL)" : " · 적재 기준 통과(2PLT 이상)"}`],
+    ["쿠팡센터", CoupangCenters.html({ id: p.destination_center_id, code: p.destination_center_raw })],
+    ["입고 예정", `<b>${esc(p.inbound_date || "-")} ${esc(String(p.inbound_time || "").slice(0, 5))}</b>`],
+    ["운송 · 운송비", g ? `${esc(g.vehicle_type || "-")} ${Number(g.vehicle_count) || 1}대 · <b>₩${fmt(Number(g.total_transport_cost) || 0)}</b> <small class="rg-muted">(운송 묶음 전체 한 번)</small>`
+      : (p.transport_type === "PARCEL" ? "택배(PARCEL)" : "운송 묶음 정보 없음")],
+  ];
+}
+
 async function decideRgInbound(planId, decision) {
   if (decision === "REJECTED") return openRgRejectModal(planId);
-  const row = event?.target?.closest("tr");
-  const rowBtns = row ? row.querySelectorAll("button") : [];
-  rowBtns.forEach(b => b.disabled = true);  // 요청 중 더블클릭 방지
-  if (!confirm("이 입고 요청을 승인합니다.\n승인만으로 쿠팡(WING)에 제출되지는 않습니다. 계속할까요?")) {
-    rowBtns.forEach(b => b.disabled = false);
-    return;
-  }
-  const res = await rgDecideRpc(planId, "APPROVED");
-  toast(res.ok ? "입고 요청을 승인했습니다" : `승인하지 못했습니다: ${res.message}`);
-  route();
+  const before = (_rgLast && _rgLast.snap && _rgLast.snap[planId]) || null;
+  let fresh = null;
+  return ErpUi.run({
+    key: `rg-approve-${planId}`, allowed: !!me?.approver, deniedText: "승인 권한자만 승인할 수 있어요 - 읽기 전용이에요",
+    precheck: async () => {
+      const [{ data: p }, { data: items }, { data: kids }] = await Promise.all([
+        sb.from("inbound_plans").select("*").eq("id", planId).maybeSingle(),
+        sb.from("inbound_plan_items").select("*").eq("inbound_plan_id", planId),
+        sb.from("inbound_plans").select("id").eq("retry_of_plan_id", planId).limit(1),
+      ]);
+      if (!p) return { ok: false, message: "입고 요청을 찾을 수 없어요" };
+      await CoupangCenters.load(sb);
+      const ctx = { me, items: items || [], supersededIds: new Set(kids && kids.length ? [planId] : []),
+                    migrated: Object.prototype.hasOwnProperty.call(p, "rejection_reason") };
+      ctx.shipmentGroup = rgGroupForCtx(p, await loadRgShipmentGroupForPlan(p));
+      ctx.loadBlock = InboundApproval.loadBlock(p, ctx.items);
+      if (p.purchase_order_id) {
+        const { data: po } = await sb.from("purchase_orders").select("po_no").eq("id", p.purchase_order_id).maybeSingle();
+        ctx.poNo = po?.po_no || null;
+      }
+      if (!InboundApproval.canApprove(p, ctx) || ctx.loadBlock) {
+        return { ok: false, title: "승인하지 않았어요 - 지금 승인할 수 있는 상태가 아니에요",
+                 message: ctx.loadBlock ? ctx.loadBlock.label : (InboundApproval.wingSubmittedLabel(p) || "이미 처리됐거나 대체된 요청이에요") };
+      }
+      const diffs = rgSnapshotDiff(before, rgPlanSnapshot(p, ctx.items, ctx.shipmentGroup));
+      if (diffs.length) {
+        return { ok: false, title: "승인하지 않았어요 - 화면을 연 뒤 내용이 바뀌었어요",
+                 rows: diffs.map(d => [d.label, `${esc(d.before)} → <b>${esc(d.after)}</b>`]),
+                 message: "바뀐 내용을 확인한 뒤 다시 승인해 주세요. 화면을 새로 읽었어요." };
+      }
+      fresh = { p, ctx };
+      return { ok: true };
+    },
+    confirm: () => ({ title: "입고 요청 승인", actionLabel: "승인", rows: rgConfirmRows(fresh.p, fresh.ctx),
+      notes: ["방금 서버에서 다시 읽은 최신 상품·수량·센터·날짜·시간·운송비예요.",
+              "승인만으로 쿠팡(WING)에 제출되지 않아요. 제출은 [쿠팡 제출]을 따로 눌러야 해요."] }),
+    exec: async () => { const r = await rgDecideRpc(planId, "APPROVED"); return r.ok ? { ok: true } : { ok: false, message: r.message }; },
+    successText: "입고 요청을 승인했습니다",
+    refresh: () => route(),
+  });
 }
 
 // PARCEL 승인 카드도 같은 DB 함수로 가요(PARCEL 조건 automation_state=PENDING_HUMAN_APPROVAL 은 DB가 확인).
@@ -9284,18 +9543,23 @@ async function openRgRejectModal(planId) {
     </div>`;
 }
 
+let _rgRejectBusy = false;
 async function confirmRgReject(planId) {
+  if (_rgRejectBusy) return;   // 2026-09-13 중복 클릭 방지
   const reason = (document.getElementById("rg-reject-reason")?.value || "").trim();
   if (reason.length < 2) return toast("거절 사유를 입력해 주세요(2자 이상)");
   const codeEl = document.getElementById("rg-reject-code");
   // 기본 사유(적재 기준)를 사람이 다른 문구로 바꿨으면 사유 코드는 붙이지 않아요(문구와 코드가 어긋나지 않게).
   const code = codeEl?.value && reason === InboundApproval.LOAD_LABELS[codeEl.value] ? codeEl.value : null;
   const btn = document.getElementById("rg-reject-confirm");
-  if (btn) btn.disabled = true;
-  const res = await rgDecideRpc(planId, "REJECTED", reason, code);
+  if (btn) { btn.disabled = true; btn.textContent = "처리 중…"; }
+  _rgRejectBusy = true;
+  let res;
+  try { res = await rgDecideRpc(planId, "REJECTED", reason, code); } finally { _rgRejectBusy = false; }
   if (!res.ok) {
-    toast(`거절하지 못했습니다: ${res.message}`);
-    if (btn) btn.disabled = false;
+    toast(`거절하지 못했습니다: ${res.message} - 서버 상태를 다시 읽었어요`);
+    if (btn) { btn.disabled = false; btn.textContent = "거절 확정"; }
+    route();   // 실패하면 화면만 성공처럼 두지 않고 서버 상태로 다시 그려요(창은 그대로)
     return;
   }
   toast("입고 요청을 거절했습니다 - 승인 대기와 WING 제출 대상에서 빠졌어요");

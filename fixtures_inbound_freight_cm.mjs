@@ -16,6 +16,7 @@ const read = f => readFileSync(new URL(f, import.meta.url), "utf8");
 const app = read("./js/app.js");
 const ctx = vm.createContext({ console, Map, Set });
 vm.runInContext(read("./js/inbound_freight.js"), ctx);
+vm.runInContext(read("./js/erp_ui.js"), ctx);   // 2026-09-13 ERP UI 정리: 운송비 카드 배지·요약
 
 const grabFn = name => {
   const m = app.match(new RegExp(`\\n(async )?function ${name}\\([\\s\\S]*?\\n}`));

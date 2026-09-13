@@ -150,7 +150,8 @@ has(IA.approvalCellHtml({ ...base, id: "pnew", resubmission_of_plan_id: "prej-99
 // app.js 실제 버튼 조건(rgActionsHtml·배지 건수) - 소스에서 잘라 실행
 const app = read("./js/app.js");
 const seg = app.slice(app.indexOf("const RG_RETRYABLE_ERROR_PATTERNS"), app.indexOf("// WING 실제 제출 - decideRgInbound()와 동일한 원칙"));
-const appCtx = vm.createContext({ esc: s => String(s ?? ""), Date, Number, String, JSON, console, fmt: n => Number(n || 0).toLocaleString("ko-KR"), InboundApproval: IA });
+const appCtx = vm.createContext({ esc: s => String(s ?? ""), Date, Number, String, JSON, console, fmt: n => Number(n || 0).toLocaleString("ko-KR"), InboundApproval: IA,
+  me: { id: "u-appr", approver: true } });   // 2026-09-13 제출 버튼은 승인 권한자에게만(읽기 전용 표시)
 vm.runInContext(seg + "\n;globalThis.__t = { rgActionsHtml, rgCanDecide, rgCanPrepareReplan, rgCanSubmit };", appCtx);
 const T = appCtx.__t;
 const stale = { ...rej, inbound_date: "2026-09-01", inbound_time: "09:30:00" };
@@ -298,6 +299,10 @@ console.log("\n=== 10. 단일 다품목 입고 · 대체된 합배송 그룹(202
   has(act, "openRgMultiSubmitModal('6869c83d-50bd')", "버튼은 바로 제출하지 않고 확인창을 먼저 엶");
   hasNot(act, "submitRgInbound(", "다품목은 확인창 없이 바로 제출하는 경로 없음");
   hasNot(act, "보류", "보류 안내 제거");
+  appCtx.me = { id: "u-view", approver: false };
+  const actView = T.rgActionsHtml(appr, new Set(), {}, { loadBlock: null, items: multi });
+  check([actView.includes("openRgMultiSubmitModal"), actView.includes("제출은 승인 권한자만")], [false, true], "[핵심] 권한 없음 → 제출 버튼 대신 읽기 전용 표시(2026-09-13)");
+  appCtx.me = { id: "u-appr", approver: true };
   check(T.rgActionsHtml({ ...appr, approval_status: "PENDING_APPROVAL" }, new Set(), {}, { loadBlock: null, items: multi }).includes("최종 제출"), false,
     "승인 전(승인대기)에는 최종 제출 버튼 없음");
   check(T.rgActionsHtml(appr, new Set([appr.id]), {}, { loadBlock: null, items: multi }).includes("최종 제출"), false, "대체된 요청은 최종 제출 버튼 없음");
@@ -393,24 +398,73 @@ console.log("\n=== 12. [2026-09-12 PO-016 취소] 발주서 자동입고 보류 
       "VOID_PENDING_REBUILD 묶음 칩(기존)");
 
   // app.js 실제 함수: 보류·재입고 허용은 DB 함수만, 사유 없는 보류는 호출 안 함, 확인창을 거침
+  // 2026-09-13 [ERP UI 정리] 확인창은 ErpUi.run 공통 흐름 - 가짜 DOM 이 사람 대신 확인창을 눌러요
   const grab2 = name => { const m = app.match(new RegExp(`\\n(async )?function ${name}\\([\\s\\S]*?\\n}`)); if (!m) throw new Error(name); return m[0]; };
-  const rpcCalls = [], confirms = [];
-  const els2 = { "po-hold-reason": { value: "", focus: () => {} }, "po-hold-section": { innerHTML: "" } };
-  const qh = data => { const o = { select: () => o, eq: () => o, in: () => o, order: () => o, limit: async () => ({ data: [] }), then: r => r({ data }) }; return o; };
-  const hctx = vm.createContext({ console, InboundApproval: IA, me: APPROVER, confirm: m => (confirms.push(m), true), event: undefined,
-    toast: () => {}, document: { getElementById: id => els2[id] || null },
-    sb: { rpc: async (fn, args) => { rpcCalls.push([fn, args]); return { error: null }; }, from: () => qh([]) } });
-  vm.runInContext("let poHoldById = {};\n" + grab2("loadPoHolds") + "\n" + grab2("loadPOHoldSection") + "\n" + grab2("savePoHold")
-    + "\n;globalThis.__h = { savePoHold };", hctx);
-  await hctx.__h.savePoHold("po-16", "HOLD");
-  check(rpcCalls.length, 0, "보류 사유 없으면 DB 함수 호출 안 함");
-  await hctx.__h.savePoHold("po-16", "RELEASE");
-  check(rpcCalls[0], ["fn_release_po_inbound_hold", { p_po_id: "po-16", p_reason: null }], "[핵심] 재입고 허용 = fn_release_po_inbound_hold(사유 선택)");
-  has(confirms[0], "재입고를 허용할까요?", "재입고 허용 전 확인창");
-  els2["po-hold-reason"].value = "  PO 점검 ";
-  await hctx.__h.savePoHold("po-16", "HOLD");
+  const { fakeErpDom } = await import("./erp_ui_fake_dom.mjs");
+  const dom = fakeErpDom({ "po-hold-reason": { value: "" }, "po-hold-section": {} });
+  const rpcCalls = [];
+  const HOLDS = { "po-16": { purchase_order_id: "po-16", held: true, reason: `${ctx.InboundApproval.REINBOUND_PREFIX || "재입고 승인 필요"} WING 입고 취소(쿠팡 센터 사정)`,
+    held_by: "system", held_at: "2026-09-12T05:00:00Z" } };
+  let rpcFail = false, refreshes = 0;
+  const qh = table => { const f = {}; const o = { select: () => o, eq: (k, v) => (f[k] = v, o), in: () => o, order: () => o, limit: async () => ({ data: [] }),
+    maybeSingle: async () => ({ data: table === "po_inbound_holds" ? (HOLDS[f.purchase_order_id] || null) : null, error: null }),
+    then: r => r({ data: table === "po_inbound_holds" ? Object.values(HOLDS).filter(h => h.held) : [], error: null }) }; return o; };
+  const hctx = vm.createContext({ console, InboundApproval: IA, me: APPROVER, event: undefined, ...dom.globals,
+    esc: s => String(s ?? ""), fmt: n => Number(n || 0).toLocaleString("ko-KR"), prodName: id => ({ p1: "모노플랫 제습제 500ml 12개" }[id] || id),
+    route: async () => { refreshes++; },
+    sb: { rpc: async (fn, args) => { rpcCalls.push([fn, args]); await new Promise(r => setTimeout(r, 5));
+            if (rpcFail) return { error: { message: "MOCK 실패" } };
+            if (fn === "fn_release_po_inbound_hold") HOLDS[args.p_po_id].held = false;
+            if (fn === "fn_set_po_inbound_hold") HOLDS[args.p_po_id] = { purchase_order_id: args.p_po_id, held: true, reason: args.p_reason };
+            return { error: null }; },
+          from: t => qh(t) } });
+  vm.runInContext(read("./js/erp_ui.js"), hctx); dom.bind(hctx);
+  vm.runInContext(`let poHoldById = {}; let _reinboundLast = { rows: [] };
+    let poCache = [{ id: "po-16", po_no: "리버스-발주-2026-016" }]; let poItemCache = { "po-16": [{ product_id: "p1", qty: 36, received_qty: 0 }] };\n`
+    + grab2("loadPoHolds") + "\n" + grab2("loadPOHoldSection") + "\n" + grab2("releasePoHold") + "\n" + grab2("savePoHold")
+    + "\n;globalThis.__h = { savePoHold, releasePoHold };", hctx);
+  // 보류돼 있는 PO 에 [보류] → 이미 보류(최신 상태 재확인) → DB 함수 호출 안 함
+  let res = await hctx.__h.savePoHold("po-16", "HOLD");
+  check([res.status, rpcCalls.length], ["STALE", 0], "이미 보류된 PO 보류 → 최신 상태 재확인에서 멈춤(DB 함수 호출 안 함)");
+  // [재입고 허용] 확인창: PO · 상품 · 수량 · 취소 사유 · 초안/제출 안 함
+  dom.user = { answer: "cancel" };
+  res = await hctx.__h.savePoHold("po-16", "RELEASE");
+  check([res.status, rpcCalls.length], ["CANCELLED", 0], "재입고 허용 확인창에서 취소 → DB 함수 호출 안 함");
+  const m0 = dom.modals.at(-1);
+  has(m0, "재입고 허용 확인", "[핵심] 재입고 허용 전 확인창");
+  has(m0, "리버스-발주-2026-016", "확인창: PO 번호"); has(m0, "모노플랫 제습제 500ml 12개", "확인창: 상품");
+  has(m0, "36개", "확인창: 수량"); has(m0, "WING 입고 취소(쿠팡 센터 사정)", "확인창: 취소 사유");
+  has(m0, "지금 WING 입고 초안이나 제출을 실행하지 않아요", "[핵심] 확인창: PO HOLD 만 해제 · 초안/제출 즉시 실행 없음");
+  // 두 번 연달아 눌러도 DB 함수는 한 번(중복 감사 이력 방지)
+  dom.user = { answer: "confirm" };
+  const [r1, r2] = await Promise.all([hctx.__h.savePoHold("po-16", "RELEASE"), hctx.__h.savePoHold("po-16", "RELEASE")]);
+  check([r1.status, r2.status], ["DONE", "BUSY"], "[핵심] 중복 클릭 → 두 번째는 처리 중이라 실행 안 함");
+  check(rpcCalls, [["fn_release_po_inbound_hold", { p_po_id: "po-16", p_reason: null }]], "[핵심] 재입고 허용 = fn_release_po_inbound_hold(사유 선택) 한 번만");
+  check(refreshes >= 1, true, "성공 뒤 화면 다시 읽기");
+  has(dom.toasts.at(-1), "PO 보류만 풀었어요", "성공 안내");
+  // 이미 풀린 PO 에 다시 [재입고 허용] → 최신 상태에서 멈춤
+  res = await hctx.__h.releasePoHold("po-16");
+  check([res.status, rpcCalls.length], ["STALE", 1], "이미 해제된 PO 재입고 허용 → 호출 안 함(다른 사람이 먼저 처리)");
+  // 사유 없이 [보류] → 필수 사유라 확인창에서 막힘
+  res = await hctx.__h.savePoHold("po-16", "HOLD");
+  check([res.status, rpcCalls.length], ["CANCELLED", 1], "보류 사유 없으면 DB 함수 호출 안 함");
+  has(dom.state.lastError, "보류 사유를 입력해 주세요", "필수 사유 안내");
+  dom.els.get("po-hold-reason").value = "  PO 점검 ";
+  res = await hctx.__h.savePoHold("po-16", "HOLD");
   check(rpcCalls[1], ["fn_set_po_inbound_hold", { p_po_id: "po-16", p_reason: "PO 점검" }], "수동 보류 = fn_set_po_inbound_hold(p_po_id, p_reason)");
-  hasNot(grab2("savePoHold"), 'from("po_inbound_holds").update', "화면이 보류 테이블을 직접 바꾸지 않음");
+  // 실패 → 안내 + 서버 상태 다시 읽기
+  rpcFail = true; const before = refreshes;
+  res = await hctx.__h.savePoHold("po-16", "RELEASE");
+  check(res.status, "FAILED", "DB 함수 실패 → 실패 결과");
+  check(refreshes > before, true, "[핵심] 실패해도 서버 상태 다시 읽기");
+  has(dom.els.get("erp-confirm-err").textContent, "MOCK 실패", "실패 사유를 확인창에 표시");
+  rpcFail = false;
+  // 권한 없는 사람 → 읽기 전용, 호출 없음
+  const nCalls = rpcCalls.length;
+  vm.runInContext("me = { id: 'u-view', name: '직원', approver: false };", hctx);
+  res = await hctx.__h.savePoHold("po-16", "RELEASE");
+  check([res.status, rpcCalls.length], ["DENIED", nCalls], "[핵심] 승인 권한 없음 → 확인창·DB 함수 없음(읽기 전용)");
+  hasNot(grab2("savePoHold") + grab2("releasePoHold"), 'from("po_inbound_holds").update', "화면이 보류 테이블을 직접 바꾸지 않음");
   has(read("./js/inbound_freight.js"), 'NEEDS_REVIEW: "검토 필요 · 실제 운송비 연결(입고 취소)"', "운송비 기록 상태 NEEDS_REVIEW 이름");
 }
 

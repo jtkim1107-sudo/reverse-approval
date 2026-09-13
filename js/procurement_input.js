@@ -32,17 +32,19 @@
   // 물류정보 필수 칸(백엔드 erp_procurement_sync.logistics_missing_fields · DB fn_save_product_procurement 와 같은 규칙)
   const LOGISTICS_FIELDS = ["supplier_name", "orderable_unit", "min_order_quantity", "lead_time_days"];
   const EXCLUSION_KIND = {
-    RESTOCK_EXCLUDED: { label: "재입고 제외", chip: "rejected", note: "추천 발주수량 없음 · 자동 발주·WING 입고 초안 대상 아님 · 원가·과거 이력은 그대로" },
-    CANDIDATE_EXCLUDED: { label: "SKU 사용 보류", chip: "waiting", note: "연결은 그대로 두고 발주정보 동기화·발주·WING 입고 SKU 후보에서만 뺌(같은 상품의 정상 SKU 로 진행)" },
+    RESTOCK_EXCLUDED: { label: "재입고 제외", chip: "rejected", badge: "excluded", note: "추천 발주수량 없음 · 자동 발주·WING 입고 초안 대상 아님 · 원가·과거 이력은 그대로" },
+    CANDIDATE_EXCLUDED: { label: "SKU 사용 보류", chip: "waiting", badge: "hold", note: "연결은 그대로 두고 발주정보 동기화·발주·WING 입고 SKU 후보에서만 뺌(같은 상품의 정상 SKU 로 진행)" },
   };
+  // 2026-09-13 [ERP UI 정리] 동기화 상태 → 공통 배지(색 + 아이콘 + 문구). 값·판정은 서버(procurement_sync_state) 그대로.
   const SYNC_LABEL = {
-    SYNCED: ["approved", "BigQuery 반영됨"],
-    LOGISTICS_INCOMPLETE: ["progress", "물류정보 입력 필요 · 동기화 안 함"],
-    PENDING_CONFIRMATION: ["waiting", "VAT 확인 대기"],
-    SYNCING: ["progress", "반영 중"],
-    DATA_CHECK_NEEDED: ["rejected", "데이터 확인 필요 · 자동 발주 막힘"],
-    COST_APPROVAL_REQUIRED: ["progress", "원가 변경 승인 필요 · 자동 발주 막힘"],
+    SYNCED: ["ok", "BigQuery 반영됨"],
+    LOGISTICS_INCOMPLETE: ["logistics", "물류정보 입력 필요 · 동기화 안 함"],
+    PENDING_CONFIRMATION: ["check", "VAT 확인 대기"],
+    SYNCING: ["awaiting", "반영 중"],
+    DATA_CHECK_NEEDED: ["error", "데이터 확인 필요 · 자동 발주 막힘"],
+    COST_APPROVAL_REQUIRED: ["check", "원가 변경 승인 필요 · 자동 발주 막힘"],
   };
+  const UI = () => root.ErpUi;
 
   const escHtml = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const won = n => (n === null || n === undefined || n === "") ? "—" : `${Number(n).toLocaleString("ko-KR")}원`;
@@ -360,19 +362,19 @@
   // ── 렌더링 ───────────────────────────────────────────────────────────────
   function syncChip(pid) {
     const st = (S.ctx.syncStates || []).find(s => s.product_id === pid);
-    if (!st) return `<span class="chip waiting">동기화 전</span>`;
-    const [cls, label] = SYNC_LABEL[st.status] || ["waiting", st.status];
+    if (!st) return UI().badge("muted", { text: "동기화 전", small: true });
+    const [kind, label] = SYNC_LABEL[st.status] || ["muted", st.status];
     let extra = "";
     if (st.status === "COST_APPROVAL_REQUIRED" && st.pending_cost) {
       const pct = st.bq_cost ? Math.round((st.pending_cost - st.bq_cost) / st.bq_cost * 100) : null;
       extra = `<div class="pi-sub">${won(st.bq_cost)} → ${won(st.pending_cost)}${pct !== null ? ` (${pct > 0 ? "+" : ""}${pct}%)` : ""}</div>`
-        + (canEdit() ? `<button class="btn sm secondary" onclick="ProcurementInput.approveCost('${st.product_id}')">원가 변경 승인</button>` : "");
+        + (canEdit() ? `<button class="btn sm secondary" data-erp-key="pi-cost-${escHtml(st.product_id)}" onclick="ProcurementInput.approveCost('${st.product_id}')">원가 변경 승인</button>` : "");
     } else if ((st.status === "DATA_CHECK_NEEDED" || st.status === "LOGISTICS_INCOMPLETE") && st.reason) {
       extra = `<div class="pi-sub">${escHtml(st.reason)}</div>`;
     } else if (st.status === "SYNCED" && st.last_synced_at) {
       extra = `<div class="pi-sub">${fmtKst(st.last_synced_at)}</div>`;
     }
-    return `<span class="chip ${cls}">${label}</span>${extra}`;
+    return `${UI().badge(kind, { text: label, small: true })}${extra}`;
   }
 
   function sugg(pid, field, s) {
@@ -388,7 +390,7 @@
     const input = `<input id="pi-${pid}-${field}" class="${cls}" ${opts.numeric ? 'inputmode="numeric"' : ""} value="${escHtml(form[field])}"
       ${opts.list ? `list="${opts.list}"` : ""} placeholder="${escHtml(opts.placeholder || "")}" style="width:${opts.w || 76}px" ${dis}
       oninput="ProcurementInput.onInput('${pid}','${field}',this.value)" aria-label="${FIELD_LABEL[field]}">`;
-    return `<td><span class="pi-inwrap">${input}${opts.suffix ? `<span class="pi-unit">${opts.suffix}</span>` : ""}</span>
+    return `<td${opts.sep ? ` class="erp-sep"` : ""}${opts.label ? ` data-label="${escHtml(opts.label)}"` : ""}><span class="pi-inwrap">${input}${opts.suffix ? `<span class="pi-unit">${opts.suffix}</span>` : ""}</span>
       <div class="pi-err" id="pi-err-${pid}-${field}">${escHtml(errs[field] || "")}</div>${sugg(pid, field, s)}</td>`;
   }
 
@@ -406,16 +408,17 @@
     const vatRadio = k => `<label class="pi-vat ${form.cost_vat_basis === k ? "on" : ""}">
         <input type="radio" name="pi-vat-${pid}" value="${k}" ${form.cost_vat_basis === k ? "checked" : ""} ${dis}
           onchange="ProcurementInput.onInput('${pid}','cost_vat_basis','${k}')">${VAT_LABEL[k]}</label>`;
-    const name = (v.reco && v.reco.product_name) || p.name || p.code;
+    const name = UI().displayName(p.code, p.name || (v.reco && v.reco.product_name) || p.code);
+    const listing = [(v.reco && v.reco.product_name) || "", (v.reco && v.reco.option_name) || ""].filter(Boolean).join(" · ");
     return `<tr id="pi-row-${pid}" class="${dirty ? "pi-dirty" : ""}">
-      <td class="pi-name"><b title="${escHtml(name)}">${escHtml(name)}</b>
+      <td class="pi-name erp-sticky erp-card-head"><b title="${escHtml(listing ? `쿠팡 상품: ${listing}` : name)}">${escHtml(name)}</b>
         <div class="pi-sub">${escHtml((v.reco && v.reco.option_name) || p.spec || "")}</div>
         <div class="pi-sub">SKU ${escHtml(v.skus.join(", ") || "—")}</div>
         <div class="pi-sub">ERP <code class="pi-code">${escHtml(p.code || "—")}</code></div>
         <div class="pi-sync">${syncChip(pid)} <button class="pi-link" onclick="ProcurementInput.history('${pid}')">변경 이력</button></div>
         ${(v.procurement || dirty) && !val.complete ? `<div class="pi-logi" id="pi-logi-${pid}">${logisticsNoteHtml(val.missing)}</div>` : `<div class="pi-logi" id="pi-logi-${pid}"></div>`}
         ${val.warnings.map(w => `<div class="pi-warn">${escHtml(w)}</div>`).join("")}</td>
-      <td class="pi-cost-cell ${errs.cost_vat_basis ? "bad" : ""}">
+      <td class="pi-cost-cell erp-sep ${errs.cost_vat_basis ? "bad" : ""}" data-label="원가·VAT 기준">
         <div class="pi-cost"><b>${won(p.cost_price)}</b> <span class="pi-sub">${escHtml(p.tax_type || "")}</span></div>
         ${s.last_unit_cost ? `<div class="pi-sub">최근 발주 단가 ${won(s.last_unit_cost)}</div>` : ""}
         ${errs.cost_price ? `<div class="pi-err">${escHtml(errs.cost_price)}</div>` : ""}
@@ -423,28 +426,30 @@
         <div class="pi-err" id="pi-err-${pid}-cost_vat_basis">${escHtml(errs.cost_vat_basis || "")}</div>
         ${supplyHtml(p.cost_price, form.cost_vat_basis)}
         ${costChanged ? `<div class="pi-warn">확인 뒤 원가가 바뀌었어요(${won(lastSeen)} → ${won(p.cost_price)}) - 다시 골라 주세요</div>` : ""}</td>
-      ${inputCell(pid, "supplier_name", form, errs, s.supplier_name, { list: "pi-suppliers", w: 118, placeholder: "공급처" })}
-      <td><select id="pi-${pid}-orderable_unit" class="pi-in ${errs.orderable_unit ? "bad" : ""}" ${dis}
+      ${inputCell(pid, "supplier_name", form, errs, s.supplier_name, { list: "pi-suppliers", w: 104, placeholder: "공급처", label: "공급처", sep: true })}
+      <td data-label="발주단위"><select id="pi-${pid}-orderable_unit" class="pi-in ${errs.orderable_unit ? "bad" : ""}" ${dis}
             onchange="ProcurementInput.onInput('${pid}','orderable_unit',this.value)" aria-label="발주단위">
           <option value="" ${form.orderable_unit ? "" : "selected"}>선택</option>
           ${Object.keys(UNIT_LABEL).map(k => `<option value="${k}" ${form.orderable_unit === k ? "selected" : ""}>${UNIT_LABEL[k]}</option>`).join("")}
         </select><div class="pi-err" id="pi-err-${pid}-orderable_unit">${escHtml(errs.orderable_unit || "")}</div></td>
-      ${inputCell(pid, "min_order_quantity", form, errs, s.min_order_quantity, { numeric: true, suffix: "개", w: 62 })}
-      ${inputCell(pid, "units_per_box", form, errs, s.units_per_box, { numeric: true, suffix: "개", placeholder: form.orderable_unit === "BOX" ? "필수" : "", w: 62 })}
-      ${inputCell(pid, "units_per_plt", form, errs, s.units_per_plt, { numeric: true, suffix: "개", placeholder: form.orderable_unit === "PLT" ? "필수" : "", w: 62 })}
-      ${inputCell(pid, "lead_time_days", form, errs, s.lead_time_days, { numeric: true, suffix: "일", w: 56 })}
+      ${inputCell(pid, "min_order_quantity", form, errs, s.min_order_quantity, { numeric: true, suffix: "개", w: 62, label: "최소발주" })}
+      ${inputCell(pid, "units_per_box", form, errs, s.units_per_box, { numeric: true, suffix: "개", placeholder: form.orderable_unit === "BOX" ? "필수" : "", w: 62, label: "BOX 입수", sep: true })}
+      ${inputCell(pid, "units_per_plt", form, errs, s.units_per_plt, { numeric: true, suffix: "개", placeholder: form.orderable_unit === "PLT" ? "필수" : "", w: 62, label: "PLT 입수" })}
+      ${inputCell(pid, "lead_time_days", form, errs, s.lead_time_days, { numeric: true, suffix: "일", w: 56, label: "리드타임" })}
     </tr>`;
   }
 
-  const logisticsNoteHtml = missing => `<span class="chip progress">물류정보 입력 필요</span>
+  const logisticsNoteHtml = missing => `${UI().badge("logistics", { small: true })}
     <div class="pi-sub">${escHtml(missingText(missing))} 없음 - 채울 때까지 BigQuery 반영·추천 발주수량·자동 발주·WING 입고 초안이 막혀요</div>`;
 
   function tableHtml(list, emptyMsg) {
     if (!list.length) return `<p class="empty">${emptyMsg}</p>`;
     const later = `<div class="pi-sub">나중에 입력 가능</div>`;
-    return `<div class="table-wrap"><table class="pi-table">
-      <thead><tr><th>상품명 · SKU · ERP 코드</th><th>현재 cost_price<div class="pi-sub">VAT 기준 *</div></th><th>공급처${later}</th><th>발주단위${later}</th>
-        <th>최소발주${later}</th><th>BOX 입수<div class="pi-sub">BOX면 필수</div></th><th>PLT 입수<div class="pi-sub">PLT면 필수</div></th><th>리드타임${later}</th></tr></thead>
+    return `<div class="erp-table-wrap"><table class="pi-table erp-table erp-cards">
+      <thead><tr class="erp-grp"><th class="erp-sticky"></th><th class="erp-grp-sep">원가·VAT</th><th colspan="3" class="erp-grp-sep">발주정보</th>
+          <th colspan="3" class="erp-grp-sep">물류정보</th></tr>
+        <tr><th class="erp-sticky">상품명 · SKU · ERP 코드</th><th class="erp-sep">현재 cost_price<div class="pi-sub">VAT 기준 *</div></th><th class="erp-sep">공급처${later}</th><th>발주단위${later}</th>
+        <th>최소발주${later}</th><th class="erp-sep">BOX 입수<div class="pi-sub">BOX면 필수</div></th><th>PLT 입수<div class="pi-sub">PLT면 필수</div></th><th>리드타임${later}</th></tr></thead>
       <tbody>${list.map(v => rowHtml(v, S.touched && S.touched.has(v.product.id))).join("")}</tbody></table></div>`;
   }
 
@@ -454,23 +459,24 @@
     const ppBy = new Map(S.ctx.procurements.map(r => [r.product_id, r]));
     return `<div class="card">
       <div class="card-head"><h2>세트 상품 ${list.length}개 · 따로 입력하지 않아요</h2></div>
-      <p class="pi-note">부모 상품의 공급처·발주단위·포장·리드타임을 그대로 따라요. 원가와 필요한 기본수량만 구성수량을 곱해 동기화 때 계산하고,
-        발주와 중복 방지는 부모 ERP 코드로 해요. 아래 원가는 미리보기이며 저장하지 않아요.</p>
-      <div class="table-wrap"><table class="pi-table">
-        <thead><tr><th>세트 상품</th><th>ERP 코드</th><th>부모 상품</th><th class="num">구성수량</th><th class="num">세트 cost_price(계산)</th><th>부모 입력 상태</th></tr></thead>
+      <details class="erp-help"><summary>세트 상품은 왜 따로 입력하지 않나요?</summary>부모 상품의 공급처·발주단위·포장·리드타임을 그대로 따라요. 원가와 필요한 기본수량만 구성수량을 곱해 동기화 때 계산하고,
+        발주와 중복 방지는 부모 ERP 코드로 해요. 아래 원가는 미리보기이며 저장하지 않아요.</details>
+      <div class="erp-table-wrap"><table class="pi-table erp-table erp-cards">
+        <thead><tr><th class="erp-sticky">세트 상품</th><th>ERP 코드</th><th>부모 상품</th><th class="num">구성수량</th><th class="num">세트 cost_price(계산)</th><th>부모 입력 상태</th></tr></thead>
         <tbody>${list.map(c => {
           const pp = c.parent ? ppBy.get(c.parent.id) : null;
           const pv = setPreview(c.product, c.parent, pp);
-          const st = !c.parent ? `<span class="chip rejected">부모 상품 없음</span>`
-            : !pp ? `<span class="chip progress">부모 입력 필요</span>`
-            : pp.cost_vat_basis ? `<span class="chip approved">부모 입력됨</span>` : `<span class="chip waiting">부모 VAT 확인 필요</span>`;
-          return `<tr><td><b>${escHtml((c.reco && c.reco.product_name) || c.product.name || "")}</b><div class="pi-sub">${escHtml((c.reco && c.reco.option_name) || "")} · SKU ${escHtml(c.reco ? c.reco.vendor_item_id : "—")}</div></td>
-            <td><code>${escHtml(c.product.code || "—")}</code></td>
-            <td>${c.parent ? `<code>${escHtml(c.parent.code)}</code> · ${won(c.parent.cost_price)}` : "—"}</td>
-            <td class="num">×${escHtml(c.set_qty ?? "?")}</td>
-            <td class="num">${pv.cost ? `${won(c.parent.cost_price)} × ${c.set_qty} = <b>${won(pv.cost)}</b>` : "계산 불가"}
-              <div class="pi-sub">${pv.supply ? `공급가액 ${won(pv.supply)}` : pv.supply_exact === false ? "공급가액 계산 불가(÷1.1 안 나눠짐)" : "공급가액은 부모 VAT 확인 후"}</div></td>
-            <td>${st}</td></tr>`;
+          const st = !c.parent ? UI().badge("error", { text: "부모 상품 없음", small: true })
+            : !pp ? UI().badge("check", { text: "부모 입력 필요", small: true })
+            : pp.cost_vat_basis ? UI().badge("ok", { text: "부모 입력됨", small: true }) : UI().badge("check", { text: "부모 VAT 확인 필요", small: true });
+          return `<tr><td class="erp-sticky erp-card-head"><b>${escHtml(UI().displayName(c.product.code, c.product.name || (c.reco && c.reco.product_name) || ""))}</b><div class="pi-sub">${escHtml((c.reco && c.reco.option_name) || "")} · SKU ${escHtml(c.reco ? c.reco.vendor_item_id : "—")}</div>
+              ${UI().relationHtml({ role: "child", parentName: c.parent ? UI().displayName(c.parent.code, c.parent.name) : "", setQty: c.set_qty })}</td>
+            <td data-label="ERP 코드"><code>${escHtml(c.product.code || "—")}</code></td>
+            <td data-label="부모 상품">${c.parent ? `<code>${escHtml(c.parent.code)}</code> · ${won(c.parent.cost_price)}` : "—"}</td>
+            <td class="num" data-label="구성수량">×${escHtml(c.set_qty ?? "?")}</td>
+            <td class="num" data-label="세트 원가(계산)"><div>${pv.cost ? `${won(c.parent.cost_price)} × ${c.set_qty} = <b>${won(pv.cost)}</b>` : "계산 불가"}
+              <div class="pi-sub">${pv.supply ? `공급가액 ${won(pv.supply)}` : pv.supply_exact === false ? "공급가액 계산 불가(÷1.1 안 나눠짐)" : "공급가액은 부모 VAT 확인 후"}</div></div></td>
+            <td data-label="부모 입력 상태">${st}</td></tr>`;
         }).join("")}</tbody></table></div></div>`;
   }
 
@@ -506,16 +512,33 @@
     const list = S.tab === "entered" ? c.entered : S.tab === "logistics" ? c.incomplete : c.targets;
     const banner = S.loadError ? `<div class="pi-banner bad">${escHtml(S.loadError)}</div>`
       : !canEdit() ? `<div class="pi-banner">보기 전용 - 승인 권한자만 수정할 수 있어요.</div>` : "";
+    // 2026-09-13 [ERP UI 정리] 위쪽 핵심 요약 - 동기화 상태·세트·제외 건수(탭은 아래 표 필터 그대로)
+    const syncCount = st => (c.syncStates || []).filter(x => x.status === st).length;
+    const exActive = Array.isArray(c.exclusions) ? c.exclusions.filter(e => e.active) : [];
+    const summary = UI().summaryHtml([
+      { label: "입력 필요", value: c.targets.length, kind: c.targets.length ? "check" : "ok" },
+      { label: "물류정보 입력 필요", value: c.incomplete.length, kind: c.incomplete.length ? "logistics" : "ok", title: "채울 때까지 자동 발주·WING 초안 막힘" },
+      { label: "BigQuery 반영됨", value: syncCount("SYNCED"), kind: "ok" },
+      { label: "원가 변경 승인 필요", value: syncCount("COST_APPROVAL_REQUIRED"), kind: "check", hidden: !syncCount("COST_APPROVAL_REQUIRED") },
+      { label: "VAT 확인 대기", value: syncCount("PENDING_CONFIRMATION"), kind: "check", hidden: !syncCount("PENDING_CONFIRMATION") },
+      { label: "데이터 확인 필요", value: syncCount("DATA_CHECK_NEEDED"), kind: "error", hidden: !syncCount("DATA_CHECK_NEEDED") },
+      { label: "재입고 제외", value: exActive.filter(e => e.kind === "RESTOCK_EXCLUDED").length, kind: "excluded",
+        onclick: "document.getElementById('pi-ex-card')?.scrollIntoView({behavior:'smooth'})", hidden: !Array.isArray(c.exclusions) },
+      { label: "SKU 사용 보류", value: exActive.filter(e => e.kind === "CANDIDATE_EXCLUDED").length, kind: "hold",
+        onclick: "document.getElementById('pi-ex-card')?.scrollIntoView({behavior:'smooth'})", hidden: !Array.isArray(c.exclusions) },
+    ], { label: "발주·물류 정보 요약" });
     return `
       <div class="card">
-        <div class="card-head"><h2>발주·물류 정보${S.editing ? ` <span class="chip progress">편집 중</span>` : ""}</h2>
+        <div class="card-head"><h2>발주·물류 정보${S.editing ? ` <span class="chip progress">편집 중</span>` : ""}${!canEdit() ? ` <span class="erp-readonly">🔒 읽기 전용</span>` : ""}</h2>
           <div class="pi-tabs">${tabs.map(([k, l]) => `<button class="pi-tab ${S.tab === k ? "on" : ""}" onclick="ProcurementInput.tab('${k}')">${l}</button>`).join("")}
             ${canEdit() && !S.editing ? `<button class="btn sm" onclick="ProcurementInput.edit()">편집</button>` : ""}</div></div>
-        <p class="pi-note">원가·발주정보가 없어 재고판단이 <b>데이터확인</b>에 머문 상품이에요. 매입원가는 <b>제품 마스터 값</b>을 그대로 쓰고 여기서는 바꾸지 않아요 -
+        ${summary}
+        <details class="erp-help"><summary>화면 설명 · 저장 규칙</summary>
+          원가·발주정보가 없어 재고판단이 <b>데이터확인</b>에 머문 상품이에요. 매입원가는 <b>제품 마스터 값</b>을 그대로 쓰고 여기서는 바꾸지 않아요 -
           대신 그 금액이 <b>VAT 별도 공급가액</b>인지 <b>VAT 포함 금액</b>인지 꼭 골라 주세요. 고르기 전에는 저장도, BigQuery 반영도 안 돼요.
           BigQuery·공헌이익에는 VAT 를 뺀 공급가액이 들어가요(VAT 포함이면 ÷1.1, 나누어떨어지지 않으면 반영하지 않고 멈춤).
           공급처·발주단위·최소발주·리드타임은 나중에 채워도 저장돼요 - 다 채울 때까지는 <b>물류정보 입력 필요</b>로 두고
-          BigQuery 반영·추천 발주수량·자동 발주·WING 입고 초안을 막아요. 회색 글씨는 참고용 제안이고 저장되지 않아요.</p>
+          BigQuery 반영·추천 발주수량·자동 발주·WING 입고 초안을 막아요. 회색 글씨는 참고용 제안이고 저장되지 않아요.</details>
         ${banner}
         ${tableHtml(list, S.tab === "entered" ? "아직 입력된 상품이 없어요." : S.tab === "logistics" ? "물류정보가 빈 상품이 없어요." : "입력이 필요한 상품이 없어요.")}
         <datalist id="pi-suppliers">${(c.suppliers || []).filter(s => s.active !== false).map(s => `<option value="${escHtml(s.name)}">`).join("")}</datalist>
@@ -541,12 +564,12 @@
 
   function exclusionPanelHtml() {
     const c = S.ctx;
-    const head = `<div class="card-head"><h2>재입고 제외·SKU 사용 보류</h2>
+    const head = `<div class="card-head"><h2>재입고 제외 관리 <span class="pi-sub" style="font-weight:600">재입고 제외·SKU 사용 보류</span>${canExclude() ? "" : ` <span class="erp-readonly">🔒 읽기 전용</span>`}</h2>
         <button class="btn sm secondary" id="pi-ex-refresh" onclick="ProcurementInput.refreshExclusions()" ${S.busy ? "disabled" : ""}>새로고침</button></div>
-      <p class="pi-note"><b>재입고 제외</b>: 앞으로 재고를 넣지 않는 SKU - 추천 발주수량이 없고 자동 발주·WING 입고 초안 대상에서 빠져요.
+      <details class="erp-help"><summary>재입고 제외와 SKU 사용 보류의 차이</summary><b>재입고 제외</b>: 앞으로 재고를 넣지 않는 SKU - 추천 발주수량이 없고 자동 발주·WING 입고 초안 대상에서 빠져요.
         <b>SKU 사용 보류</b>: 상품 연결은 그대로 두고 발주정보 동기화·발주·WING 입고 SKU 후보에서만 빼요(같은 상품의 정상 SKU 로 계속 진행).
         어느 쪽이든 상품과 원가, 과거 판매·재고·입고·공헌이익 자료는 지우지 않아요. 해제해도 바로 발주하거나 WING 초안을 만들지 않아요 -
-        다음 재고 판단과 별도 승인을 거쳐요. 등록·해제는 승인 권한자만, 사유가 필요하고 이력이 남아요.</p>`;
+        다음 재고 판단과 별도 승인을 거쳐요. 등록·해제는 승인 권한자만, 사유가 필요하고 이력이 남아요.</details>`;
     if (c.exclusionError) return `<div class="card">${head}<div class="pi-banner bad">${escHtml(c.exclusionError)}</div></div>`;
     const active = (c.exclusions || []).filter(e => e.active);
     const released = (c.exclusions || []).filter(e => !e.active);
@@ -555,11 +578,11 @@
     const rows = active.map(e => {
       const k = kindOf(e.kind);
       const vid = escHtml(e.vendor_item_id);
-      return `<tr><td><code>${vid}</code></td><td>${skuLabelHtml(e)}</td>
-        <td><span class="chip ${k.chip}">${k.label}</span></td>
-        <td class="pi-ex-reason">${escHtml(e.reason)}</td>
-        <td><div class="pi-sub">${escHtml(e.excluded_by_name || "")}</div><div class="pi-sub">${fmtKst(e.excluded_at)}</div></td>
-        <td class="pi-ex-act">${btn("제외 사유 보기", `ProcurementInput.exclusionDetail('${vid}','${e.kind}')`)}
+      return `<tr><td class="erp-sticky erp-card-head"><code>${vid}</code>${skuLabelHtml(e)}</td>
+        <td data-label="종류">${UI().badge(k.badge || "hold", { text: k.label, title: k.note })}</td>
+        <td class="pi-ex-reason" data-label="사유">${escHtml(e.reason)}</td>
+        <td data-label="등록"><div class="erp-stack"><span class="pi-sub">${escHtml(e.excluded_by_name || "")}</span><span class="pi-sub">${fmtKst(e.excluded_at)}</span></div></td>
+        <td class="pi-ex-act erp-actions">${btn("제외 사유 보기", `ProcurementInput.exclusionDetail('${vid}','${e.kind}')`)}
           ${btn("변경 이력", `ProcurementInput.exclusionHistory('${vid}')`)}
           ${edit ? btn(`${k.label} 해제`, `ProcurementInput.releaseExclusion('${vid}','${e.kind}')`) : ""}</td></tr>`;
     }).join("");
@@ -571,9 +594,14 @@
         <button class="btn" id="pi-ex-add" ${S.busy ? "disabled" : ""} onclick="ProcurementInput.addExclusion()">재입고 제외</button></div>
         <div class="pi-err" id="pi-ex-err"></div>`
       : `<div class="pi-banner">보기 전용 - 승인 권한자만 등록·해제할 수 있어요. 목록·사유·이력은 볼 수 있어요.</div>`;
-    return `<div class="card" id="pi-ex-card">${head}${form}
-      ${active.length ? `<div class="table-wrap"><table class="pi-table">
-        <thead><tr><th>쿠팡 SKU</th><th>상품</th><th>종류</th><th>사유</th><th>등록</th><th></th></tr></thead>
+    const exSummary = UI().summaryHtml([
+      { label: "재입고 제외", value: active.filter(e => e.kind === "RESTOCK_EXCLUDED").length, kind: "excluded" },
+      { label: "SKU 사용 보류", value: active.filter(e => e.kind === "CANDIDATE_EXCLUDED").length, kind: "hold" },
+      { label: "해제된 제외", value: released.length, kind: "muted", sub: "이력 보존" },
+    ], { compact: true, label: "재입고 제외 요약" });
+    return `<div class="card" id="pi-ex-card">${head}${exSummary}${form}
+      ${active.length ? `<div class="erp-table-wrap"><table class="pi-table erp-table erp-cards">
+        <thead><tr><th class="erp-sticky">쿠팡 SKU · 상품</th><th>종류</th><th>사유</th><th>등록</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table></div>` : `<p class="empty">제외된 SKU 가 없어요.</p>`}
       ${released.length ? `<details class="pi-ex-released"><summary>해제된 제외 ${released.length}건</summary>
         ${released.map(e => `<div class="pi-sub"><code>${escHtml(e.vendor_item_id)}</code> ${kindOf(e.kind).label} ·
@@ -616,7 +644,7 @@
     exclusionModal(`제외 사유 · <code>${escHtml(vid)}</code>`, `<table class="rg-detail"><tbody>
         <tr><th>쿠팡 SKU</th><td><code>${escHtml(vid)}</code>${r && r.status ? ` <span class="pi-sub">발주추천 상태 ${escHtml(r.status)}</span>` : ""}</td></tr>
         <tr><th>상품</th><td>${skuLabelHtml(e)}</td></tr>
-        <tr><th>종류</th><td><span class="chip ${k.chip}">${k.label}</span> ${e.active ? "" : `<span class="chip approved">해제됨</span>`}<div class="pi-sub">${escHtml(k.note)}</div></td></tr>
+        <tr><th>종류</th><td>${UI().badge(k.badge || "hold", { text: k.label })} ${e.active ? "" : UI().badge("muted", { text: "해제됨" })}<div class="pi-sub">${escHtml(k.note)}</div></td></tr>
         <tr><th>제외 사유</th><td>${escHtml(e.reason)}</td></tr>
         <tr><th>등록</th><td>${escHtml(e.excluded_by_name || "")} · ${fmtKst(e.excluded_at)}</td></tr>
         ${e.active ? "" : `<tr><th>해제</th><td>${escHtml(e.released_by_name || "")} · ${fmtKst(e.released_at)}<div class="pi-sub">${escHtml(e.release_reason || "")}</div></td></tr>`}
@@ -881,16 +909,27 @@
       </div>`;
   }
 
+  // 2026-09-13 [ERP UI 정리] 원가 변경 승인 - 같은 DB 함수 1번. 확인창(상품·원가 전후·변경률) · 중복 클릭 방지 · 처리 중 표시 ·
+  // 성공·실패 모두 서버 상태 다시 읽기(편집 중 입력값은 유지). 이미 승인됐으면 DB 가 막아요(중복 이력 없음).
   async function approveCost(pid) {
-    if (!canEdit()) return;
     const st = (S.ctx.syncStates || []).find(s => s.product_id === pid);
     if (!st || st.status !== "COST_APPROVAL_REQUIRED") return;
-    const ok = root.confirm(`BigQuery 원가를 ${won(st.bq_cost)} → ${won(st.pending_cost)}(으)로 바꾸는 것을 승인할까요?\n다음 06:20 동기화 때 반영돼요.`);
-    if (!ok) return;
-    const { error } = await S.sb.rpc("fn_approve_procurement_cost_change", { p_product_id: pid, p_pending_cost_seen: st.pending_cost });
-    if (error) { (root.toast || root.alert)(errorMessage(error).text); return; }
-    (root.toast || (() => {}))("원가 변경을 승인했어요 - 다음 동기화 때 반영돼요");
-    S.ctx = await load(S.sb); S.loadError = S.ctx.loadError; resetForms(); rerender();
+    const v = [...S.ctx.targets, ...S.ctx.entered].find(x => x.product.id === pid);
+    const p = (v && v.product) || (S.ctx.products || []).find(x => x.id === pid) || {};
+    const pct = st.bq_cost ? Math.round((st.pending_cost - st.bq_cost) / st.bq_cost * 100) : null;
+    return UI().run({
+      key: `pi-cost-${pid}`, allowed: canEdit() && !S.busy, deniedText: "승인 권한자만 원가 변경을 승인할 수 있어요(읽기 전용)",
+      confirm: { title: "원가 변경 승인", actionLabel: "원가 변경 승인",
+        rows: [["상품", `${escHtml(UI().displayName(p.code, p.name || ""))} <code>${escHtml(p.code || "")}</code>`],
+               ["BigQuery 원가", `${won(st.bq_cost)} → <b>${won(st.pending_cost)}</b>${pct !== null ? ` (${pct > 0 ? "+" : ""}${pct}%)` : ""}`]],
+        notes: ["다음 06:20 동기화 때 반영돼요(동기화 스위치가 켜져 있을 때만).", "제품 마스터 원가는 바꾸지 않아요."] },
+      exec: async () => {
+        const { error } = await S.sb.rpc("fn_approve_procurement_cost_change", { p_product_id: pid, p_pending_cost_seen: st.pending_cost });
+        return error ? { ok: false, message: errorMessage(error).text } : { ok: true };
+      },
+      successText: "원가 변경을 승인했어요 - 다음 동기화 때 반영돼요",
+      refresh: reloadKeepForms,
+    });
   }
 
   root.ProcurementInput = {
