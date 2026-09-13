@@ -153,6 +153,7 @@
     } finally {
       inflight = null;
       setBusy(false);
+      topCache = null;                                                  // 수집 뒤 세션 상태를 새로 읽게
       if (typeof global.route === "function") await global.route();   // DB 에서 다시 읽기
     }
   }
@@ -201,26 +202,122 @@
     return out;
   }
 
+  /* 2026-09-13 [사용자 지시: "화면에서 '쿠키 남은 시간'과 '실제 인증 상태'를 구분해 표시"]
+     서버(/refresh-status)의 session.level: alert(WING 로그인 필요) · warn(확인 필요) · ok.
+     예전 응답(level 없음)은 needs_renewal·warning 으로 같은 뜻을 읽어요. */
+  function sessionLevel(s) {
+    if (!s) return "ok";
+    return s.level || (s.needs_renewal ? "alert" : s.warning ? "warn" : "ok");
+  }
+
+  /* 제목과 같은 말로 시작하는 서버 문구는 앞부분을 떼서 두 번 쓰지 않아요. */
+  function bodyText(msg, title) {
+    const m = String(msg || "");
+    return m.startsWith(title) ? m.slice(title.length).replace(/^\s*[-·:]\s*/, "") : m;
+  }
+
   function sessionBannerHtml(health) {
     const s = health && health.session;
     if (!s) return "";
     const last = health.last_success_at ? kst(health.last_success_at, true) : "기록 없음";
-    if (s.needs_renewal) {
+    const level = sessionLevel(s);
+    if (level === "alert") {
       return `<div role="alert" class="sales-session-banner" style="border:1px solid #f2c0c0;background:#fdecec;color:#8c2020;border-radius:9px;padding:10px 12px;margin:0 0 10px;font-size:13px;line-height:1.55">
-        <b>세션 갱신 필요</b> · ${esc(s.message || "WING 세션이 만료됐어요")}
+        <b>WING 로그인 필요</b> · ${esc(bodyText(s.message, "WING 로그인 필요") || "WING 실제 인증이 안 돼요")}
         <div style="font-size:12px;margin-top:2px">마지막 정상 수집 ${esc(last)} · 새로고침과 06:20 자동 수집은 세션이 복구될 때까지 저장하지 않아요(0원 아님)</div></div>`;
     }
-    if (s.warning) {
+    if (level === "warn") {
       return `<div role="status" class="sales-session-banner" style="border:1px solid #f3cfa4;background:#fff4e8;color:#8a4b12;border-radius:9px;padding:8px 12px;margin:0 0 10px;font-size:12.5px">
-        ${esc(s.message || "세션 자동 연장 확인 필요")} · 마지막 정상 수집 ${esc(last)}</div>`;
+        ${esc(s.message || "WING 실제 인증 확인 필요")} · 마지막 정상 수집 ${esc(last)}</div>`;
     }
     return "";
   }
 
-  function sessionOkText(health) {
+  /* 쿠키 남은 시간(참고)과 실제 인증 상태를 따로. 쿠키 시간만으로 '정상'이라 쓰지 않아요. */
+  function sessionStateText(health) {
     const s = health && health.session;
-    if (!s || s.needs_renewal || s.warning || s.hours_left == null) return "";
-    return `<span>WING 세션 정상 (${Number(s.hours_left).toFixed(1)}시간 남음)</span>`;
+    if (!s) return "";
+    const a = s.auth || {};
+    const cookieLeft = (s.cookie && s.cookie.hours_left != null) ? s.cookie.hours_left : s.hours_left;
+    const authPart = a.state === "AUTH_OK" && !a.stale
+      ? `실제 인증 정상${a.checked_at ? ` (${esc(kst(a.checked_at, true))} 확인)` : ""}`
+      : esc(a.label || "실제 인증 확인 필요");
+    const cookiePart = cookieLeft != null && cookieLeft > 0 ? ` · 쿠키 ${Number(cookieLeft).toFixed(1)}시간 남음(참고)` : "";
+    const nc = s.next_collection;
+    const ncPart = nc && nc.risk
+      ? ` · 다음 06:20 수집 ${esc(RISK_LABEL[nc.risk] || nc.risk)}` +
+        (nc.login_age_at_collection_hours != null ? `(로그인 후 ${esc(nc.login_age_at_collection_hours)}시간 · 약 24시간 추정 기준)` : "")
+      : "";
+    return `<span>WING ${authPart}${cookiePart}${ncPart}</span>`;
+  }
+
+  /* ── ERP 상단 경고 (모든 화면) ─────────────────────────────────────────────
+     2026-09-13 [사용자 지시: "keepalive 실패를 ERP 상단에 즉시 표시 · 마지막 실제 AUTH_OK 시각 ·
+     마지막 keepalive 성공·실패 시각 · 다음 06:20 수집 위험 여부 · '맥에서 WING 로그인 갱신' 안내 ·
+     로그인 완료 후 실제 health-check 성공 시 경고 자동 해제"]
+     서버가 준 상태만 그려요(브라우저는 WING 을 부르지 않음). 경고가 없으면 영역을 숨겨요. */
+  const RISK_LABEL = {
+    OK: "가능(추정)", WATCH: "주의 - 자동 연장 실패 중", AT_RISK: "위험 - 수집 전에 세션이 끝날 수 있음",
+    EXPIRED: "불가 - 지금 실제 인증이 안 됨", UNKNOWN: "확인 필요 - 로그인 기준 시각을 모름",
+  };
+
+  function topBannerHtml(s) {
+    const level = sessionLevel(s);
+    if (!s || level === "ok") return "";
+    const a = s.auth || {};
+    const k = s.keepalive || {};
+    const nc = s.next_collection || {};
+    const login = s.login || {};
+    const t = (x) => (x ? esc(kst(x, true)) : "기록 없음");
+    const alert = level === "alert";
+    const rows = [
+      `마지막 실제 인증 성공(AUTH_OK) ${t(a.last_ok_at)}${a.last_ok_source ? ` · ${esc(a.last_ok_source)}` : ""}`,
+      `자동 연장(keepalive) 마지막 성공 ${t(k.last_success_at)} · 마지막 실패 ${t(k.last_failure_at)}` +
+        (k.consecutive_failures ? ` (연속 ${esc(k.consecutive_failures)}회${k.superseded ? " · 그 뒤 인증 성공으로 해소" : ""})` : ""),
+      `다음 06:20 수집(${t(nc.at)}): ${esc(RISK_LABEL[nc.risk] || nc.risk || "확인 필요")}` +
+        (nc.login_age_at_collection_hours != null ? ` · 그때 로그인 후 ${esc(nc.login_age_at_collection_hours)}시간` : ""),
+      `로그인 기준 시각 ${login.known ? t(login.login_at) : "확인 필요"}` +
+        ((s.cookie && s.cookie.hours_left != null) ? ` · 쿠키 ${Number(s.cookie.hours_left).toFixed(1)}시간 남음(참고 - 쿠키만으로 정상 판단 안 함)` : ""),
+    ];
+    const when = nc.login_now_covers_next
+      ? " 지금 로그인하면 다음 06:20 수집까지 유지될 것으로 추정해요(약 24시간 패턴)."
+      : (nc.recommended_login_after ? ` 다음 06:20 수집을 위해서는 ${t(nc.recommended_login_after)} 이후 로그인을 권장해요(약 24시간 패턴 추정).` : "");
+    const hint = s.action_hint
+      ? `<div style="margin-top:6px;font-weight:600">안내: ${esc(s.action_hint)}${when}</div>`
+      : "";
+    const box = alert
+      ? "border:1px solid #f2c0c0;background:#fdecec;color:#8c2020"
+      : "border:1px solid #f3cfa4;background:#fff4e8;color:#8a4b12";
+    return `<div role="${alert ? "alert" : "status"}" class="wing-session-top" style="${box};border-radius:9px;padding:10px 14px;margin:10px 16px 0;font-size:13px;line-height:1.55">
+      <b>${alert ? "WING 로그인 필요" : "WING 세션 확인 필요"}</b> · ${esc(bodyText(bodyText(s.message, "WING 로그인 필요"), "확인 필요"))}
+      <ul style="margin:4px 0 0;padding-left:18px;font-size:12px">${rows.map((r) => `<li>${r}</li>`).join("")}</ul>${hint}</div>`;
+  }
+
+  const TOP_CACHE_MS = 60 * 1000;
+  let topCache = null;                     // { at, session }
+
+  async function renderTopBanner({ force = false } = {}) {
+    if (typeof document === "undefined") return null;
+    const el = document.getElementById("wing-session-banner");
+    if (!el) return null;
+    let session = topCache && !force && Date.now() - topCache.at < TOP_CACHE_MS ? topCache.session : undefined;
+    if (session === undefined) {
+      session = null;
+      const jwt = await sessionJwt();
+      if (jwt) {
+        try {
+          const r = await fetch(`${API_BASE}/api/sales-statistics/refresh-status`, {
+            credentials: "omit", headers: { Authorization: `Bearer ${jwt}` } });
+          const b = r.ok ? await r.json() : null;
+          session = (b && b.session) || null;
+        } catch (e) { session = null; }       // 못 읽으면 경고를 지어내지 않고 그대로 둬요
+      }
+      topCache = { at: Date.now(), session };
+    }
+    const html = topBannerHtml(session);
+    el.innerHTML = html;
+    el.hidden = !html;
+    return session;
   }
 
   /* 날짜 하나의 수집 이력 → 화면 상태. 이력은 로그인 사용자에게 SELECT 만 열려 있어요. */
@@ -320,7 +417,7 @@
         ${hasData ? "기존 값을 그대로 보여주고 있어요" : "표시할 저장값이 없어요(0원 아님)"}</div>`;
     }
     return `${sessionBannerHtml(health)}<div class="sales-refresh-status" style="font-size:12.5px;color:var(--text-sub);display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;margin:4px 0 10px">
-      ${chip}<span style="font-weight:600">${DATA_BASIS}</span>${parts.join("")}${hasData ? reconText(state && state.recon) : ""}${sessionOkText(health)}</div>${note}`;
+      ${chip}<span style="font-weight:600">${DATA_BASIS}</span>${parts.join("")}${hasData ? reconText(state && state.recon) : ""}${sessionStateText(health)}</div>${note}`;
   }
 
   /* 매출 입력 탭: 새로고침 대상 날짜의 로켓그로스 값 한 줄(공통 집계 값). */
@@ -368,7 +465,7 @@
 
   global.SalesRefresh = {
     click, isBusy, buttonHtml, statusLineHtml, todayCardHtml, dayLineHtml, loadDayState,
-    loadHealth, sessionBannerHtml, reconSummary, reconText,
+    loadHealth, sessionBannerHtml, sessionStateText, topBannerHtml, renderTopBanner, reconSummary, reconText,
     summarizeHistory, reasonText, resultHeadline, requestRefresh, kst,
     DATA_BASIS, BTN_CLASS, _lastResults: lastResults,
   };

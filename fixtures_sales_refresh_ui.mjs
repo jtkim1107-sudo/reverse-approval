@@ -158,14 +158,82 @@ const json = (status, body) => ({ status, json: async () => body });
     health: { last_success_at: last, session: { state: "OK", hours_left: 8, needs_renewal: false, warning: true,
       message: "세션 자동 연장이 2회 연속 실패했어요(AUTH_BLOCKED). 아직 8시간 남아 수집은 가능합니다." } } });
   check(h.includes("연속 실패") && !h.includes("세션 갱신 필요"), "연장 실패지만 여유 있음 → 주의 문구(갱신 필요 아님)");
+  // 2026-09-13: 쿠키 남은 시간만으로 '정상'이라 쓰지 않아요 - 실제 인증(AUTH_OK)과 쿠키(참고)를 따로.
+  h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11",
+    health: { last_success_at: last, session: { state: "AUTH_OK", level: "ok", hours_left: 11.94,
+      cookie: { hours_left: 11.94 }, auth: { state: "AUTH_OK", checked_at: "2026-09-12T23:51:03+00:00", stale: false } } } });
+  check(h.includes("WING 실제 인증 정상 (09. 13. 08:51 KST 확인) · 쿠키 11.9시간 남음(참고)") && !h.includes("sales-session-banner"),
+    "정상 → 실제 인증과 쿠키를 나눈 짧은 상태만", h.slice(-400));
+  h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11",
+    health: { last_success_at: last, session: { state: "AUTH_OK", level: "ok", cookie: { hours_left: 11.9 },
+      auth: { state: "AUTH_OK", checked_at: "2026-09-12T23:51:03+00:00", stale: false },
+      next_collection: { risk: "OK", login_age_at_collection_hours: 22.0 } } } });
+  check(h.includes("다음 06:20 수집 가능(추정)(로그인 후 22시간 · 약 24시간 추정 기준)"), "정상일 때도 다음 06:20 예측 표시(추정)", h.slice(-300));
   h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11",
     health: { last_success_at: last, session: { state: "OK", hours_left: 11.94, needs_renewal: false, warning: false } } });
-  check(h.includes("WING 세션 정상 (11.9시간 남음)") && !h.includes("sales-session-banner"), "정상 → 짧은 상태만");
+  check(!h.includes("세션 정상") && !h.includes("인증 정상") && h.includes("쿠키 11.9시간 남음(참고)"),
+    "*** 쿠키 시간만 있는 응답은 '정상'으로 표시하지 않음 ***", h.slice(-300));
   h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11", health: null });
   check(!h.includes("sales-session-banner"), "세션 상태를 못 읽으면 배너 없이 기존 표시");
   const card = R.todayCardHtml({ day: null, date: "2026-09-11", today: "2026-09-11", state: st,
     health: { last_success_at: last, session: { state: "NO_SESSION", needs_renewal: true, message: "세션 갱신 필요" } } });
   check(card.includes("세션 갱신 필요"), "대시보드 카드에도 같은 배너");
+}
+
+// ── 3-E. ERP 상단 WING 세션 경고 (2026-09-13) ─────────────────────────────────
+{
+  const { R } = makeEnv({ respond: () => json(200, {}) });
+  const alertS = {
+    state: "SESSION_EXPIRED", level: "alert", needs_login: true,
+    message: "WING 로그인 필요 - 실제 인증이 실패했어요(쿠키는 10.8시간 남아 있지만 쿠키 시간과 무관).",
+    action_hint: "맥에서 WING 로그인 갱신을 실행해 로그인·SMS 인증을 마쳐 주세요. 실제 인증·다운로드 확인이 끝나면 이 경고는 자동으로 사라져요.",
+    cookie: { hours_left: 10.8 },
+    auth: { state: "SESSION_EXPIRED", last_ok_at: "2026-09-12T10:40:05+00:00", last_ok_source: "keepalive" },
+    keepalive: { last_success_at: "2026-09-12T08:50:33+00:00", last_failure_at: "2026-09-12T11:51:00+00:00", consecutive_failures: 1 },
+    next_collection: { at: "2026-09-12T21:20:00+00:00", risk: "EXPIRED", recommended_login_after: "2026-09-12T22:20:00+00:00" },
+    login: { known: true, login_at: "2026-09-11T10:21:00+00:00" },
+  };
+  const h = R.topBannerHtml(alertS);
+  check(h.includes("WING 로그인 필요") && h.includes('role="alert"'), "상단: 로그인 필요(빨강)", h.slice(0, 200));
+  check(h.includes("마지막 실제 인증 성공(AUTH_OK) 09. 12. 19:40 KST"), "상단: 마지막 실제 AUTH_OK 시각", h);
+  check(h.includes("마지막 성공 09. 12. 17:50 KST") && h.includes("마지막 실패 09. 12. 20:51 KST"), "상단: keepalive 마지막 성공·실패 시각");
+  check(h.includes("다음 06:20 수집(09. 13. 06:20 KST): 불가"), "상단: 다음 06:20 수집 위험 여부");
+  check(h.includes("맥에서 WING 로그인 갱신") && h.includes("자동으로 사라져요"), "상단: 맥 로그인 갱신 안내 · 자동 해제 안내");
+  check(h.includes("쿠키 10.8시간 남음(참고 - 쿠키만으로 정상 판단 안 함)"), "상단: 쿠키 시간은 참고로만");
+  check(!/\/Users\/|python3|refresh_wing|\.py/.test(h), "상단: 명령·경로 노출 없음");
+  check((h.match(/WING 로그인 필요/g) || []).length === 1, "상단: 제목과 문구가 같은 말을 두 번 쓰지 않음", h.slice(0, 300));
+  check(R.topBannerHtml({ ...alertS, next_collection: { ...alertS.next_collection, login_now_covers_next: true } })
+    .includes("지금 로그인하면 다음 06:20 수집까지 유지될 것으로 추정"), "상단: 지금 로그인하면 다음 수집까지 유지(추정) 안내");
+  check(h.includes("09. 13. 07:20 KST 이후 로그인을 권장"), "상단: 아직 이르면 권장 로그인 시각 안내");
+  const line = R.statusLineHtml({ date: "2026-09-11", state: R.summarizeHistory("2026-09-11", []), hasData: true, today: "2026-09-11",
+    health: { last_success_at: null, session: { ...alertS, auth: { ...alertS.auth, label: "실제 인증 실패(로그인 필요)" } } } });
+  check(line.includes("WING 실제 인증 실패(로그인 필요) · 쿠키 10.8시간 남음(참고)") && !line.includes("실제 인증 실제 인증"),
+    "카드: 실제 인증 실패와 쿠키 시간을 나눠 표시", line.slice(-300));
+  const w = R.topBannerHtml({ ...alertS, level: "warn", state: "AUTH_OK", action_hint: "맥에서 WING 로그인 갱신을 실행해 주세요.",
+    message: "확인 필요 - 로그인 기준 시각을 확인할 수 없어 다음 06:20 수집 가능 여부를 계산하지 못했어요.",
+    next_collection: { at: "2026-09-13T21:20:00+00:00", risk: "UNKNOWN" }, login: { known: false } });
+  check(w.includes("WING 세션 확인 필요") && w.includes('role="status"') && w.includes("로그인 기준 시각 확인 필요"), "상단: 확인 필요(주황)");
+  check(R.topBannerHtml({ ...alertS, level: "ok" }) === "" && R.topBannerHtml(null) === "", "정상·응답 없음 → 상단 경고 없음");
+
+  // 화면 요소에 그리기 · 로그인 후 실제 인증 성공이면 자동 해제
+  const el = { innerHTML: "", hidden: true };
+  let body = { running: false, session: alertS };
+  globalThis.document = { querySelectorAll: () => [], getElementById: (id) => (id === "wing-session-banner" ? el : null) };
+  globalThis.fetch = async (url) => ({ ok: true, json: async () => body, url });
+  await R.renderTopBanner({ force: true });
+  check(!el.hidden && el.innerHTML.includes("WING 로그인 필요"), "상단 영역 표시");
+  body = { running: false, session: { ...alertS, state: "AUTH_OK", level: "ok", needs_login: false } };
+  await R.renderTopBanner();
+  check(!el.hidden, "1분 캐시 안에는 다시 부르지 않음");
+  await R.renderTopBanner({ force: true });
+  check(el.hidden && el.innerHTML === "", "실제 인증 성공 응답 → 경고 자동 해제(영역 숨김)");
+  globalThis.fetch = async () => { throw new Error("offline"); };
+  await R.renderTopBanner({ force: true });
+  check(el.hidden, "상태를 못 읽으면 경고를 지어내지 않음");
+  check(indexSrc.indexOf('id="wing-session-banner"') > indexSrc.indexOf("</header>") &&
+    indexSrc.indexOf('id="wing-session-banner"') < indexSrc.indexOf('id="content"'), "index.html: 상단(헤더 아래·본문 위)에 경고 영역");
+  const routeBody = appSrc.slice(appSrc.indexOf("async function route()"), appSrc.indexOf("const seq = ++routeSeq;"));
+  check(routeBody.includes("renderTopBanner"), "모든 화면 이동 때 상단 경고 갱신");
 }
 
 // ── 3-D. 정산 대사 표시 (NOT_COMPARED 는 오류·0원이 아님) ────────────────────

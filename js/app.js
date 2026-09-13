@@ -396,6 +396,8 @@ async function ensurePushSubscribed(interactive) {
 async function logout() {
   await sb.auth.signOut();
   me = null;
+  const wingBanner = document.getElementById("wing-session-banner");
+  if (wingBanner) { wingBanner.innerHTML = ""; wingBanner.hidden = true; }
   resetLoginForm();
   await showLogin();
 }
@@ -534,6 +536,13 @@ function syncTodayState() {
 let routeSeq = 0;
 async function route() {
   if (!me) return;
+  // 2026-09-13 WING 세션 경고(로그인 필요·확인 필요)는 모든 화면 상단에 - 1분 캐시, 5분마다 다시 확인
+  globalThis.SalesRefresh?.renderTopBanner?.().catch?.(() => {});
+  if (!globalThis.__wingBannerTimer && globalThis.SalesRefresh?.renderTopBanner) {
+    globalThis.__wingBannerTimer = setInterval(() => {
+      if (me && document.visibilityState !== "hidden") SalesRefresh.renderTopBanner({ force: true }).catch(() => {});
+    }, 5 * 60 * 1000);
+  }
   const seq = ++routeSeq;
   let hash = location.hash.replace(/^#\//, "") || "dashboard";
   // 2026-09-09 [옛 #/inventory 라우트 폐기, 사용자 명시 - "동일 기능의 화면이
