@@ -5598,7 +5598,7 @@ async function viewProfit() {
 
     <div class="card">
       <h2>변동비 구성</h2>
-      <div class="table-wrap"><table>
+      <div class="table-wrap"><table class="cm-list">
         <thead><tr><th>항목</th><th class="num">금액</th><th class="num">매출 대비</th></tr></thead>
         <tbody>
           <tr><td>매출액</td><td class="num"><b>₩${fmt(t.revenue)}</b></td><td class="num">100%</td></tr>
@@ -5644,17 +5644,17 @@ async function viewProfit() {
     <div class="card">
       <h2>일별 공헌이익 누적</h2>
       ${dayRows.length ? `
-      <div class="table-wrap"><table>
+      <div class="table-wrap"><table class="cm-days">
         <thead><tr><th>일자</th><th class="num">매출</th><th class="num">공헌이익</th><th class="num">누적</th><th style="min-width:120px">누적 추이</th></tr></thead>
         <tbody>${dayRows.map(x => {
           const w = Math.min(100, Math.round(Math.abs(x.acc) / maxAcc * 100));
           const over = fixTotal && x.acc >= fixTotal;
           return `<tr>
-            <td>${esc(x.d.slice(5))}</td>
-            <td class="num">₩${fmt(x.revenue)}</td>
-            <td class="num" style="color:${x.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(x.cm)}</td>
-            <td class="num"><b>₩${fmt(x.acc)}</b></td>
-            <td><div class="bar" style="height:10px">
+            <td class="cm-d">${esc(x.d.slice(5))}</td>
+            <td class="num cm-rev" data-label="매출">₩${fmt(x.revenue)}</td>
+            <td class="num cm-cm" data-label="공헌이익" style="color:${x.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(x.cm)}</td>
+            <td class="num cm-acc" data-label="누적"><b>₩${fmt(x.acc)}</b></td>
+            <td class="cm-bar"><div class="bar" style="height:10px">
               <div class="bar-fill ${x.acc < 0 ? "red" : over ? "green" : ""}" style="width:${w}%"></div></div></td>
           </tr>`; }).join("")}
         </tbody>
@@ -5666,21 +5666,21 @@ async function viewProfit() {
 
     <div class="card">
       <h2>채널별 공헌이익</h2>
-      <div class="table-wrap"><table>
+      <div class="table-wrap"><table class="erp-cards cm-cards">
         <thead><tr><th>채널</th><th class="num">매출</th><th class="num">원가</th><th class="num">수수료</th><th class="num">배송비</th><th class="num">물류비</th>${hasFreight ? '<th class="num">입고 운송비</th>' : ""}<th class="num">광고비</th><th class="num">공헌이익</th><th class="num">이익률</th></tr></thead>
         <tbody>${Object.keys(byCh).length ? Object.entries(byCh)
           .sort((a, b) => b[1].cm - a[1].cm).map(([k, v]) => `
           <tr>
-            <td><b>${esc(k)}</b></td>
-            <td class="num">₩${fmt(v.revenue)}</td>
-            <td class="num">₩${fmt(v.cost)}</td>
-            <td class="num">₩${fmt(v.fee)}</td>
-            <td class="num">₩${fmt(v.ship)}</td>
-            <td class="num">${v.logi ? "₩" + fmt(v.logi) : '<span style="color:var(--text-sub)">—</span>'}</td>
-            ${hasFreight ? `<td class="num">${v.inFreight ? "₩" + fmt(Math.round(v.inFreight)) : '<span style="color:var(--text-sub)">—</span>'}</td>` : ""}
-            <td class="num">₩${fmt(v.ad)}</td>
-            <td class="num"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
-            <td class="num">${v.revenue ? (v.cm / v.revenue * 100).toFixed(1) + "%" : "—"}</td>
+            <td class="erp-card-head"><b>${esc(k)}</b><button type="button" class="erp-m-toggle" aria-expanded="false" onclick="ErpUi.toggleCard(this)">세부 보기</button></td>
+            <td class="num" data-label="매출">₩${fmt(v.revenue)}</td>
+            <td class="num" data-label="원가">₩${fmt(v.cost)}</td>
+            <td class="num" data-label="수수료">₩${fmt(v.fee)}</td>
+            <td class="num erp-m-detail" data-label="배송비">₩${fmt(v.ship)}</td>
+            <td class="num" data-label="물류비">${v.logi ? "₩" + fmt(v.logi) : '<span style="color:var(--text-sub)">—</span>'}</td>
+            ${hasFreight ? `<td class="num erp-m-detail" data-label="입고 운송비">${v.inFreight ? "₩" + fmt(Math.round(v.inFreight)) : '<span style="color:var(--text-sub)">—</span>'}</td>` : ""}
+            <td class="num" data-label="광고비">₩${fmt(v.ad)}</td>
+            <td class="num cm-key" data-label="공헌이익"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
+            <td class="num" data-label="이익률">${v.revenue ? (v.cm / v.revenue * 100).toFixed(1) + "%" : "—"}</td>
           </tr>`).join("") : `<tr><td colspan="${hasFreight ? 10 : 9}" class="empty">데이터가 없습니다</td></tr>`}
         </tbody>
       </table></div>
@@ -5688,20 +5688,20 @@ async function viewProfit() {
 
     <div class="card">
       <h2>품목별 공헌이익</h2>
-      <div class="table-wrap"><table>
+      <div class="table-wrap"><table class="erp-cards cm-cards">
         <thead><tr><th>품목</th><th class="num">수량</th><th class="num">매출</th>${hasFreight ? '<th class="num">입고 운송비<br><small>판매분 배부</small></th>' : ""}<th class="num">공헌이익</th><th class="num">이익률</th><th class="num">개당 이익</th></tr></thead>
         <tbody>${prodList.length ? prodList.map(([pid, v]) => {
           const rate = v.revenue ? (v.cm / v.revenue * 100) : 0;
           return `<tr>
-            <td><b>${esc(prodName(pid))}</b></td>
-            <td class="num">${fmt(v.qty)}</td>
-            <td class="num">₩${fmt(v.revenue)}</td>
-            ${hasFreight ? `<td class="num">${v.inFreight ? `₩${fmt(Math.round(v.inFreight))}${freightBasisTag(v.bases)}
-              <div style="font-size:11.5px;color:var(--text-sub)">${fmt(v.freightUnits)}개 × ₩${fmt(Math.round(v.inFreight / v.freightUnits))}</div>`
+            <td class="erp-card-head"><b>${esc(prodName(pid))}</b><button type="button" class="erp-m-toggle" aria-expanded="false" onclick="ErpUi.toggleCard(this)">세부 보기</button></td>
+            <td class="num" data-label="수량">${fmt(v.qty)}</td>
+            <td class="num" data-label="매출">₩${fmt(v.revenue)}</td>
+            ${hasFreight ? `<td class="num erp-m-detail" data-label="입고 운송비">${v.inFreight ? `<div>₩${fmt(Math.round(v.inFreight))}${freightBasisTag(v.bases)}
+              <div style="font-size:11.5px;color:var(--text-sub)">${fmt(v.freightUnits)}개 × ₩${fmt(Math.round(v.inFreight / v.freightUnits))}</div></div>`
               : '<span style="color:var(--text-sub)">—</span>'}</td>` : ""}
-            <td class="num"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
-            <td class="num" style="color:${rate < 15 ? "#d9480f" : "inherit"}">${rate.toFixed(1)}%</td>
-            <td class="num">₩${fmt(v.qty ? Math.round(v.cm / v.qty) : 0)}</td>
+            <td class="num cm-key" data-label="공헌이익"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
+            <td class="num" data-label="이익률" style="color:${rate < 15 ? "#d9480f" : "inherit"}">${rate.toFixed(1)}%</td>
+            <td class="num erp-m-detail" data-label="개당 이익">₩${fmt(v.qty ? Math.round(v.cm / v.qty) : 0)}</td>
           </tr>`; }).join("") : `<tr><td colspan="${hasFreight ? 7 : 6}" class="empty">데이터가 없습니다</td></tr>`}
         </tbody>
       </table></div>
@@ -6237,17 +6237,16 @@ async function viewPurchaseOrders() {
     ${open.length ? `
     <div class="card">
       <h2>🚚 입고 대기 중 (${open.length}건)</h2>
-      <div class="table-wrap"><table>
-        <thead><tr><th>발주번호</th><th>거래처</th><th>입고처</th><th class="num">발주 수량</th><th class="num">미입고</th><th>상태</th><th></th></tr></thead>
+      <div class="erp-table-wrap"><table class="erp-table erp-cards po-list">
+        <thead><tr><th>발주번호</th><th>거래처 · 입고처</th><th class="num">발주 수량</th><th class="num">미입고</th><th>상태</th><th></th></tr></thead>
         <tbody>${open.map(p => `
           <tr>
-            <td><b>${esc(p.po_no)}</b> ${InboundApproval.poHoldChipHtml(poHoldById[p.id])}<br><small style="color:var(--text-sub)">${esc(p.date)}</small></td>
-            <td>${esc(p.supplier)}</td>
-            <td>${p.deliver_to === "쿠팡" ? '<span class="chip mine">쿠팡 직송</span>' : "자사창고"}</td>
-            <td class="num">${fmt(poOrdered(p.id))}</td>
-            <td class="num"><b style="color:var(--amber)">${fmt(poRemain(p.id))}</b></td>
-            <td>${poChip(p.status)}</td>
-            <td><button class="btn sm" onclick="openReceiveModal('${p.id}')">입고 처리</button></td>
+            <td class="erp-card-head"><b>${esc(p.po_no)}</b><small class="erp-sub">${esc(p.date)}</small></td>
+            <td data-label="거래처 · 입고처"><div>${esc(p.supplier)}<small class="erp-sub">${p.deliver_to === "쿠팡" ? "쿠팡 직송" : "자사창고"}</small></div></td>
+            <td class="num" data-label="발주 수량">${fmt(poOrdered(p.id))}</td>
+            <td class="num" data-label="미입고"><b style="color:var(--amber)">${fmt(poRemain(p.id))}</b></td>
+            <td data-label="상태"><div class="erp-stack">${poChip(p.status)}${InboundApproval.poHoldChipHtml(poHoldById[p.id], { short: true })}</div></td>
+            <td class="erp-actions"><button class="btn sm" onclick="openReceiveModal('${p.id}')">입고 처리</button></td>
           </tr>`).join("")}
         </tbody>
       </table></div>
@@ -6255,22 +6254,21 @@ async function viewPurchaseOrders() {
 
     <div class="card">
       <h2>전체 발주 내역 (${poCache.length}건)</h2>
-      <div class="table-wrap"><table>
-        <thead><tr><th>발주번호</th><th>발주일</th><th>거래처</th><th>입고처</th><th class="num">금액</th><th class="num">운송비(예상)</th><th>상태</th><th>기안</th><th></th></tr></thead>
+      ${poCache.some(p => poHoldById[p.id]) ? `<p class="erp-sub" style="margin:-4px 0 8px">⏸ 표시는 자동입고 보류(재입고 승인 필요 등)예요 - 사유는 위 '재입고 승인 필요' 카드나 [열기]에서 볼 수 있어요.</p>` : ""}
+      <div class="erp-table-wrap"><table class="erp-table erp-cards po-list">
+        <thead><tr><th>발주번호 · 발주일 · 기안</th><th>거래처 · 입고처</th><th class="num">금액</th><th class="num">운송비(예상)</th><th>상태</th><th></th></tr></thead>
         <tbody>${poCache.length ? poCache.map(p => `
           <tr class="clickable" onclick="openPODetail('${p.id}')">
-            <td><b>${esc(p.po_no)}</b> ${InboundApproval.poHoldChipHtml(poHoldById[p.id])}</td>
-            <td>${esc(p.date)}</td>
-            <td>${esc(p.supplier)}</td>
-            <td>${p.deliver_to === "쿠팡" ? "쿠팡 직송" : "자사창고"}</td>
-            <td class="num">₩${fmt(p.total)}</td>
-            <td class="num">${p.freight_est ? "₩" + fmt(p.freight_est) + poFreightInactiveTag(p) : "—"}</td>
-            <td>${poChip(p.status)}</td>
-            <td>${esc(userName(p.drafter_id))}</td>
-            <td style="white-space:nowrap">
+            <td class="erp-card-head"><b>${esc(p.po_no)}</b><small class="erp-sub">${esc(p.date)} · ${esc(userName(p.drafter_id))}</small></td>
+            <td data-label="거래처 · 입고처"><div>${esc(p.supplier)}<small class="erp-sub">${p.deliver_to === "쿠팡" ? "쿠팡 직송" : "자사창고"}</small></div></td>
+            <td class="num" data-label="금액">₩${fmt(p.total)}</td>
+            <td class="num" data-label="운송비(예상)">${p.freight_est ? `<div>₩${fmt(p.freight_est)}${poFreightInactiveOnly(p.id)
+              ? `<small class="erp-sub">${ErpUi.badge("muted", { text: "현재 비용 아님", small: true, title: "취소된 운송 묶음 기준 금액이라 현재 비용으로 쓰지 않아요 - 근거는 [열기]" })}</small>` : ""}</div>` : "—"}</td>
+            <td data-label="상태"><div class="erp-stack">${poChip(p.status)}${InboundApproval.poHoldChipHtml(poHoldById[p.id], { short: true })}</div></td>
+            <td class="erp-actions po-list-act">
               <button class="btn sm secondary" onclick="event.stopPropagation();openPODetail('${p.id}')">열기</button>
-              <button class="btn sm secondary" onclick="event.stopPropagation();location.hash='#/podoc/${p.id}'">📄</button></td>
-          </tr>`).join("") : `<tr><td colspan="9" class="empty">작성된 발주서가 없습니다</td></tr>`}
+              <button class="btn sm secondary" aria-label="발주서 문서 보기" title="발주서 문서 보기" onclick="event.stopPropagation();location.hash='#/podoc/${p.id}'">📄</button></td>
+          </tr>`).join("") : `<tr><td colspan="6" class="empty">작성된 발주서가 없습니다</td></tr>`}
         </tbody>
       </table></div>
     </div>`;

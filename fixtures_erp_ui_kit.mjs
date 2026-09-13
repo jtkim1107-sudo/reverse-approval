@@ -198,6 +198,33 @@ console.log("\n=== 6. 처리된 요청은 버튼 잠금 · 재입고 승인 필�
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+console.log("\n=== 6b. 2차 - 짧은 보류 배지 · 모바일 카드 [세부 보기] ===");
+{
+  const ctx = vm.createContext({ console });
+  vm.runInContext(read("./js/coupang_centers.js"), ctx);
+  vm.runInContext(read("./js/inbound_approval.js"), ctx);
+  vm.runInContext(read("./js/erp_ui.js"), ctx);
+  const IA = ctx.InboundApproval;
+  const H = { purchase_order_id: "po-16", held: true, reason: "재입고 승인 필요 WING 입고 취소", held_by: "system", held_at: "2026-09-12T05:00:00Z" };
+  const sh = IA.poHoldChipHtml(H, { short: true });
+  check([sh.includes(">⏸ 재입고<"), sh.includes('aria-label="재입고 승인 필요"'), sh.includes("WING 입고 취소")], [true, true, true], "[핵심] 목록 배지는 짧게(⏸ 재입고) · 전체 상태·사유는 스크린리더·툴팁");
+  check(IA.poHoldChipHtml({ ...H, reason: "PO 점검" }, { short: true }).includes(">⏸ 보류<"), true, "사람이 건 보류 → ⏸ 보류");
+  has(IA.poHoldChipHtml(H), "⏸ 재입고 승인 필요", "기본(카드·상세)은 전체 문구 그대로");
+  const cls = new Set(); const attrs = {};
+  const tr = { classList: { contains: c => cls.has(c), toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)) } };
+  const btn = { closest: () => tr, setAttribute: (k, v) => (attrs[k] = v), textContent: "세부 보기" };
+  ctx.ErpUi.toggleCard(btn);
+  check([cls.has("erp-open"), attrs["aria-expanded"], btn.textContent], [true, "true", "세부 접기"], "[세부 보기] → 펼침 · aria-expanded=true");
+  ctx.ErpUi.toggleCard(btn);
+  check([cls.has("erp-open"), attrs["aria-expanded"], btn.textContent], [false, "false", "세부 보기"], "다시 누르면 접힘");
+  const appSrc = read("./js/app.js");
+  const po = appSrc.slice(appSrc.indexOf("async function viewPurchaseOrders"), appSrc.indexOf("function buildInventoryPOProposal"));
+  check([po.includes("poHoldChipHtml(poHoldById[p.id], { short: true })"), po.includes("poFreightInactiveTag(p)"), po.includes('aria-label="발주서 문서 보기"')], [true, false, true],
+        "발주서 목록: 짧은 보류 배지 · 긴 운송비 설명은 상세로 · 📄 버튼 이름");
+  check(appSrc.includes("poFreightInactiveTag(p) : \"—\"}<span id=\"po-freight-review\">"), true, "발주서 상세는 운송비 근거 문구 그대로");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 console.log("\n=== 7. 화면 소스 - 새 부품이 계산·키를 바꾸지 않음 ===");
 const erpUi = read("./js/erp_ui.js");
 for (const bad of ["sb.", ".from(", ".rpc(", "fetch(", ".upsert(", ".insert("]) hasNot(erpUi, bad, `erp_ui.js 에 '${bad}' 없음(부품은 DB·네트워크를 직접 부르지 않음)`);

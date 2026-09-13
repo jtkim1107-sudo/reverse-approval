@@ -10,6 +10,7 @@
  *                          처리 중 표시 → 서버 함수 1번 → 성공·실패 안내 → 성공·실패 모두 서버 상태 다시 읽기.
  *                          같은 key 가 처리 중이면 다시 실행하지 않아요(중복 감사 이력 방지는 DB 함수가 최종 판단).
  *   toggleRow(id)          표 행 펼쳐보기(상세 행)
+ *   toggleCard(btn)        모바일 카드 [세부 보기](td.erp-m-detail 펼침)
  */
 (function (root) {
   "use strict";
@@ -107,6 +108,16 @@
     const open = row.hidden;
     row.hidden = !open;
     if (btn) { btn.setAttribute("aria-expanded", open ? "true" : "false"); btn.textContent = open ? "접기" : "상세"; }
+  }
+
+  /** 모바일 카드의 [세부 보기] - 같은 행(tr)의 td.erp-m-detail 을 펼치고 접어요(720px 이하에서만 버튼이 보여요). */
+  function toggleCard(btn) {
+    const tr = btn && btn.closest ? btn.closest("tr") : null;
+    if (!tr) return;
+    const open = !tr.classList.contains("erp-open");
+    tr.classList.toggle("erp-open", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.textContent = open ? "세부 접기" : "세부 보기";
   }
 
   // ── 쓰기 버튼 공통 흐름 ──────────────────────────────────────────────────────
@@ -255,6 +266,6 @@
 
   root.ErpUi = {
     KINDS, DECISION_KIND, esc, badge, decisionBadge, automationBadge, summaryHtml, displayName, nameCellHtml,
-    relationHtml, toggleRow, run, confirmModal, infoModal, isBusy, _answer,
+    relationHtml, toggleRow, toggleCard, run, confirmModal, infoModal, isBusy, _answer,
   };
 })(typeof window !== "undefined" ? window : globalThis);

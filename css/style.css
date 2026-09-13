@@ -968,6 +968,7 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
   .erp-cards tfoot tr, .erp-cards tfoot td { background: var(--bg); }
   .erp-cards td.num small { margin-left: 4px; }
   .erp-cards .erp-sticky { position: static; box-shadow: none; }
+  .erp-table.erp-cards td.erp-sep { border-left: none; }
   .erp-cards tr.erp-detail-row { border-style: dashed; }
   .erp-cards tr.erp-detail-row td { display: block; text-align: left; background: transparent; }
   .erp-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -977,3 +978,59 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
 .erp-items li { margin: 1px 0; }
 .rg-plan-table .rg-approval-cell .rg-reject-info { margin-top: 2px; }
 .erp-cards .erp-items { text-align: left; }
+
+/* ===== 2026-09-13 ERP UI 정리 2차 - 가로 넘침 0 (발주·물류 정보 모바일 · 발주서 목록 · 공헌이익 표) =====
+   표시만 바꿔요. 값·계산·입력칸·저장 내용은 그대로. */
+.erp-m-toggle { display: none; }
+.po-list td.erp-card-head b { white-space: nowrap; }
+.po-list td .erp-stack { gap: 3px; }
+.erp-table.po-list td.erp-actions { width: auto; min-width: 0; white-space: nowrap; }
+.erp-table.po-list td.erp-actions .btn { white-space: nowrap; }
+.erp-table.po-list td.num .erp-sub { margin-top: 2px; }
+.table-wrap td.ad-wrap { white-space: normal; min-width: 150px; }
+.pi-tabs { flex-wrap: wrap; }
+@media (max-width: 720px) {
+  .erp-cards td { white-space: normal; }
+  .pi-tab { min-height: 36px; }
+  .pi-link, .pi-fill { min-height: 32px; display: inline-flex; align-items: center; padding: 4px 6px; }
+  .erp-cards td > div, .erp-cards td > .erp-stack { min-width: 0; }
+  .erp-m-toggle { display: inline-flex; align-items: center; float: right; min-height: 36px; margin: -4px 0 0 8px; padding: 0 12px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--brand); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+  .erp-m-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+  .erp-cards tr:not(.erp-open) td.erp-m-detail { display: none; }
+  .erp-cards tr.erp-open td.erp-m-detail { background: var(--bg); padding-left: 6px; padding-right: 6px; border-radius: 6px; }
+  .erp-cards-flex tr { display: flex; flex-direction: column; }
+  .erp-cards-flex td.erp-card-head { order: -1; }
+  .erp-cards td.cm-key { font-size: 14.5px; }
+
+  /* 발주·물류 정보: 라벨은 왼쪽, 값·오류·제안은 오른쪽에 세로로(칸 폭을 늘리지 않음). 원가·VAT 칸은 한 줄 전체. */
+  .pi-table.erp-cards td.pi-name { max-width: none; }
+  .pi-table.erp-cards .pi-name b { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }
+  .pi-table.erp-cards td:not(.erp-card-head) { display: grid; grid-template-columns: minmax(84px, 38%) minmax(0, 1fr); gap: 0 10px; align-items: start; }
+  .pi-table.erp-cards td:not(.erp-card-head)::before { grid-column: 1; grid-row: 1 / span 9; max-width: none; }
+  .pi-table.erp-cards td:not(.erp-card-head) > * { grid-column: 2; min-width: 0; max-width: 100%; justify-self: end; text-align: right; }
+  .pi-table.erp-cards td.pi-cost-cell { display: block; text-align: left; min-width: 0; }
+  .pi-table.erp-cards td.pi-cost-cell::before { display: block; max-width: none; margin-bottom: 4px; }
+  .pi-table.erp-cards td.pi-cost-cell > * { max-width: 100%; }
+  .pi-table.erp-cards .pi-vat { white-space: normal; width: 100%; box-sizing: border-box; min-height: 40px; }
+  .pi-table.erp-cards .pi-sugg, .pi-table.erp-cards .pi-warn { max-width: none; }
+
+  /* 공헌이익 - 변동비 구성: 항목 | 금액(아래 작게 매출 대비) 목록 */
+  table.cm-list thead { display: none; }
+  table.cm-list tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  table.cm-list td { display: block; border: none; padding-top: 0; padding-bottom: 0; padding-right: 0; white-space: normal; }
+  table.cm-list td:not([style*="padding-left"]) { padding-left: 0; }
+  table.cm-list td:first-child { grid-row: span 2; }
+  table.cm-list td:nth-child(3) { font-size: 11.5px; color: var(--text-sub); }
+  /* 공헌이익 - 일별 누적: 날짜·누적 / 매출·공헌이익 / 막대 */
+  table.cm-days thead { display: none; }
+  table.cm-days tr { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: "d acc" "rev cm" "bar bar";
+    column-gap: 10px; row-gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  table.cm-days td { display: block; border: none; padding: 0; white-space: normal; }
+  table.cm-days td.cm-d { grid-area: d; font-weight: 700; }
+  table.cm-days td.cm-acc { grid-area: acc; }
+  table.cm-days td.cm-rev { grid-area: rev; text-align: left; font-size: 12px; color: var(--text-sub); }
+  table.cm-days td.cm-cm { grid-area: cm; font-size: 12px; }
+  table.cm-days td.cm-bar { grid-area: bar; }
+  table.cm-days td[data-label]::before { content: attr(data-label) " "; font-size: 11px; color: var(--text-sub); font-weight: 600; }
+}

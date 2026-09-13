@@ -364,20 +364,21 @@
       const note = x.failedAfterOk ? `최근 재수집 실패(${esc(reasonText(x.lastError))}) · 기존값 유지`
         : x.status === "UNDETERMINED" && x.lastError ? esc(reasonText(x.lastError))
         : x.status === "UNDETERMINED" ? "수집 이력 없음" : x.lastOkAt ? `수집 ${esc(kst(x.lastOkAt))}` : "";
-      return `<tr><td>${esc(x.date.slice(5))}</td><td>${chip(DAY_LABEL[x.status] || [x.status, "muted"])}</td>
-        <td class="num">${x.auto ? won(x.auto.amount) : "—"}</td>
-        <td class="num">${x.auto ? won(x.auto.net) : "—"}</td>
-        <td class="num">${manTxt}</td><td class="ad-sub">${note}</td></tr>`;
+      // 2026-09-13 [ERP UI 정리] 720px 이하 카드형(원천·공급가액이 핵심, 수동 입력·비고는 [세부 보기]) - 값은 그대로
+      return `<tr><td class="erp-card-head"><b>${esc(x.date.slice(5))}</b><button type="button" class="erp-m-toggle" aria-expanded="false" onclick="ErpUi.toggleCard(this)">세부 보기</button></td><td data-label="상태">${chip(DAY_LABEL[x.status] || [x.status, "muted"])}</td>
+        <td class="num" data-label="원천 금액">${x.auto ? won(x.auto.amount) : "—"}</td>
+        <td class="num" data-label="공급가액">${x.auto ? won(x.auto.net) : "—"}</td>
+        <td class="num erp-m-detail" data-label="수동 입력">${manTxt}</td><td class="ad-sub erp-m-detail" data-label="비고">${note}</td></tr>`;
     }).join("");
 
     // 캠페인 상세: 로켓그로스 정산 '광고비 내역'(월 단위, 캠페인별). 일별 원천은 계정 합계만 줘요.
     const settleCamps = st && st.campaigns.length ? `
       <details class="ad-detail" open><summary>캠페인별 광고비 (로켓그로스 정산 광고비 내역 · ${esc(info.month)} · ${st.campaigns.length}개)</summary>
-        <div class="table-wrap"><table>
+        <div class="table-wrap"><table class="erp-cards erp-cards-flex">
           <thead><tr><th>광고유형</th><th>캠페인</th><th class="num">클릭</th><th class="num">광고비</th><th class="num">청구가능 광고비</th></tr></thead>
           <tbody>${st.campaigns.slice().sort((a, b) => Number(b.amount) - Number(a.amount)).map((c) => `
-            <tr><td>${esc(c.ad_type)}</td><td><b>${esc(c.campaign_name)}</b></td><td class="num">${num(c.clicks)}</td>
-              <td class="num">${won(c.amount)}</td><td class="num">${won(c.billable_amount)}</td></tr>`).join("")}
+            <tr><td data-label="광고유형">${esc(c.ad_type)}</td><td class="erp-card-head"><b>${esc(c.campaign_name)}</b></td><td class="num" data-label="클릭">${num(c.clicks)}</td>
+              <td class="num" data-label="광고비">${won(c.amount)}</td><td class="num" data-label="청구가능 광고비">${won(c.billable_amount)}</td></tr>`).join("")}
           </tbody></table></div>
         <p class="ad-sub">상품(옵션)별 광고비는 쿠팡이 GCP 에서 읽을 수 있는 경로로 제공하지 않아요(광고센터는 서버 접속이 차단됨).</p>
       </details>` : "";
@@ -410,13 +411,13 @@
           </tbody></table></div></details>` : "";
 
     const manualRows = info.manual.length ? info.manual.map((m) => `
-      <tr><td>${esc(m.date.slice(5))}</td><td>${esc(m.channel || "전체")}</td>
-        <td class="num"><b>${won(m.amount)}</b></td>
-        <td>${chip(DECISION_LABEL[m.decision])}${(m.decision === "RECONCILIATION_NEEDED" || m.decision === "MATCHED_MANUAL_DUPLICATE") && m.autoSameDay != null
+      <tr><td class="erp-card-head"><b>${esc(m.date.slice(5))}</b></td><td data-label="채널">${esc(m.channel || "전체")}</td>
+        <td class="num" data-label="금액"><b>${won(m.amount)}</b></td>
+        <td class="ad-wrap" data-label="계산"><div>${chip(DECISION_LABEL[m.decision])}${(m.decision === "RECONCILIATION_NEEDED" || m.decision === "MATCHED_MANUAL_DUPLICATE") && m.autoSameDay != null
           ? `<div class="ad-sub">같은 날 자동수집 ${won(m.autoSameDay)}</div>` : ""}${m.adjustment_reason
-          ? `<div class="ad-sub">사유: ${esc(m.adjustment_reason)}</div>` : ""}</td>
-        <td>${esc(m.memo)}</td><td>${esc(m.created_by)}</td>
-        <td><button class="btn sm danger" onclick="deleteErpRow('ad_costs','${esc(m.id)}')">삭제</button></td></tr>`).join("")
+          ? `<div class="ad-sub">사유: ${esc(m.adjustment_reason)}</div>` : ""}</div></td>
+        <td class="ad-wrap" data-label="메모">${esc(m.memo)}</td><td data-label="입력자">${esc(m.created_by)}</td>
+        <td class="erp-actions"><button class="btn sm danger" onclick="deleteErpRow('ad_costs','${esc(m.id)}')">삭제</button></td></tr>`).join("")
       : `<tr><td colspan="7" class="empty">이 달 수동 입력 광고비가 없습니다</td></tr>`;
 
     const resNote = lastResult && lastResult.month === info.month
@@ -440,12 +441,12 @@
       </div>
       ${info.days.some((x) => x.autoPeriod) ? `
       <h3 style="margin-top:14px;font-size:14px">날짜별 광고비</h3>
-      <div class="table-wrap"><table>
+      <div class="table-wrap"><table class="erp-cards">
         <thead><tr><th>일자</th><th>상태</th><th class="num">원천 금액</th><th class="num">공급가액</th><th class="num">수동 입력</th><th>비고</th></tr></thead>
         <tbody>${dayRows}</tbody></table></div>` : ""}
       ${settleCamps}${detail}
       <h3 style="margin-top:14px;font-size:14px">수동 입력 광고비</h3>
-      <div class="table-wrap"><table>
+      <div class="table-wrap"><table class="erp-cards">
         <thead><tr><th>일자</th><th>채널</th><th class="num">금액</th><th>계산</th><th>메모</th><th>입력자</th><th></th></tr></thead>
         <tbody>${manualRows}</tbody></table></div>
       <p class="ad-sub" style="margin-top:8px">자동수집 기간에는 쿠팡 원천 광고비가 기준이고, 수동 입력은 보정 사유가 있을 때만 더해요.

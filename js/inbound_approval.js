@@ -70,12 +70,15 @@
   // 2026-09-12 발주서 자동입고 보류 - hold = po_inbound_holds 행({held, reason, held_by, held_at, released_by, released_at})
   const REINBOUND_PREFIX = "재입고 승인 필요";
   const isReinboundHold = hold => !!hold && hold.held === true && String(hold.reason || "").startsWith(REINBOUND_PREFIX);
-  function poHoldChipHtml(hold) {
+  function poHoldChipHtml(hold, opts = {}) {
     if (!hold || hold.held !== true) return "";
     const who = [hold.held_by, hold.held_at ? fmtKst(hold.held_at) : null].filter(Boolean).join(" · ");
-    const label = isReinboundHold(hold) ? "⏸ 재입고 승인 필요" : "⏸ 자동입고 보류";
-    // 2026-09-13 [ERP UI 정리] 재입고 승인 필요 = 보라색 강조 배지(문구·아이콘 함께)
-    return `<span class="chip po-hold erp-badge erp-badge--reinbound" title="${escHtml(`${hold.reason || ""}${who ? ` (${who})` : ""} - 자동 입고 초안 생성 안 함`)}">${label}</span>`;
+    const full = isReinboundHold(hold) ? "재입고 승인 필요" : "자동입고 보류";
+    // 2026-09-13 [ERP UI 정리] 재입고 승인 필요 = 보라색 강조 배지(문구·아이콘 함께).
+    // 목록 표(opts.short)는 짧은 배지만 - 전체 상태·사유는 툴팁·스크린리더 문구와 '재입고 승인 필요' 카드·발주서 상세에서.
+    const label = opts.short ? (isReinboundHold(hold) ? "⏸ 재입고" : "⏸ 보류") : `⏸ ${full}`;
+    const tip = `${full} - ${hold.reason || ""}${who ? ` (${who})` : ""} - 자동 입고 초안 생성 안 함`;
+    return `<span class="chip po-hold erp-badge erp-badge--reinbound${opts.short ? " erp-badge--sm" : ""}" title="${escHtml(tip)}"${opts.short ? ` aria-label="${escHtml(full)}"` : ""}>${label}</span>`;
   }
   const HOLD_ACTION_LABEL = { HOLD: "보류", RELEASE: "해제(재입고 허용)" };
   // 발주서 상세의 보류 영역. ctx = { poId, me, migrated, events }
