@@ -106,5 +106,21 @@ const h6 = C.detailHtml({ ...cur, MAIN: { ...cur.MAIN, result: { ...r, required_
 check("8월 승인 대기 2행: '0원 확정 승인(대표 확인)' · 승인 대기 · 영향 0 · 삭제하지 않음",
       [h6.includes("0원 확정 승인(대표 확인)"), rowOf(h6, "0원 확정 승인").includes("승인 대기"), rowOf(h6, "0원 확정 승인").includes(">0<"), h6.includes("삭제하지 않음")],
       [true, true, true, true]);
+console.log("[6] 화면 명칭(쿠팡 수익 현황과 같게) · 계산 시각 KST");
+const r6 = { ...r, lines: [
+    { code: "MONTHLY_WAREHOUSING", label: "로켓그로스 입고비 (월 공통, 상품 배분 없음)", amount: -781300, status: "CYCLE_OPEN", source: "정산파일" },
+    { code: "MONTHLY_FULFILLMENT", label: "로켓그로스 풀필먼트비 (월 공통, 상품 배분 없음)", amount: -1174370, status: "CYCLE_OPEN", source: "정산파일" },
+    { code: "INBOUND_FREIGHT", label: "입고 트럭 운송비(판매분 배부)", amount: -1000, status: "CONFIRMED", source: "ERP" },
+    { code: "MP_SHIPPING_INCLUDED", label: "판매자배송 택배비·포장비 (상품원가에 포함 · 별도 0원)", amount: 0, status: "CONFIRMED", source: "대표 확정", orders: 4, qty: 5 }] };
+const h6b = C.detailHtml({ ...cur, MAIN: { ...cur.MAIN, created_at: "2026-09-14T12:24:43.277288+00:00",
+    reasons: [{ status: "NOTICE_MISSING", text: "입고비 · 풀필먼트비: 정산 원본 0원" }], result: r6 } }, prod, { month: "2026-09" });
+check("[핵심] 입고비 → 입출고비 · 풀필먼트비 → 배송비 (입고 트럭 운송비는 그대로)",
+      [h6b.includes("로켓그로스 입출고비 (월 공통"), h6b.includes("로켓그로스 배송비 (월 공통"), h6b.includes("풀필먼트비"), h6b.includes(">로켓그로스 입고비"),
+       h6b.includes("입고 트럭 운송비")], [true, true, false, false, true]);
+check("사유 배지 설명·차이 구성 이름도 같은 이름", [h6b.includes('title="입출고비 · 배송비: 정산 원본 0원"'), h6b.includes("로켓그로스 월 비용(입출고·배송·보관·세이버)")], [true, true]);
+check("[핵심] 계산 시각 UTC 12:24 → 2026-09-14 21:24 KST", [h6b.includes("계산 2026-09-14 21:24 KST"), h6b.includes("계산 2026-09-14 12:24")], [true, false]);
+check("[핵심] 쿠팡 '이익' = '상품원가 차감 전 쿠팡 정산 잔액'(공헌이익 아님)", [h6b.includes("상품원가 차감 전 쿠팡 정산 잔액"), h6b.includes("표시 이익")], [true, false]);
+check("판매자배송 택배비·포장비: 상품원가에 포함 0원 · 대표 확정 · 확정", [h6b.includes("상품원가에 포함 · 별도 0원"), h6b.includes("4건 · 5개"),
+      h6b.includes('<span class="cmv2-src">대표 확정</span>')], [true, true, true]);
 console.log(`\n${n - fail}/${n} 통과`);
 process.exit(fail ? 1 : 0);

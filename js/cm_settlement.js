@@ -6,10 +6,12 @@
  *     꺼져 있으면 결과 표를 읽지도 않고 아무것도 그리지 않아요 - 공헌이익·대시보드 화면의 금액·항목·순서가 지금과 같아요.
  *   · 결과: cm_settlement_current 뷰(월·기준별 마지막 성공 계산). 실패한 계산은 뷰에 나오지 않아서 이전 값이 그대로 보여요.
  *   · 메인 = 취소 처리월 기준. 코호트(원주문월)는 접힌 분석 칸에만 - 메인 숫자와 섞지 않아요.
- *   · 쿠팡 정산 화면 '표시 이익'은 플랫폼 차감 후 금액(상품원가·부가세 미반영)이라 별도 참고 칸에만, 공헌이익이라 부르지 않아요.
+ *   · 쿠팡 수익 현황의 '이익'(상품원가 차감 전 쿠팡 정산 잔액 · 부가세 포함)은 별도 참고 칸에만, 공헌이익이라 부르지 않아요.
  *   · 2026-09-16 환불은 정산취소 전체를 한 줄로 한 번만. 주문 취소/반품 나눔은 참고 추정 - 저장된 확정 자료 아님.
  *     반품 원가환입은 WING 근거 + 승인 수량만 반영(제안·승인 화면은 js/cm_recovery.js). 확정 자료 입력 목록을 카드 위쪽에 보여 줘요.
  *   · 2026-09-14 v2.5 계산 내역 줄마다 출처(API · 정산파일 · ERP · 대표 확정 · 수동 입력)와 확정/잠정 상태. 취소·반품 세부 구분은 '참고 추정'.
+ *   · 2026-09-14 화면 명칭(쿠팡 수익 현황과 같게): 입고비 → 입출고비, 풀필먼트비 → 배송비 · 쿠팡 '이익' → 상품원가 차감 전 쿠팡 정산 잔액 ·
+ *     계산 시각은 저장 시각(UTC)을 Asia/Seoul 로 바꿔 KST 로. 저장된 결과는 그대로 두고 보여 줄 때만 이름을 바꿔요.
  */
 (function (global) {
   "use strict";
@@ -19,6 +21,18 @@
   const fmt = n => Math.round(Number(n || 0)).toLocaleString("ko-KR");
   const won = n => (Number(n) < 0 ? "−₩" : "₩") + fmt(Math.abs(Number(n || 0)));
   const signed = n => (Number(n) > 0 ? "+" : Number(n) < 0 ? "−" : "") + fmt(Math.abs(Number(n || 0)));
+  // 쿠팡 수익 현황과 같은 비용 이름(서버 결과의 입고비 = 쿠팡 입출고비, 풀필먼트비 = 쿠팡 배송비 - 금액은 같고 이름만)
+  const costName = t => String(t ?? "").replace(/풀필먼트비/g, "배송비").replace(/입고비/g, "입출고비");
+  /** 저장 시각(UTC 등 시간대 포함 ISO) → Asia/Seoul 'YYYY-MM-DD HH:mm KST'. 시간대 표시가 없으면 UTC 로 봐요. */
+  function kstTime(iso) {
+    const s = String(iso || "");
+    if (!s) return "";
+    const d = new Date(/[zZ]|[+-]\d{2}:?\d{2}$/.test(s) ? s : s.replace(" ", "T") + "Z");
+    if (isNaN(d)) return s.slice(0, 16).replace("T", " ");
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(d).map(x => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} KST`;
+  }
 
   // 상태 7종(+광고 청구 미확인) → 배지 종류·문구. 색만으로 말하지 않게 아이콘·문구를 같이 써요.
   const STATUS = {
@@ -88,7 +102,7 @@
       ["판매수수료(실제 정산값)", -(r.fee.total - prod.fee)],
       ["기존 개당 물류비(unit_fee) 빼지 않음", prod.logi],
       ["기존 출고배송비 빼지 않음", prod.ship || 0],
-      ["로켓그로스 월 비용(입고·풀필먼트·보관·세이버)", -r.monthly_costs.total],
+      ["로켓그로스 월 비용(입출고·배송·보관·세이버)", -r.monthly_costs.total],
       ["광고비: 집행액 → 실제 청구액", -(a.cm_amount - prod.ads)],
       ["입고 트럭 운송비", -((r.inbound_freight || 0) - (prod.inFreight || 0))],
       ["반품 원가환입(승인 수량)", r.cost_recovery.confirmed || 0],
@@ -105,7 +119,7 @@
   function reasonsHtml(reasons) {
     if (!reasons || !reasons.length) return chip("CONFIRMED", { text: "사유 없음" });
     const seen = new Set();
-    return reasons.filter(z => !seen.has(z.status) && seen.add(z.status)).map(z => chip(z.status, { title: z.text })).join(" ");
+    return reasons.filter(z => !seen.has(z.status) && seen.add(z.status)).map(z => chip(z.status, { title: costName(z.text) })).join(" ");
   }
 
   /** 비용 출처(서버 줄의 source: API · 정산파일 · ERP · 대표 확정 · 수동 입력). 출처가 둘 이상이면 출처별 금액을 작게. 옛 결과(출처 없음)는 '—' */
@@ -120,7 +134,7 @@
 
   function linesHtml(r) {
     const row = ln => `<tr${ln.code === "CM_TOTAL" ? ' class="cmv2-total"' : ""}>
-        <th scope="row">${esc(ln.label)}${ln.orders ? ` <small>${fmt(ln.orders)}건 · ${fmt(ln.qty)}개</small>` : ""}</th>
+        <th scope="row">${esc(costName(ln.label))}${ln.orders ? ` <small>${fmt(ln.orders)}건 · ${fmt(ln.qty)}개</small>` : ""}</th>
         <td class="num">${ln.amount == null ? `<span class="cmv2-none">금액 없음</span>` : won(ln.amount)}</td>
         <td class="cmv2-srccol">${sourceHtml(ln)}</td>
         <td class="cmv2-st">${lineStatusHtml(ln.status)}</td></tr>`;
@@ -168,7 +182,7 @@
     return `<details class="cmv2-inputs" open><summary>확정 자료 입력 목록 · ${list.filter(x => x.status !== "DONE").length}건 남음 <small>모두 끝나야 월 확정 가능</small></summary>
       <div class="table-wrap"><table class="cmv2-lines cmv2-inputs-t">
         <thead><tr><th>자료</th><th>상태</th><th class="num">최종 금액 영향(범위)</th><th>입력 방법</th></tr></thead>
-        <tbody>${list.map(x => `<tr><th scope="row">${esc(x.label)}<br><small>${esc(x.impact_note || "")}</small></th><td>${b(x.status)}</td>
+        <tbody>${list.map(x => `<tr><th scope="row">${esc(costName(x.label))}<br><small>${esc(costName(x.impact_note || ""))}</small></th><td>${b(x.status)}</td>
           <td class="num">${range(x.impact_low, x.impact_high)}</td><td><small>${esc(x.how || "")}</small></td></tr>`).join("")}</tbody></table></div></details>`;
   }
 
@@ -203,7 +217,7 @@
     <section class="card cmv2" id="cmv2" aria-labelledby="cmv2-h">
       <div class="card-head"><h2 id="cmv2-h">정산자료 기준 공헌이익 <span class="cmv2-tag">새 계산 · 시험 표시</span></h2>
         <div class="cmv2-reasons">${reasonsHtml(main.reasons)}</div></div>
-      <p class="cmv2-meta">${esc(month)} · ${esc(ps)}~${esc(pe)} · 쿠팡 매출인식일 기준 · 계산 ${esc(String(main.created_at || "").slice(0, 16).replace("T", " "))}</p>
+      <p class="cmv2-meta">${esc(month)} · ${esc(ps)}~${esc(pe)} · 쿠팡 매출인식일 기준 · 계산 ${esc(kstTime(main.created_at))}</p>
 
       <div class="cmv2-vs" role="group" aria-label="운영 계산과 새 계산 비교(같은 기간)">
         <div class="cmv2-vs-col">
@@ -264,8 +278,8 @@
         <p>${esc(month)} 주문의 취소를 원주문월에 붙이면 <b class="${tone(cohort.cm)}">${won(cohort.cm)}</b> (순매출 ${won(cohort.revenue)} · 취소 ${fmt(cohort.cancel.qty)}개).
           ${esc(String(cur.COHORT.as_of))}까지 처리된 취소 기준이라 이후 취소로 계속 바뀌어요.</p></details>` : ""}
 
-      ${cd ? `<aside class="cmv2-coupang" aria-label="쿠팡 정산 화면 참고 금액">
-        <h3 class="cmv2-h3">쿠팡 정산 화면 표시 이익 <small>참고 · 공헌이익 아님</small></h3>
+      ${cd ? `<aside class="cmv2-coupang" aria-label="상품원가 차감 전 쿠팡 정산 잔액(참고)">
+        <h3 class="cmv2-h3">상품원가 차감 전 쿠팡 정산 잔액 <small>쿠팡 수익 현황의 '이익' · 참고 · 공헌이익 아님</small></h3>
         <p><b>${won(cd.amount)}</b> = 환불 반영 판매액 ${won(cd.sales_with_refund)} − 쿠팡 차감 ${won(cd.deductions)}</p>
         <p class="cmv2-note">쿠팡이 할인·수수료·광고·물류·구독을 뺀 뒤의 금액이에요(부가세 포함, 상품원가 미반영). 공헌이익과 다른 지표라 비교하지 않아요.</p>
       </aside>` : ""}
@@ -285,5 +299,6 @@
       <a class="dash-link" href="#/profit">차이 보기 ›</a></div>`;
   }
 
-  global.CmSettlement = { SETTING_KEY, STATUS, isEnabled, loadCurrent, prodParts, compare, detailHtml, dashboardHtml, chip, requiredInputsHtml, refundsRefHtml };
+  global.CmSettlement = { SETTING_KEY, STATUS, isEnabled, loadCurrent, prodParts, compare, detailHtml, dashboardHtml, chip, requiredInputsHtml, refundsRefHtml,
+                          costName, kstTime };
 })(typeof window !== "undefined" ? window : globalThis);
