@@ -277,15 +277,19 @@
     return { month, t, adTotal: cm.adTotal, cmNet: cm.cmNet, cmRate: cm.cmRate, undet, lastAd, adRate, adNotes, empty: !t.revenue && !cm.adTotal };
   }
 
-  function profitHtml(m, { fmt, at } = {}) {
+  /** settlement(2026-09-15, 정산자료 계산 켜짐일 때만) = { mode, mainHtml, compareHtml, meta, tone } - 주 공헌이익은 정산자료 계산(mainHtml),
+   *  기존 운영 계산 표는 '기존 계산과 비교'(기본 접힘) 안 참고값(초록 강조 없음). 없으면(꺼짐) 기존 화면 그대로. */
+  function profitHtml(m, { fmt, at, settlement = null } = {}) {
     const won = v => `₩${fmt(v)}`;
     const t = m.t;
+    const ref = !!settlement;
     const rate = v => (m.t.revenue ? `${(v / m.t.revenue * 100).toFixed(1)}%` : "0%");
     const line = (label, v, sub = "") => `<tr><th scope="row">${label}${sub ? `<small>${sub}</small>` : ""}</th><td class="num">− ${won(v)}</td><td class="num dash-sub">${rate(v)}</td></tr>`;
     const neg = !m.undet && m.cmNet < 0;
-    const cmCell = m.undet ? `<b class="dash-amber">미확정</b><small>잠정 ${won(m.cmNet)}</small>` : `<b class="${neg ? "dash-down" : "dash-up"}">${won(m.cmNet)}</b>`;
-    const body = m.empty ? noDataHtml(`${m.month} 매출·광고비 기록이 아직 없어요.`) : `
-      <table class="dash-cm" aria-label="${esc(m.month)} 공헌이익 요약">
+    const cmCell = m.undet ? `<b class="dash-amber">미확정</b><small>잠정 ${won(m.cmNet)}</small>`
+      : `<b class="${ref ? "dash-ref" : neg ? "dash-down" : "dash-up"}">${won(m.cmNet)}</b>`;
+    const table = `
+      <table class="dash-cm" aria-label="${esc(m.month)} 공헌이익 요약${ref ? "(기존 운영 계산 · 참고)" : ""}">
         <tbody>
           <tr class="dash-cm-rev"><th scope="row">매출<small>부가세 제외 공급가액</small></th><td class="num"><b>${won(t.revenue)}</b></td><td class="num dash-sub">100%</td></tr>
           ${line("상품원가", t.cost)}
@@ -294,13 +298,27 @@
           ${t.ship > 0 ? line("출고배송비", t.ship) : ""}
           ${t.inFreight > 0 ? line("입고 트럭 운송비", t.inFreight, "판매분 배부") : ""}
           <tr class="dash-cm-ad"><th scope="row">광고비<small>이번 달 누적 · 공급가액</small></th><td class="num">− ${m.undet ? `미확정 <small>(확인된 ${won(m.adTotal)})</small>` : won(m.adTotal)}</td><td class="num dash-sub">${rate(m.adTotal)}</td></tr>
-          <tr class="dash-cm-total"><th scope="row">공헌이익${neg ? ` ${badge("error", "적자", { small: true })}` : ""}</th><td class="num">${cmCell}</td><td class="num"><b>${m.undet ? "—" : `${m.cmRate.toFixed(1)}%`}</b></td></tr>
-        </tbody></table>
+          <tr class="dash-cm-total"><th scope="row">${ref ? "공헌이익(기존 운영 계산 · 참고)" : "공헌이익"}${neg && !ref ? ` ${badge("error", "적자", { small: true })}` : ""}</th><td class="num">${cmCell}</td><td class="num"><b>${m.undet ? "—" : `${m.cmRate.toFixed(1)}%`}</b></td></tr>
+        </tbody></table>`;
+    const adRow = `
       <div class="dash-ad">
         <span>최신일 광고비 ${m.lastAd ? `<b>${won(m.lastAd.auto.net)}</b> <small>${md(m.lastAd.date)} · 공급가액</small>` : `<b>기록 없음</b>`}</span>
         <span>매출 대비 광고비율 <b>${m.adRate == null ? "—" : `${m.adRate.toFixed(1)}%`}</b></span>
         <span class="dash-ad-notes">${m.adNotes.map(n => badge(n.tone, n.text, { small: true, title: n.why || "" })).join(" ")}</span>
       </div>`;
+    if (ref) {
+      const legacy = m.empty ? noDataHtml(`${m.month} 매출·광고비 기록이 아직 없어요.`) : table;
+      const body = `${settlement.mainHtml}
+      ${adRow}
+      <details class="dash-legacy"><summary>기존 계산과 비교 · 기존 운영 계산(참고) <b class="dash-ref">${m.undet ? "미확정" : won(m.cmNet)}</b>
+        <small>이번 달 1일~오늘 · 주문 기준 · 최종값 아님</small></summary>
+        ${settlement.compareHtml || ""}
+        ${legacy}
+      </details>`;
+      return shellHtml({ id: "dash-profit", title: `${m.month} 공헌이익 · 광고비`, actions: link("#/profit", "상세 계산 보기"),
+        meta: `${esc(settlement.meta || "")} · 갱신 ${esc(hm(at))}`, tone: settlement.tone || null, body });
+    }
+    const body = m.empty ? noDataHtml(`${m.month} 매출·광고비 기록이 아직 없어요.`) : `${table}${adRow}`;
     return shellHtml({ id: "dash-profit", title: `${m.month} 공헌이익 · 광고비`, actions: link("#/profit", "상세 계산 보기"),
       meta: `공헌이익 화면과 같은 계산 · 이번 달 1일~오늘 · 갱신 ${esc(hm(at))}`, tone: m.empty ? null : neg ? "error" : m.undet ? "check" : null, body });
   }

@@ -1703,18 +1703,24 @@ async function dashboardHydrate() {
   }).catch(e => fail("dash-sales", "매출 요약", e));
 
   // D+G. 공헌이익 · 광고비 - 공헌이익 화면(viewProfit)과 같은 입력으로 computeCmOfMonth
-  settled([baseP, adsP, fixedP]).then(([base, ad, fx]) => {
+  settled([baseP, adsP, fixedP]).then(async ([base, ad, fx]) => {
     if (!base.ok) throw base.e;
     if (!ad.ok) throw ad.e;
     if (!fx.ok) throw fx.e;
     const fixed = fx.v.filter(f => f.active !== false);
     const cm = computeCmOfMonth(month, base.v.sales, adRowsAll(ad.v), fixed);
     const model = ErpDashboard.profitModel(cm, adMonthState(ad.v, month), { month });
-    const html = ErpDashboard.profitHtml(model, { fmt, at });
-    put("dash-profit", html);
-    // 2026-09-14 새 공헌이익 한 줄 요약 - 스위치가 켜졌을 때만 같은 카드 아래에 덧붙여요(꺼지면 위 카드 그대로)
-    cmSettlementSection(month, base.v.sales, adRowsAll(ad.v), fixed, "dashboard")
-      .then(extra => { if (extra) put("dash-profit", html.replace(/<\/section>\s*$/, `${extra}</section>`)); }).catch(() => {});
+    // 2026-09-15 정산자료 계산이 켜져 있으면 주 공헌이익 = 최신 MAIN(공헌이익 화면 맨 위 카드와 같은 값·기간·상태).
+    // 기존 운영 계산은 '기존 계산과 비교'(기본 접힘) 참고값. 결과를 받은 뒤 한 번만 그려요(기존 계산이 주 결과로 먼저 보이지 않게).
+    const st = await cmSettlementState(month, base.v.sales, adRowsAll(ad.v), fixed);
+    const settlement = st.mode === "OFF" ? null : {
+      mode: st.mode,
+      mainHtml: st.mode === "PRIMARY" ? CmSettlement.dashboardMainHtml(st.cur) : CmSettlement.dashboardNoticeHtml(st.mode, st.error),
+      compareHtml: st.mode === "PRIMARY" ? CmSettlement.dashboardCompareHtml(st.cur, st.prod) : "",
+      meta: st.mode === "PRIMARY" ? CmSettlement.dashboardMeta(st.cur) : st.mode === "ERROR" ? "정산자료 계산 조회 실패" : "정산자료 계산 결과 없음",
+      tone: st.mode === "ERROR" ? "error" : st.mode === "PRIMARY" && Number(st.cur.MAIN.cm) < 0 ? "error" : null,
+    };
+    put("dash-profit", ErpDashboard.profitHtml(model, { fmt, at, settlement }));
   }).catch(e => fail("dash-profit", "공헌이익 · 광고비", e));
 
   // B. 오늘 해야 할 일 - 건수만 모아요(건수를 모르면 0 이 아니라 '확인 불가')
@@ -5532,21 +5538,32 @@ function computeCmOfMonth(month, sales, ads, fixed) {
 }
 
 /* 2026-09-14 정산자료 기준 새 공헌이익(js/cm_settlement.js) - settings 'cm_settlement_v2' 가 {"enabled": true} 일 때만.
-   꺼져 있으면 빈 문자열(결과 표를 읽지 않음) → 운영 공헌이익 금액·항목·순서가 그대로예요.
+   2026-09-15 켜져 있으면 주 결과 = 최신 성공 MAIN(정산자료 계산). 기존 운영 계산은 '기존 계산과 비교' 안 참고값으로만.
+   반환 mode: "OFF"(꺼짐 - 운영 화면 그대로) · "PRIMARY"(주 결과 있음) · "EMPTY"(이 달 결과 없음) · "ERROR"(스위치·결과 조회 실패).
+   ERROR·EMPTY 에서도 기존 계산을 주 결과로 대신 쓰지 않아요. 예외는 여기서 받아 ERROR 로 돌려요(꺼짐으로 바꾸지 않음).
    비교용 운영 값은 같은 기간(새 계산의 끝날까지)으로 computeCmOfMonth 를 다시 불러 계산해요(읽기만). */
-async function cmSettlementSection(month, sales, ads, fixed, mode) {
-  if (!globalThis.CmSettlement || !(await CmSettlement.isEnabled(sb))) return "";
-  const cur = await CmSettlement.loadCurrent(sb, month);
-  let prod = null;
-  if (cur && cur.MAIN) {
+async function cmSettlementState(month, sales, ads, fixed, { withRecovery = false } = {}) {
+  if (!globalThis.CmSettlement) return { mode: "OFF" };
+  try {
+    const sw = await CmSettlement.switchState(sb);
+    if (sw === "OFF") return { mode: "OFF" };
+    if (sw !== "ON") return { mode: "ERROR", error: "화면 스위치 설정을 읽지 못했어요" };
+    const cur = await CmSettlement.loadCurrent(sb, month);
+    if (cur && cur.error) return { mode: "ERROR", error: cur.error };
+    if (!cur || !cur.MAIN) return { mode: "EMPTY" };
     const pe = String(cur.MAIN.period_end).slice(0, 10);
     const m = computeCmOfMonth(month, sales.filter(r => (r.date || "") <= pe), ads.filter(a => String(a.date) <= pe), fixed);
     const byCh = {};
     m.rows.forEach(r => { const k = r.channel || "기타"; (byCh[k] = byCh[k] || { revenue: 0 }).revenue += cmOfSale(r, m.shipCharged).revenue; });
-    prod = CmSettlement.prodParts(m, byCh);
+    const prod = CmSettlement.prodParts(m, byCh);
+    return { mode: "PRIMARY", cur, prod, recovery: withRecovery ? await cmRecoveryState(month, cur) : null };
+  } catch (e) {
+    return { mode: "ERROR", error: String(e && e.message || e) };
   }
-  if (mode === "dashboard") return CmSettlement.dashboardHtml(cur, prod);
-  // 2026-09-16 반품 원가환입 제안·승인 칸(js/cm_recovery.js) - 스위치가 켜졌을 때만, 기록은 읽기만 하고 쓰기는 RPC 3개로만
+}
+
+// 2026-09-16 반품 원가환입 제안·승인 칸(js/cm_recovery.js) - 스위치가 켜졌을 때만, 기록은 읽기만 하고 쓰기는 RPC 3개로만
+async function cmRecoveryState(month, cur) {
   let recovery = null;
   if (globalThis.CmRecovery && cur && cur.MAIN && cur.MAIN.result) {
     const got = await CmRecovery.load(sb, month);
@@ -5559,7 +5576,7 @@ async function cmSettlementSection(month, sales, ads, fixed, mode) {
                                save: (blob, name) => { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name || "wing_evidence";
                                                        document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); } });
   }
-  return CmSettlement.detailHtml(cur, prod, { month, recovery });
+  return recovery;
 }
 
 async function viewProfit() {
@@ -5647,17 +5664,23 @@ async function viewProfit() {
     ? ` <small style="color:var(--text-sub)">${[...bases].map(InboundFreight.basisLabel).join("·")}</small>` : "";
 
   const noSetting = erpChannelList.filter(c => !Number(c.fee_rate)).map(c => c.name);
-  const cmv2Html = await cmSettlementSection(erpMonth, sales, ads, fixed, "detail").catch(() => "");
+  // 2026-09-15 정산자료 계산이 켜져 있으면 그 결과가 주 결과(맨 위). 기존 운영 계산은 '기존 계산과 비교'(기본 접힘) 안 참고값 -
+  // 초록색으로 강조하지 않아요. 꺼져 있으면(OFF) 아래 기존 화면 그대로.
+  const cms = await cmSettlementState(erpMonth, sales, ads, fixed, { withRecovery: true });
+  const REF = cms.mode !== "OFF";
+  const cmCol = v => (REF ? "inherit" : v >= 0 ? "var(--green)" : "var(--red)");
+  const refTag = REF ? ` <small class="cm-ref-tag">기존 운영 계산(참고)</small>` : "";
+  const controls = `${monthPicker()}
+          <button class="btn sm secondary" onclick="openAdModal()">＋ 수동 광고비</button>
+          <button class="btn sm secondary" onclick="openFixedModal()">고정비 설정</button>`;
 
-  return `
+  const legacyTop = `
     <div class="card">
       <div class="card-head">
-        <h2>${erpMonth} 공헌이익</h2>
+        ${REF ? `<h2>기존 운영 계산(참고) <small class="cm-ref-sub">${erpMonth} · 이번 달 1일~오늘 · 주문 기준 · 최종값 아님</small></h2>` : `<h2>${erpMonth} 공헌이익</h2>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          ${monthPicker()}
-          <button class="btn sm secondary" onclick="openAdModal()">＋ 수동 광고비</button>
-          <button class="btn sm secondary" onclick="openFixedModal()">고정비 설정</button>
-        </div>
+          ${controls}
+        </div>`}
       </div>
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">매출 (부가세 제외)</div>
@@ -5666,12 +5689,12 @@ async function viewProfit() {
             고객이 낸 돈 ₩${fmt(t.gross)} − 부가세 ₩${fmt(t.outVat)}</div>` : ""}</div>
         <div class="stat"><div class="stat-label">변동비 합계</div>
           <div class="stat-value amber">₩${fmt(t.cost + t.fee + t.ship + t.logi + t.inFreight + adTotal)}${adUndet ? " <small>+ 광고비 미확정</small>" : ""}</div></div>
-        <div class="stat"><div class="stat-label">공헌이익</div>
-          <div class="stat-value" style="color:${adUndet ? "var(--amber)" : cmNet >= 0 ? "var(--green)" : "var(--red)"}">${cmShown(cmNet)}</div>
+        <div class="stat"><div class="stat-label">${REF ? "공헌이익(참고)" : "공헌이익"}</div>
+          <div class="stat-value" style="color:${adUndet ? "var(--amber)" : cmCol(cmNet)}">${cmShown(cmNet)}</div>
           ${adUndet ? `<div style="font-size:12px;color:var(--text-sub);margin-top:2px">확인된 광고비까지 뺀 잠정 ₩${fmt(cmNet)}</div>` : ""}
           ${AdCosts.cmBadge(adInfo)}</div>
-        <div class="stat"><div class="stat-label">공헌이익률</div>
-          <div class="stat-value ${adUndet ? "amber" : cmRate >= 30 ? "blue" : "amber"}">${adUndet ? "미확정" : cmRate.toFixed(1) + "%"}</div></div>
+        <div class="stat"><div class="stat-label">${REF ? "공헌이익률(참고)" : "공헌이익률"}</div>
+          <div class="stat-value ${adUndet ? "amber" : REF ? "" : cmRate >= 30 ? "blue" : "amber"}">${adUndet ? "미확정" : cmRate.toFixed(1) + "%"}</div></div>
       </div>
       ${vatCfg.enabled ? `<p style="font-size:12.5px;color:var(--text-sub);margin-top:10px">
         🧾 모든 금액은 <b>부가세를 뺀 공급가액</b> 기준입니다. 고객이 낸 부가세는 우리 이익이 아니라
@@ -5692,10 +5715,11 @@ async function viewProfit() {
       ${noSetting.length ? `<p style="color:var(--text-sub);font-size:13px;margin-top:8px">
         ℹ️ 수수료율 0%: ${noSetting.map(esc).join(", ")} — 오픈마켓이라면
         <a onclick="location.hash='#/channels'" style="color:var(--brand);cursor:pointer">수수료율을 입력하세요</a>.</p>` : ""}
-    </div>
-${cmv2Html}
+    </div>`;
+
+  const legacyRest = `
     <div class="card">
-      <h2>변동비 구성</h2>
+      <h2>변동비 구성${refTag}</h2>
       <div class="table-wrap"><table class="cm-list">
         <thead><tr><th>항목</th><th class="num">금액</th><th class="num">매출 대비</th></tr></thead>
         <tbody>
@@ -5714,15 +5738,15 @@ ${cmv2Html}
               <td class="num">${undet ? `미확정 (확인된 ₩${fmt(v)})` : `₩${fmt(v)}`}</td>
               <td class="num">${t.revenue ? (v / t.revenue * 100).toFixed(1) : 0}%</td></tr>`; }).join("")}
           <tr style="border-top:2px solid var(--line)">
-            <td><b>= 공헌이익</b></td>
-            <td class="num"><b style="color:${adUndet ? "var(--amber)" : cmNet >= 0 ? "var(--green)" : "var(--red)"}">${cmShown(cmNet)}</b>${adUndet
+            <td><b>= 공헌이익${REF ? " (기존 운영 계산 · 참고)" : ""}</b></td>
+            <td class="num"><b style="color:${adUndet ? "var(--amber)" : cmCol(cmNet)}">${cmShown(cmNet)}</b>${adUndet
               ? `<div style="font-size:12px;color:var(--text-sub)">잠정 ₩${fmt(cmNet)}</div>` : ""}</td>
             <td class="num"><b>${adUndet ? "—" : cmRate.toFixed(1) + "%"}</b></td></tr>
           <tr><td style="padding-left:18px;color:var(--text-sub)">− 고정비 (월)</td>
             <td class="num">₩${fmt(fixTotal)}</td><td class="num">—</td></tr>
           <tr style="border-top:2px solid var(--line)">
             <td><b>= 영업이익</b></td>
-            <td class="num"><b style="color:${adUndet ? "var(--amber)" : op >= 0 ? "var(--green)" : "var(--red)"}">${cmShown(op)}</b></td>
+            <td class="num"><b style="color:${adUndet ? "var(--amber)" : cmCol(op)}">${cmShown(op)}</b></td>
             <td class="num">${adUndet ? "—" : t.revenue ? (op / t.revenue * 100).toFixed(1) + "%" : "—"}</td></tr>
         </tbody>
       </table></div>
@@ -5740,7 +5764,7 @@ ${cmv2Html}
     </div>
 
     <div class="card">
-      <h2>일별 공헌이익 누적</h2>
+      <h2>일별 공헌이익 누적${refTag}</h2>
       ${dayRows.length ? `
       <div class="table-wrap"><table class="cm-days">
         <thead><tr><th>일자</th><th class="num">매출</th><th class="num">공헌이익</th><th class="num">누적</th><th style="min-width:120px">누적 추이</th></tr></thead>
@@ -5750,10 +5774,10 @@ ${cmv2Html}
           return `<tr>
             <td class="cm-d">${esc(x.d.slice(5))}</td>
             <td class="num cm-rev" data-label="매출">₩${fmt(x.revenue)}</td>
-            <td class="num cm-cm" data-label="공헌이익" style="color:${x.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(x.cm)}</td>
+            <td class="num cm-cm" data-label="공헌이익" style="color:${cmCol(x.cm)}">₩${fmt(x.cm)}</td>
             <td class="num cm-acc" data-label="누적"><b>₩${fmt(x.acc)}</b></td>
             <td class="cm-bar"><div class="bar" style="height:10px">
-              <div class="bar-fill ${x.acc < 0 ? "red" : over ? "green" : ""}" style="width:${w}%"></div></div></td>
+              <div class="bar-fill ${x.acc < 0 ? "red" : over && !REF ? "green" : ""}" style="width:${w}%"></div></div></td>
           </tr>`; }).join("")}
         </tbody>
       </table></div>
@@ -5763,7 +5787,7 @@ ${cmv2Html}
     </div>
 
     <div class="card">
-      <h2>채널별 공헌이익</h2>
+      <h2>채널별 공헌이익${refTag}</h2>
       <div class="table-wrap"><table class="erp-cards cm-cards">
         <thead><tr><th>채널</th><th class="num">매출</th><th class="num">원가</th><th class="num">수수료</th><th class="num">배송비</th><th class="num">물류비</th>${hasFreight ? '<th class="num">입고 운송비</th>' : ""}<th class="num">광고비</th><th class="num">공헌이익</th><th class="num">이익률</th></tr></thead>
         <tbody>${Object.keys(byCh).length ? Object.entries(byCh)
@@ -5777,7 +5801,7 @@ ${cmv2Html}
             <td class="num" data-label="물류비">${v.logi ? "₩" + fmt(v.logi) : '<span style="color:var(--text-sub)">—</span>'}</td>
             ${hasFreight ? `<td class="num erp-m-detail" data-label="입고 운송비">${v.inFreight ? "₩" + fmt(Math.round(v.inFreight)) : '<span style="color:var(--text-sub)">—</span>'}</td>` : ""}
             <td class="num" data-label="광고비">₩${fmt(v.ad)}</td>
-            <td class="num cm-key" data-label="공헌이익"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
+            <td class="num cm-key" data-label="공헌이익"><b style="color:${cmCol(v.cm)}">₩${fmt(v.cm)}</b></td>
             <td class="num" data-label="이익률">${v.revenue ? (v.cm / v.revenue * 100).toFixed(1) + "%" : "—"}</td>
           </tr>`).join("") : `<tr><td colspan="${hasFreight ? 10 : 9}" class="empty">데이터가 없습니다</td></tr>`}
         </tbody>
@@ -5785,7 +5809,7 @@ ${cmv2Html}
     </div>
 
     <div class="card">
-      <h2>품목별 공헌이익</h2>
+      <h2>품목별 공헌이익${refTag}</h2>
       <div class="table-wrap"><table class="erp-cards cm-cards">
         <thead><tr><th>품목</th><th class="num">수량</th><th class="num">매출</th>${hasFreight ? '<th class="num">입고 운송비<br><small>판매분 배부</small></th>' : ""}<th class="num">공헌이익</th><th class="num">이익률</th><th class="num">개당 이익</th></tr></thead>
         <tbody>${prodList.length ? prodList.map(([pid, v]) => {
@@ -5797,7 +5821,7 @@ ${cmv2Html}
             ${hasFreight ? `<td class="num erp-m-detail" data-label="입고 운송비">${v.inFreight ? `<div>₩${fmt(Math.round(v.inFreight))}${freightBasisTag(v.bases)}
               <div style="font-size:11.5px;color:var(--text-sub)">${fmt(v.freightUnits)}개 × ₩${fmt(Math.round(v.inFreight / v.freightUnits))}</div></div>`
               : '<span style="color:var(--text-sub)">—</span>'}</td>` : ""}
-            <td class="num cm-key" data-label="공헌이익"><b style="color:${v.cm >= 0 ? "var(--green)" : "var(--red)"}">₩${fmt(v.cm)}</b></td>
+            <td class="num cm-key" data-label="공헌이익"><b style="color:${cmCol(v.cm)}">₩${fmt(v.cm)}</b></td>
             <td class="num" data-label="이익률" style="color:${rate < 15 ? "#d9480f" : "inherit"}">${rate.toFixed(1)}%</td>
             <td class="num erp-m-detail" data-label="개당 이익">₩${fmt(v.qty ? Math.round(v.cm / v.qty) : 0)}</td>
           </tr>`; }).join("") : `<tr><td colspan="${hasFreight ? 7 : 6}" class="empty">데이터가 없습니다</td></tr>`}
@@ -5805,11 +5829,27 @@ ${cmv2Html}
       </table></div>
       <p style="font-size:12px;color:var(--text-sub);margin-top:10px">
         ※ 이익률 15% 미만은 주황색입니다. 많이 팔릴수록 손해인 상품을 여기서 잡아냅니다.</p>
-    </div>
+    </div>`;
 
+  const tail = `
     ${inboundFreightCardHtml(erpMonth)}
 
     ${AdCosts.cardHtml(adInfo, [], { autoError: adSrc.autoError })}`;
+  if (!REF) return legacyTop + legacyRest + tail;
+  const mainHtml = cms.mode === "PRIMARY"
+    ? CmSettlement.primaryHtml(cms.cur, { month: erpMonth, recovery: cms.recovery, controls })
+    : CmSettlement.noticeHtml(cms.mode, { month: erpMonth, error: cms.error, controls });
+  return `${mainHtml}
+    <details class="cm-legacy" id="cm-legacy">
+      <summary class="cm-legacy-sum"><span class="cm-legacy-title">기존 계산과 비교</span>
+        <span class="cm-legacy-val">기존 운영 계산(참고) <b>${cmShown(cmNet)}</b> <small>${erpMonth} · 이번 달 1일~오늘 · 주문 기준 · 최종값 아님</small></span></summary>
+      <div class="cm-legacy-body">
+        ${cms.mode === "PRIMARY" ? CmSettlement.compareHtml(cms.cur, cms.prod) : ""}
+        ${legacyTop}
+        ${legacyRest}
+      </div>
+    </details>
+    ${tail}`;
 }
 
 let profitAdsCache = [], profitFixedCache = [];

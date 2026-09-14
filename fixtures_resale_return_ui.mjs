@@ -104,11 +104,12 @@ check(["ResaleReturn.detailRowsHtml(d)", "ResaleReturn.resaleNoticeHtml(d)", "Re
 check([src.includes("loadRecovery"), src.includes("cmReferenceHtml"), /cost_recovery/.test(read("./js/resale_return.js"))], [false, false, false],
   "[핵심] 원가환입 참고 카드·조회는 이번 배포에 없음(공헌이익 화면 변경 0)");
 const fnText = (source, name) => (source.match(new RegExp(`(async )?function ${name}\\([\\s\\S]*?\\n}`)) || [""])[0];
-// 2026-09-14 새 공헌이익(cm_settlement.js) 스위치 연결 두 줄만 빼고 비교 - 반품 작업은 공헌이익 화면을 바꾸지 않았음을 계속 확인해요.
-const noCmv2 = t => t.split("\n").filter(l => !l.includes("const cmv2Html")).map(l => (l === "${cmv2Html}" ? "" : l)).join("\n");
-check([fnText(src, "viewProfit").length > 1000, noCmv2(fnText(src, "viewProfit")) === fnText(baseSrc, "viewProfit"),
-       fnText(src, "viewProfit").split("\n").filter(l => l.includes("cmv2Html")).length], [true, true, 2],
-  "[핵심] 공헌이익 화면(viewProfit)은 새 공헌이익 스위치 연결 2줄 말고 운영과 한 글자도 같음");
+// 2026-09-15 공헌이익 화면은 '정산자료 계산 = 주 결과' 변경(cm_settlement.js 연결, 사용자 지시)으로 바뀌었어요.
+// 반품 작업이 공헌이익 화면에 끼어들지 않았는지(반품 참조 없음)와, 스위치 OFF 경로가 기존 카드 그대로인지만 계속 확인해요.
+const vp = fnText(src, "viewProfit");
+check([vp.length > 1000, fnText(baseSrc, "viewProfit").length > 1000, /ResaleReturn|loadRecovery|cmReferenceHtml/.test(vp),
+       vp.includes("if (!REF) return legacyTop + legacyRest + tail;"), vp.includes("cmSettlementState(")], [true, true, false, true, true],
+  "[핵심] 공헌이익 화면(viewProfit)에 반품 작업 참조 없음 · 스위치 OFF 는 기존 카드 그대로(정산자료 주 결과 변경만)");
 check(/\.(insert|update|upsert|delete|rpc)\(/.test(read("./js/resale_return.js")), false, "resale_return.js 에 쓰기 호출 없음");
 
 console.log(`\n결과: ${fails ? `실패 ${fails}건` : "전체 통과"}`);

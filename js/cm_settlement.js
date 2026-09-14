@@ -2,8 +2,11 @@
  * -------------------------------------------------------------------------
  * 2026-09-14 정산자료 기준 공헌이익(새 계산) 표시 - 계산은 서버(cm_settlement_calc.py), 이 파일은 보여 주기만(쓰기 0).
  *
- *   · 스위치: settings 의 key 'cm_settlement_v2' 값이 {"enabled": true} 일 때만 켜져요. 행이 없거나 읽기 실패면 꺼짐(기본 OFF).
+ *   · 스위치: settings 의 key 'cm_settlement_v2' 값이 {"enabled": true} 일 때만 켜져요. 행이 없으면 꺼짐(기본 OFF).
  *     꺼져 있으면 결과 표를 읽지도 않고 아무것도 그리지 않아요 - 공헌이익·대시보드 화면의 금액·항목·순서가 지금과 같아요.
+ *   · 2026-09-15 켜져 있으면 정산자료 계산(MAIN 최신 성공 결과)이 공헌이익·대시보드의 주 결과예요. 기존 운영 계산은
+ *     '기존 계산과 비교'(기본 접힘) 안의 참고값으로만. 스위치·결과 조회가 실패하면 '정산자료 계산 조회 실패'를 보여 주고
+ *     기존 계산을 주 결과로 대신 쓰지 않아요.
  *   · 결과: cm_settlement_current 뷰(월·기준별 마지막 성공 계산). 실패한 계산은 뷰에 나오지 않아서 이전 값이 그대로 보여요.
  *   · 메인 = 취소 처리월 기준. 코호트(원주문월)는 접힌 분석 칸에만 - 메인 숫자와 섞지 않아요.
  *   · 쿠팡 수익 현황의 '이익'(상품원가 차감 전 쿠팡 정산 잔액 · 부가세 포함)은 별도 참고 칸에만, 공헌이익이라 부르지 않아요.
@@ -55,27 +58,37 @@
     return `<span class="erp-badge erp-badge--sm">${esc(opts.text || s.text)}</span>`;
   }
 
-  /** 스위치 - 켜짐은 {"enabled": true} 하나뿐. 오류·없음·그 밖의 값은 모두 꺼짐. */
-  async function isEnabled(sb) {
+  /** 스위치 상태 - "ON"({"enabled": true} 하나뿐) · "OFF"(행 없음·그 밖의 값) · "ERROR"(읽기 실패).
+   *  2026-09-15 읽기 실패를 꺼짐으로 보지 않아요 - 켜진 운영에서 기존 계산이 몰래 주 결과로 돌아오지 않게. */
+  async function switchState(sb) {
     try {
       const { data, error } = await sb.from("settings").select("value").eq("key", SETTING_KEY).maybeSingle();
-      if (error || !data) return false;
+      if (error) return "ERROR";
+      if (!data) return "OFF";
       const v = typeof data.value === "string" ? JSON.parse(data.value) : data.value;
-      return !!(v && v.enabled === true);
+      return v && v.enabled === true ? "ON" : "OFF";
     } catch (e) {
-      return false;
+      return "ERROR";
     }
   }
 
-  /** 그 달의 현재 결과 {MAIN, COHORT} - 읽기 실패·없음이면 null(화면에는 '아직 계산 없음'만) */
+  /** 스위치 - 켜짐은 {"enabled": true} 하나뿐. 오류·없음·그 밖의 값은 모두 꺼짐. */
+  async function isEnabled(sb) {
+    return (await switchState(sb)) === "ON";
+  }
+
+  /** 그 달의 현재 결과 {MAIN, COHORT} - 없음이면 null, 읽기 실패면 {error}.
+   *  cm_settlement_current 뷰 = (월·기준)마다 결과 사슬 끝의 성공(SUCCEEDED) 결과. 화면에서도 성공 결과만, 기준마다 id 가 가장 큰 행 하나만 써요. */
   async function loadCurrent(sb, month) {
     try {
       const { data, error } = await sb.from("cm_settlement_current")
-        .select("month,basis,period_start,period_end,as_of,cm_status,calc_assessment,confirmed,confirmed_at,cm,revenue,reasons,result,created_at,calc_version")
+        .select("id,run_status,month,basis,period_start,period_end,as_of,cm_status,calc_assessment,confirmed,confirmed_at,cm,revenue,reasons,result,created_at,calc_version")
         .eq("month", month);
       if (error) return { error: error.message || String(error) };
       const out = {};
-      (data || []).forEach(r => { out[r.basis] = r; });
+      (data || []).filter(r => r.month === month && (r.run_status == null || r.run_status === "SUCCEEDED")).forEach(r => {
+        if (!out[r.basis] || Number(r.id || 0) > Number(out[r.basis].id || 0)) out[r.basis] = r;
+      });
       return out.MAIN ? out : null;
     } catch (e) {
       return { error: String(e && e.message || e) };
@@ -197,55 +210,36 @@
       <span class="cmv2-ref-tag">참고 추정</span> 세부 구분: ${parts} - ${how} 확정 자료가 아니고 원가환입 근거로 쓰지 않아요.</p>`;
   }
 
-  /** 공헌이익 화면에 붙는 새 계산 카드. cur = loadCurrent 결과, prod = prodParts(같은 기간), recovery = CmRecovery 상태(선택) */
-  function detailHtml(cur, prod, { month, recovery } = {}) {
-    if (!cur) {
-      return `<div class="card cmv2" id="cmv2"><h2>정산자료 기준 공헌이익 <span class="cmv2-tag">새 계산 · 시험 표시</span></h2>
-        <p class="cmv2-note">${esc(month || "")} 새 계산 결과가 아직 없어요. 지금 공헌이익은 위의 운영 계산이에요.</p></div>`;
-    }
-    if (cur.error) {
-      return `<div class="card cmv2" id="cmv2"><h2>정산자료 기준 공헌이익 <span class="cmv2-tag">새 계산 · 시험 표시</span></h2>
-        <p class="cmv2-note">${chip("COST_UNCONFIRMED", { text: "불러오지 못함" })} ${esc(cur.error)} · 위 운영 공헌이익은 그대로예요.</p></div>`;
-    }
+  /** 상태 문구 - 확정은 DB 판정 + 승인 권한자 로그인 승인(뷰의 confirmed)만. 계산 결과 안의 status 는 쓰지 않아요 */
+  const stateText = main => (main.confirmed === true ? "확정" : main.calc_assessment === "READY_FOR_APPROVAL" ? "승인 대기" : "잠정");
+  const periodText = main => `${String(main.period_start).slice(0, 10)}~${String(main.period_end).slice(5, 10)}`;
+  const rateText = r => (r.cm_rate == null ? "—" : `${Number(r.cm_rate).toFixed(2)}%`);
+
+  /** 출처 한 줄 - 계산 내역 줄의 출처(정산파일 · API · ERP · 대표 확정 · 수동 입력) + 쿠팡 차감 합계 조회 파일 */
+  function sourceLine(r) {
+    const srcs = [...new Set((r.lines || []).flatMap(l => String(l.source || "").split(" · ")).map(s => s.trim()).filter(Boolean))];
+    const cs = r.cost_summary_used;
+    return `${srcs.length ? srcs.map(esc).join(" · ") : "—"}${cs && cs.file
+      ? ` · 쿠팡 차감 합계 ${esc(cs.range || "")} <code class="cmv2-file" title="SHA-256 ${esc(cs.sha256 || "")}">${esc(cs.file)}</code>` : ""}`;
+  }
+
+  /** 잠정 사유 - 배지(같은 종류는 하나) + 사유 문장 전부 */
+  function whyHtml(reasons) {
+    const list = reasons || [];
+    return `<div class="cmv2-why">
+      <div class="cmv2-reasons">${reasonsHtml(list)}</div>
+      ${list.length ? `<ul class="cmv2-list cmv2-why-list">${list.map(z => `<li><b>${esc((STATUS[z.status] || {}).text || z.label || z.status)}</b> ${esc(costName(z.text))}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  }
+
+  /** 계산 내역·광고비·원가환입·코호트·쿠팡 잔액 - 주 결과 카드의 아래쪽 */
+  function bodyHtml(cur, { month, recovery } = {}) {
     const main = cur.MAIN, cohort = cur.COHORT && cur.COHORT.result;
-    // 확정은 DB 판정 + 승인 권한자 로그인 승인(뷰의 confirmed)만 - 계산 결과 안의 status 는 쓰지 않아요
     const r = { ...main.result, _confirmed: main.confirmed === true, _ready: main.calc_assessment === "READY_FOR_APPROVAL" };
-    const pe = String(main.period_end).slice(5), ps = String(main.period_start).slice(5);
-    const cmp = prod ? compare(main, prod) : null;
     const rec = r.cost_recovery || {};
     const cd = r.coupang_display;
     const fee = r.fee;
     return `
-    <section class="card cmv2" id="cmv2" aria-labelledby="cmv2-h">
-      <div class="card-head"><h2 id="cmv2-h">정산자료 기준 공헌이익 <span class="cmv2-tag">새 계산 · 시험 표시</span></h2>
-        <div class="cmv2-reasons">${reasonsHtml(main.reasons)}</div></div>
-      <p class="cmv2-meta">${esc(month)} · ${esc(ps)}~${esc(pe)} · 쿠팡 매출인식일 기준 · 계산 ${esc(kstTime(main.created_at))}</p>
-
-      <div class="cmv2-vs" role="group" aria-label="운영 계산과 새 계산 비교(같은 기간)">
-        <div class="cmv2-vs-col">
-          <span class="cmv2-vs-label">지금 운영 화면 <small>주문 기준 · 잠정</small></span>
-          <b class="${tone(cmp ? cmp.production : 0)}">${cmp ? won(cmp.production) : "—"}</b>
-          <small>${esc(ps)}~${esc(pe)} 같은 기간으로 다시 계산</small>
-        </div>
-        <div class="cmv2-vs-arrow" aria-hidden="true">→</div>
-        <div class="cmv2-vs-col cmv2-vs-new">
-          <span class="cmv2-vs-label">새 계산 <small>정산자료 기준 · ${main.confirmed === true ? "확정" : main.calc_assessment === "READY_FOR_APPROVAL" ? "승인 대기" : "잠정"}</small></span>
-          <b class="${tone(main.cm)}">${won(main.cm)}</b>
-          <small>공헌이익률 ${r.cm_rate == null ? "—" : r.cm_rate.toFixed(1) + "%"} · 순매출 ${won(r.revenue)}</small>
-        </div>
-        <div class="cmv2-vs-col cmv2-vs-diff">
-          <span class="cmv2-vs-label">차이</span>
-          <b class="${tone(cmp ? cmp.diff : 0)}">${cmp ? signed(cmp.diff) : "—"}</b>
-        </div>
-      </div>
-
-      ${cmp ? `<details class="cmv2-diff" open><summary>차이 구성 (금액이 큰 순)</summary>
-        <div class="table-wrap"><table class="cmv2-lines cmv2-two"><tbody>
-          ${[...cmp.items].sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount)).map(x => `<tr><th scope="row">${esc(x.label)}</th>
-            <td class="num ${tone(x.amount)}">${signed(x.amount)}</td></tr>`).join("")}
-          <tr class="cmv2-total"><th scope="row">= 차이</th><td class="num"><b class="${tone(cmp.diff)}">${signed(cmp.diff)}</b></td></tr>
-        </tbody></table></div></details>` : ""}
-
       ${requiredInputsHtml(r.required_inputs)}
 
       <h3 class="cmv2-h3">계산 내역</h3>
@@ -292,23 +286,131 @@
         <h3 class="cmv2-h3">상품원가 차감 전 쿠팡 정산 잔액 <small>쿠팡 수익 현황의 '이익' · 참고 · 공헌이익 아님</small></h3>
         <p><b>${won(cd.amount)}</b> = 환불 반영 판매액 ${won(cd.sales_with_refund)} − 쿠팡 차감 ${won(cd.deductions)}</p>
         <p class="cmv2-note">쿠팡이 할인·수수료·광고·물류·구독을 뺀 뒤의 금액이에요(부가세 포함, 상품원가 미반영). 공헌이익과 다른 지표라 비교하지 않아요.</p>
-      </aside>` : ""}
+      </aside>` : ""}`;
+  }
+
+  /** 2026-09-15 공헌이익 화면 맨 위 주 결과 카드 - 스위치 ON + 성공 MAIN 결과가 있을 때. controls = 월 선택·버튼(app.js 가 넘김) */
+  function primaryHtml(cur, { month, recovery, controls = "" } = {}) {
+    const main = cur.MAIN;
+    const r = main.result || {};
+    const rec = r.cost_recovery || {};
+    const st = stateText(main);
+    const v27 = rec.auto_qty != null;
+    return `
+    <section class="card cmv2 cmv2-primary" id="cmv2" aria-labelledby="cmv2-h" data-snapshot-id="${esc(main.id ?? "")}">
+      <div class="card-head"><h2 id="cmv2-h">${esc(month)} 공헌이익 <span class="cmv2-tag">정산자료 기준</span></h2>
+        ${controls ? `<div class="cmv2-controls">${controls}</div>` : ""}</div>
+      <p class="cmv2-meta">기간 <b>${esc(periodText(main))}</b> · 쿠팡 매출인식일 기준 · 메인(취소 처리월) · 상태 <b class="cmv2-prov">${st}</b>
+        · 계산 ${esc(kstTime(main.created_at))}${main.id != null ? ` · 결과 #${esc(main.id)}` : ""}${main.calc_version ? ` · ${esc(String(main.calc_version).replace("cm_settlement_", ""))}` : ""}</p>
+      <div class="grid-stats cmv2-stats">
+        <div class="stat cmv2-stat-main"><div class="stat-label">공헌이익 <span class="cmv2-prov">${st}</span></div>
+          <div class="stat-value${Number(main.cm) < 0 ? " red" : ""}">${won(main.cm)}</div><div class="cmv2-stat-sub">공헌이익률 ${rateText(r)}</div></div>
+        <div class="stat"><div class="stat-label">순매출 <small>공급가액</small></div><div class="stat-value">${won(r.revenue)}</div></div>
+        ${v27 ? `
+        <div class="stat"><div class="stat-label">자동 원가환입</div><div class="stat-value">${won(rec.confirmed || 0)}</div>
+          <div class="cmv2-stat-sub">${fmt(rec.auto_rows)}건 · ${fmt(rec.auto_qty)}개 · 환불 수량 × 원판매 원가</div></div>
+        <div class="stat"><div class="stat-label">회수·손실 확인 대기</div><div class="stat-value${rec.check_pending_qty > 0 ? " amber" : ""}">${fmt(rec.check_pending_qty)}개</div>
+          <div class="cmv2-stat-sub">${fmt(rec.check_pending_rows)}건 · 원가 ${won(rec.check_pending_amount || 0)} · 손실 우선 0원</div></div>
+        <div class="stat"><div class="stat-label">반품 손실</div><div class="stat-value">${won(-(rec.loss || 0))}</div>
+          <div class="cmv2-stat-sub">실제 회수 확인 ${fmt(rec.recovered_qty)}개 · 확인 완료 ${fmt(rec.confirmed_rows)}건</div></div>` : ""}
+      </div>
+      ${whyHtml(main.reasons)}
+      <p class="cmv2-note cmv2-src-line">출처: ${sourceLine(r)}</p>
+      ${bodyHtml(cur, { month, recovery })}
     </section>`;
   }
 
-  /** 대시보드 공헌이익 칸 아래에 붙는 한 줄 요약 */
-  function dashboardHtml(cur, prod) {
-    if (!cur || cur.error || !cur.MAIN) return "";
+  /** 기존 운영 계산과 같은 기간 비교(참고) - '기존 계산과 비교' 접힌 칸 안. 기존 계산은 초록색 강조 없이 참고값으로만 */
+  function compareHtml(cur, prod) {
+    if (!cur || !cur.MAIN || !prod) return "";
     const main = cur.MAIN;
-    const cmp = prod ? compare(main, prod) : null;
-    return `<div class="cmv2-dash" role="note" aria-label="정산자료 기준 새 공헌이익(시험 표시)">
-      <span class="cmv2-dash-label">정산자료 기준 새 계산 <small>${esc(String(main.period_start).slice(5))}~${esc(String(main.period_end).slice(5))} · 시험 표시</small></span>
-      <b class="${tone(main.cm)}">${won(main.cm)}</b>
-      ${cmp ? `<small>같은 기간 운영 ${won(cmp.production)} · 차이 ${signed(cmp.diff)}</small>` : ""}
-      <span class="cmv2-dash-chips">${reasonsHtml(main.reasons)}</span>
-      <a class="dash-link" href="#/profit">차이 보기 ›</a></div>`;
+    const cmp = compare(main, prod);
+    const pe = String(main.period_end).slice(5, 10), ps = String(main.period_start).slice(5, 10);
+    return `
+    <section class="card cm-cmp" aria-labelledby="cm-cmp-h">
+      <h2 id="cm-cmp-h">같은 기간 비교 <span class="cmv2-ref-tag">참고</span></h2>
+      <div class="cm-cmp-grid" role="group" aria-label="기존 운영 계산과 정산자료 계산 비교(같은 기간)">
+        <div class="cmv2-vs-col"><span class="cmv2-vs-label">기존 운영 계산(참고) <small>${esc(ps)}~${esc(pe)} 같은 기간 · 주문 기준</small></span>
+          <b class="cm-ref-amt">${won(cmp.production)}</b></div>
+        <div class="cmv2-vs-col cmv2-vs-new"><span class="cmv2-vs-label">정산자료 기준 <small>주 결과 · ${stateText(main)}</small></span>
+          <b>${won(main.cm)}</b></div>
+        <div class="cmv2-vs-col"><span class="cmv2-vs-label">차이 <small>정산자료 − 기존</small></span>
+          <b class="cm-ref-amt">${signed(cmp.diff)}</b></div>
+      </div>
+      <details class="cmv2-diff"><summary>차이 구성 (금액이 큰 순)</summary>
+        <div class="table-wrap"><table class="cmv2-lines cmv2-two"><tbody>
+          ${[...cmp.items].sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount)).map(x => `<tr><th scope="row">${esc(x.label)}</th>
+            <td class="num">${signed(x.amount)}</td></tr>`).join("")}
+          <tr class="cmv2-total"><th scope="row">= 차이</th><td class="num"><b>${signed(cmp.diff)}</b></td></tr>
+        </tbody></table></div></details>
+    </section>`;
   }
 
-  global.CmSettlement = { SETTING_KEY, STATUS, isEnabled, loadCurrent, prodParts, compare, detailHtml, dashboardHtml, chip, requiredInputsHtml, refundsRefHtml,
+  /** 주 결과가 없을 때 맨 위 카드 - kind: "ERROR"(조회 실패) · "EMPTY"(이 달 결과 없음). 기존 계산을 대신 주 결과로 보여 주지 않아요 */
+  function noticeHtml(kind, { month, error, controls = "" } = {}) {
+    const UI = global.ErpUi;
+    const b = (k, t) => (UI && UI.badge ? UI.badge(k, { text: t, small: true }) : `<span class="erp-badge erp-badge--sm">${esc(t)}</span>`);
+    const body = kind === "ERROR"
+      ? `<p class="cmv2-fail" role="alert">${b("error", "정산자료 계산 조회 실패")} 정산자료 기준 공헌이익을 불러오지 못했어요${error ? ` (${esc(error)})` : ""}.
+          기존 운영 계산을 대신 주 결과로 보여 주지 않아요 - 기존 계산은 아래 '기존 계산과 비교'에 참고값으로만 있어요. 잠시 뒤 새로고침해 주세요.</p>`
+      : `<p class="cmv2-note">${b("info", "결과 없음")} ${esc(month || "")} 정산자료 기준 계산 결과가 아직 없어요. 기존 운영 계산은 아래 '기존 계산과 비교'에 참고값으로만 있어요.</p>`;
+    return `
+    <section class="card cmv2 cmv2-primary${kind === "ERROR" ? " cmv2-failed" : ""}" id="cmv2" aria-labelledby="cmv2-h">
+      <div class="card-head"><h2 id="cmv2-h">${esc(month || "")} 공헌이익 <span class="cmv2-tag">정산자료 기준</span></h2>
+        ${controls ? `<div class="cmv2-controls">${controls}</div>` : ""}</div>
+      ${body}
+    </section>`;
+  }
+
+  /** 대시보드 공헌이익 칸의 주 결과(공헌이익 화면 맨 위 카드와 같은 값·기간·상태) */
+  function dashboardMainHtml(cur) {
+    const main = cur.MAIN;
+    const r = main.result || {};
+    const rec = r.cost_recovery || {};
+    return `<div class="cmv2-dmain" aria-label="정산자료 기준 공헌이익(주 결과)">
+      <div class="cmv2-dmain-top">
+        <span class="cmv2-dmain-label">공헌이익 <small>정산자료 기준 · ${esc(periodText(main))}</small></span>
+        <b class="cmv2-dmain-amt${Number(main.cm) < 0 ? " cmv2-neg" : ""}">${won(main.cm)}</b>
+        <span class="cmv2-prov">${stateText(main)}</span>
+        <span class="cmv2-dmain-rate">공헌이익률 <b>${rateText(r)}</b></span>
+      </div>
+      <dl class="cmv2-dmain-kv">
+        <div><dt>순매출</dt><dd>${won(r.revenue)}</dd></div>
+        ${rec.auto_qty != null ? `
+        <div><dt>자동 원가환입</dt><dd>${won(rec.confirmed || 0)} <small>${fmt(rec.auto_rows)}건 · ${fmt(rec.auto_qty)}개</small></dd></div>
+        <div><dt>회수·손실 확인 대기</dt><dd>${fmt(rec.check_pending_qty)}개 <small>${fmt(rec.check_pending_rows)}건 · 손실 우선 0원</small></dd></div>
+        <div><dt>반품 손실</dt><dd>${won(-(rec.loss || 0))}</dd></div>` : ""}
+      </dl>
+      <div class="cmv2-dash-chips">${reasonsHtml(main.reasons)}</div>
+      <small class="cmv2-dmain-meta">계산 ${esc(kstTime(main.created_at))}${main.id != null ? ` · 결과 #${esc(main.id)}` : ""} · 출처 ${sourceLine(r)}</small>
+    </div>`;
+  }
+
+  /** 대시보드 - 주 결과가 없을 때(조회 실패 · 결과 없음) */
+  function dashboardNoticeHtml(kind, error) {
+    const UI = global.ErpUi;
+    const b = (k, t) => (UI && UI.badge ? UI.badge(k, { text: t, small: true }) : `<span class="erp-badge erp-badge--sm">${esc(t)}</span>`);
+    return kind === "ERROR"
+      ? `<p class="cmv2-fail" role="alert">${b("error", "정산자료 계산 조회 실패")} 정산자료 기준 공헌이익을 불러오지 못했어요${error ? ` (${esc(error)})` : ""}.
+          아래 기존 운영 계산은 참고값이에요(주 결과 아님).</p>`
+      : `<p class="cmv2-note">${b("info", "결과 없음")} 이 달 정산자료 기준 계산 결과가 아직 없어요. 아래 기존 운영 계산은 참고값이에요.</p>`;
+  }
+
+  /** 대시보드 '기존 계산과 비교' 안의 같은 기간 한 줄 */
+  function dashboardCompareHtml(cur, prod) {
+    if (!cur || !cur.MAIN || !prod) return "";
+    const cmp = compare(cur.MAIN, prod);
+    return `<p class="cmv2-note">같은 기간(${esc(periodText(cur.MAIN))}) 기존 운영 계산 ${won(cmp.production)} → 정산자료 ${won(cur.MAIN.cm)} · 차이 ${signed(cmp.diff)}
+      <a class="dash-link" href="#/profit">차이 구성 ›</a></p>`;
+  }
+
+  /** 대시보드 칸 제목 아래 설명 */
+  function dashboardMeta(cur) {
+    const m = cur.MAIN;
+    return `정산자료 기준 · ${periodText(m)} · ${stateText(m)} · 계산 ${kstTime(m.created_at)}${m.id != null ? ` · 결과 #${m.id}` : ""}`;
+  }
+
+  global.CmSettlement = { SETTING_KEY, STATUS, switchState, isEnabled, loadCurrent, prodParts, compare, primaryHtml, compareHtml, noticeHtml,
+                          dashboardMainHtml, dashboardNoticeHtml, dashboardCompareHtml, dashboardMeta, chip, requiredInputsHtml, refundsRefHtml,
                           costName, kstTime };
 })(typeof window !== "undefined" ? window : globalThis);
