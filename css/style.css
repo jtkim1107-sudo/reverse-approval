@@ -1144,3 +1144,97 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
   .dash-sched a { grid-template-columns: minmax(0, 1fr) auto; }
   .dash-sched-date { grid-column: 1 / -1; }
 }
+
+/* ===== 2026-09-14 정산자료 기준 새 공헌이익(js/cm_settlement.js) - 스위치가 켜졌을 때만 그려져요 =====
+   운영 공헌이익 카드와 구분되게 왼쪽 굵은 선 대신 점선 테두리·'시험 표시' 표식을 써요. 720px 이하는 비교 칸을 세로로. */
+.cmv2 { border: 1.5px dashed #b9c0f7; }
+.cmv2 h2 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cmv2-tag { font-size: 11.5px; font-weight: 700; color: var(--brand); background: var(--brand-light); border-radius: 99px; padding: 2px 9px; }
+.cmv2-reasons { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.cmv2-meta { font-size: 12.5px; color: var(--text-sub); margin: 2px 0 12px; }
+.cmv2-vs { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) minmax(0, .8fr); gap: 10px; align-items: stretch; margin-bottom: 12px; }
+.cmv2-vs-col { background: var(--bg); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cmv2-vs-col b { font-size: 21px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.cmv2-vs-col small { color: var(--text-sub); font-size: 12px; }
+.cmv2-vs-label { font-size: 12.5px; font-weight: 600; color: var(--text-sub); }
+.cmv2-vs-label small { font-weight: 500; }
+.cmv2-vs-new { background: var(--brand-light); }
+.cmv2-vs-arrow { align-self: center; color: var(--text-sub); font-size: 18px; }
+.cmv2-pos { color: var(--green); }
+.cmv2-neg { color: var(--red); }
+.cmv2-h3 { font-size: 14px; margin: 16px 0 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cmv2-h3 small { font-weight: 500; color: var(--text-sub); font-size: 12px; }
+.cmv2-lines { width: 100%; font-variant-numeric: tabular-nums; }
+.cmv2-lines th[scope="row"] { font-weight: 500; text-align: left; }
+.cmv2-lines th small { color: var(--text-sub); font-weight: 400; margin-left: 4px; }
+.cmv2-lines .cmv2-sub th, .cmv2-lines .cmv2-total th { font-weight: 700; }
+.cmv2-lines .cmv2-total { border-top: 2px solid var(--line); }
+.cmv2-st { white-space: nowrap; width: 1%; }
+.cmv2-none { color: var(--text-sub); font-size: 12.5px; }
+.cmv2-prov { font-size: 12px; font-weight: 700; color: var(--amber); }
+/* v2.5 비용 출처 칸(API · 정산파일 · ERP · 대표 확정 · 수동 입력) */
+.cmv2-srccol { font-size: 12.5px; min-width: 88px; }
+.cmv2-srccol small { color: var(--text-sub); font-size: 11.5px; }
+.cmv2-src { font-weight: 600; white-space: nowrap; }
+.cmv2-note { font-size: 12.5px; color: var(--text-sub); margin: 8px 0 0; line-height: 1.55; }
+.cmv2-diff summary, .cmv2-cohort summary { cursor: pointer; font-weight: 600; font-size: 13px; margin: 4px 0 6px; }
+.cmv2-ads { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.cmv2-ads > div { background: var(--bg); border-radius: 10px; padding: 8px 12px; }
+.cmv2-ads dt { font-size: 12.5px; color: var(--text-sub); }
+.cmv2-ads dt small { font-size: 11.5px; }
+.cmv2-ads dd { margin: 2px 0 0; font-size: 17px; font-variant-numeric: tabular-nums; }
+.cmv2-ads .cmv2-ads-parts { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; background: none; padding: 0 2px; }
+.cmv2-list { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; }
+.cmv2-ref { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 4px; }
+.cmv2-ref p { margin: 4px 0; font-size: 13px; }
+/* 2026-09-16 확정 자료 입력 목록 · 환불 참고 구분 · 반품 원가환입 제안·승인 */
+.cmv2-inputs { margin: 14px 0 4px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 12px 8px; }
+.cmv2-inputs summary { cursor: pointer; font-weight: 600; font-size: 13.5px; }
+.cmv2-inputs summary small { font-weight: 500; color: var(--text-sub); margin-left: 4px; }
+.cmv2-inputs-t td small, .cmv2-inputs-t th small { color: var(--text-sub); font-size: 12px; font-weight: 400; margin: 0; }
+.cmv2-inputs-t th, .cmv2-inputs-t td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+.cmv2-inputs-t td:nth-child(3) { white-space: nowrap; }
+.cmv2-inputs-t td:last-child { min-width: 180px; max-width: 280px; }
+.cmr .cmv2-lines td, .cmr .cmv2-lines th { white-space: normal; overflow-wrap: anywhere; }
+.cmr .cmv2-lines td.num, .cmr .cmv2-lines th.num, .cmr code { white-space: nowrap; overflow-wrap: normal; }
+.cmv2-ref-tag { display: inline-block; font-size: 11.5px; font-weight: 700; color: var(--amber); border: 1px solid currentColor;
+  border-radius: 6px; padding: 0 5px; margin-right: 2px; }
+.cmv2-h4 { font-size: 13px; margin: 12px 0 4px; }
+.cmr-cands summary { cursor: pointer; font-weight: 600; font-size: 13px; margin: 6px 0; }
+.cmr .cmr-void td { color: var(--text-sub); }
+.cmr code { font-size: 12px; }
+.cmr-kv { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; margin: 0 0 10px; font-size: 13px; }
+.cmr-kv > div { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 8px; }
+.cmr-kv dt { color: var(--text-sub); }
+.cmr-kv dd { margin: 0; overflow-wrap: anywhere; }
+.cmr-hash { font-size: 11.5px; word-break: break-all; }
+.cmr-warn { font-size: 12.5px; line-height: 1.6; background: var(--gray-bg, #f5f5f7); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; }
+.cmr-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; margin: 8px 0; }
+@media (max-width: 720px) { .cmr-kv > div { grid-template-columns: minmax(0, 1fr); gap: 0; } }
+.cmv2-cohort { margin-top: 12px; font-size: 13px; }
+.cmv2-coupang { margin-top: 16px; background: #f7f7f9; border: 1px solid var(--line); border-radius: 10px; padding: 4px 14px 10px; }
+.cmv2-coupang p { margin: 4px 0; font-size: 13px; }
+.cmv2-dash { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-top: 10px; padding: 8px 10px;
+  border: 1.5px dashed #b9c0f7; border-radius: 10px; font-size: 13px; }
+.cmv2-dash b { font-size: 16px; font-variant-numeric: tabular-nums; }
+.cmv2-dash small { color: var(--text-sub); }
+.cmv2-dash-label { font-weight: 600; }
+.cmv2-dash-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+@media (max-width: 720px) {
+  /* 표는 줄마다 '항목' 한 줄 + '금액 · 상태' 한 줄로(금액이 잘리지 않게) */
+  .cmv2-lines thead { display: none; }
+  .cmv2-lines tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
+    padding: 7px 0; border-bottom: 1px solid var(--line); }
+  .cmv2-lines th[scope="row"] { grid-column: 1 / -1; padding: 0 0 2px; white-space: normal; }
+  .cmv2-lines td { padding: 0; border: 0; }
+  .cmv2-lines td.num { text-align: left; white-space: nowrap; }
+  .cmv2-lines.cmv2-two th[scope="row"] { grid-column: auto; }
+  .cmv2-lines.cmv2-two td.num { text-align: right; }
+  .cmv2-st { width: auto; text-align: right; }
+  .cmv2-lines td.cmv2-srccol { grid-column: 1 / -1; grid-row: 3; min-width: 0; padding-top: 2px; }
+  .cmv2-vs { grid-template-columns: minmax(0, 1fr); }
+  .cmv2-vs-arrow { display: none; }
+  .cmv2-ads { grid-template-columns: minmax(0, 1fr); }
+  .cmv2 .card-head { flex-direction: column; align-items: flex-start; }
+  .cmv2-reasons { justify-content: flex-start; }
+}

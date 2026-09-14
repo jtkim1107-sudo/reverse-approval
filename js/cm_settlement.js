@@ -1,0 +1,289 @@
+/* cm_settlement.js
+ * -------------------------------------------------------------------------
+ * 2026-09-14 정산자료 기준 공헌이익(새 계산) 표시 - 계산은 서버(cm_settlement_calc.py), 이 파일은 보여 주기만(쓰기 0).
+ *
+ *   · 스위치: settings 의 key 'cm_settlement_v2' 값이 {"enabled": true} 일 때만 켜져요. 행이 없거나 읽기 실패면 꺼짐(기본 OFF).
+ *     꺼져 있으면 결과 표를 읽지도 않고 아무것도 그리지 않아요 - 공헌이익·대시보드 화면의 금액·항목·순서가 지금과 같아요.
+ *   · 결과: cm_settlement_current 뷰(월·기준별 마지막 성공 계산). 실패한 계산은 뷰에 나오지 않아서 이전 값이 그대로 보여요.
+ *   · 메인 = 취소 처리월 기준. 코호트(원주문월)는 접힌 분석 칸에만 - 메인 숫자와 섞지 않아요.
+ *   · 쿠팡 정산 화면 '표시 이익'은 플랫폼 차감 후 금액(상품원가·부가세 미반영)이라 별도 참고 칸에만, 공헌이익이라 부르지 않아요.
+ *   · 2026-09-16 환불은 정산취소 전체를 한 줄로 한 번만. 주문 취소/반품 나눔은 참고 추정 - 저장된 확정 자료 아님.
+ *     반품 원가환입은 WING 근거 + 승인 수량만 반영(제안·승인 화면은 js/cm_recovery.js). 확정 자료 입력 목록을 카드 위쪽에 보여 줘요.
+ *   · 2026-09-14 v2.5 계산 내역 줄마다 출처(API · 정산파일 · ERP · 대표 확정 · 수동 입력)와 확정/잠정 상태. 취소·반품 세부 구분은 '참고 추정'.
+ */
+(function (global) {
+  "use strict";
+
+  const SETTING_KEY = "cm_settlement_v2";
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmt = n => Math.round(Number(n || 0)).toLocaleString("ko-KR");
+  const won = n => (Number(n) < 0 ? "−₩" : "₩") + fmt(Math.abs(Number(n || 0)));
+  const signed = n => (Number(n) > 0 ? "+" : Number(n) < 0 ? "−" : "") + fmt(Math.abs(Number(n || 0)));
+
+  // 상태 7종(+광고 청구 미확인) → 배지 종류·문구. 색만으로 말하지 않게 아이콘·문구를 같이 써요.
+  const STATUS = {
+    CONFIRMED: { kind: "ok", text: "확정" },
+    CYCLE_OPEN: { kind: "awaiting", text: "정산 진행 중" },
+    ESTIMATED: { kind: "info", text: "예상" },
+    COST_UNREGISTERED: { kind: "check", text: "비용 미등록" },
+    VAT_UNCONFIRMED: { kind: "check", text: "VAT 미확인" },
+    COST_UNCONFIRMED: { kind: "check", text: "원가 미확정" },
+    RECOVERY_CANDIDATE: { kind: "approval", text: "원가환입 후보" },
+    ACCRUED: { kind: "check", text: "청구 미확인(ACCRUED)" },
+    NOTICE_MISSING: { kind: "check", text: "프로모션 공지 미확인" },
+    BILLING_UNCONFIRMED: { kind: "check", text: "청구 미확인(ACCRUED)" },
+  };
+  function chip(status, opts = {}) {
+    const s = STATUS[status] || { kind: "info", text: status };
+    const UI = global.ErpUi;
+    if (UI && UI.badge) return UI.badge(s.kind, { text: opts.text || s.text, small: true, title: opts.title || "" });
+    return `<span class="erp-badge erp-badge--sm">${esc(opts.text || s.text)}</span>`;
+  }
+
+  /** 스위치 - 켜짐은 {"enabled": true} 하나뿐. 오류·없음·그 밖의 값은 모두 꺼짐. */
+  async function isEnabled(sb) {
+    try {
+      const { data, error } = await sb.from("settings").select("value").eq("key", SETTING_KEY).maybeSingle();
+      if (error || !data) return false;
+      const v = typeof data.value === "string" ? JSON.parse(data.value) : data.value;
+      return !!(v && v.enabled === true);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 그 달의 현재 결과 {MAIN, COHORT} - 읽기 실패·없음이면 null(화면에는 '아직 계산 없음'만) */
+  async function loadCurrent(sb, month) {
+    try {
+      const { data, error } = await sb.from("cm_settlement_current")
+        .select("month,basis,period_start,period_end,as_of,cm_status,calc_assessment,confirmed,confirmed_at,cm,revenue,reasons,result,created_at,calc_version")
+        .eq("month", month);
+      if (error) return { error: error.message || String(error) };
+      const out = {};
+      (data || []).forEach(r => { out[r.basis] = r; });
+      return out.MAIN ? out : null;
+    } catch (e) {
+      return { error: String(e && e.message || e) };
+    }
+  }
+
+  /** 운영 계산(app.js computeCmOfMonth) 결과에서 비교에 쓰는 구성만 뽑아요. rgRevenue/mpRevenue 는 호출하는 쪽이 채널별로 넘겨요. */
+  function prodParts(m, byChannel) {
+    const rg = byChannel["쿠팡 로켓그로스"] || { revenue: 0 };
+    const mp = byChannel["쿠팡 판매자배송"] || { revenue: 0 };
+    return { revenue: m.t.revenue, rg_revenue: rg.revenue, mp_revenue: mp.revenue, cost: m.t.cost, fee: m.t.fee, logi: m.t.logi,
+             ship: m.t.ship, inFreight: m.t.inFreight, ads: m.adTotal, cmNet: m.cmNet };
+  }
+
+  /** 운영 → 새 계산 차이를 항목별로(서버 compare_with_production 과 같은 항목). 합 = 신규 − 운영. */
+  function compare(main, prod) {
+    const r = main.result || main;
+    const rp = r.revenue_parts, a = r.ads;
+    const items = [
+      ["매출 인식 기준(주문일 → 쿠팡 매출인식일)", rp.rg_gross - prod.rg_revenue],
+      ["판매자 부담 쿠폰 차감", -rp.rg_coupon],
+      ["취소·환불 반영", rp.rg_cancel],
+      ["판매자배송 매출", rp.mp - prod.mp_revenue],
+      ["상품원가(매출 인식 기준·매핑 반영)", -(r.cost - prod.cost)],
+      ["판매수수료(실제 정산값)", -(r.fee.total - prod.fee)],
+      ["기존 개당 물류비(unit_fee) 빼지 않음", prod.logi],
+      ["기존 출고배송비 빼지 않음", prod.ship || 0],
+      ["로켓그로스 월 비용(입고·풀필먼트·보관·세이버)", -r.monthly_costs.total],
+      ["광고비: 집행액 → 실제 청구액", -(a.cm_amount - prod.ads)],
+      ["입고 트럭 운송비", -((r.inbound_freight || 0) - (prod.inFreight || 0))],
+      ["반품 원가환입(승인 수량)", r.cost_recovery.confirmed || 0],
+      ["판매자배송 취소·반품(조회 자료)", (r.mp_refunds && r.mp_refunds.supply) || 0],
+    ].map(([label, amount]) => ({ label, amount }));
+    const diff = r.cm - prod.cmNet;
+    const rest = diff - items.reduce((s, x) => s + x.amount, 0);
+    if (Math.abs(rest) > 0.5) items.push({ label: "반올림", amount: rest });
+    return { production: prod.cmNet, next: r.cm, diff, items: items.filter(x => Math.abs(x.amount) >= 0.5) };
+  }
+
+  const tone = v => (v < 0 ? "cmv2-neg" : "cmv2-pos");
+
+  function reasonsHtml(reasons) {
+    if (!reasons || !reasons.length) return chip("CONFIRMED", { text: "사유 없음" });
+    const seen = new Set();
+    return reasons.filter(z => !seen.has(z.status) && seen.add(z.status)).map(z => chip(z.status, { title: z.text })).join(" ");
+  }
+
+  /** 비용 출처(서버 줄의 source: API · 정산파일 · ERP · 대표 확정 · 수동 입력). 출처가 둘 이상이면 출처별 금액을 작게. 옛 결과(출처 없음)는 '—' */
+  function sourceHtml(ln) {
+    if (!ln.source) return `<span class="cmv2-none">—</span>`;
+    const parts = Object.entries(ln.source_amounts || {}).filter(([, v]) => Math.abs(Number(v || 0)) >= 0.5);
+    return `<span class="cmv2-src">${esc(ln.source)}</span>${parts.length > 1 ? `<br><small>${parts.map(([k, v]) => `${esc(k)} ${won(v)}`).join(" · ")}</small>` : ""}`;
+  }
+
+  /** 줄 상태 - 확정이면 '확정', 아니면 '잠정' + 이유 배지(정산 진행 중·예상·비용 미등록 등) */
+  const lineStatusHtml = st => (st === "CONFIRMED" ? chip("CONFIRMED") : `<span class="cmv2-prov">잠정</span> ${chip(st)}`);
+
+  function linesHtml(r) {
+    const row = ln => `<tr${ln.code === "CM_TOTAL" ? ' class="cmv2-total"' : ""}>
+        <th scope="row">${esc(ln.label)}${ln.orders ? ` <small>${fmt(ln.orders)}건 · ${fmt(ln.qty)}개</small>` : ""}</th>
+        <td class="num">${ln.amount == null ? `<span class="cmv2-none">금액 없음</span>` : won(ln.amount)}</td>
+        <td class="cmv2-srccol">${sourceHtml(ln)}</td>
+        <td class="cmv2-st">${lineStatusHtml(ln.status)}</td></tr>`;
+    const rev = r.lines.filter(x => x.code.startsWith("REVENUE"));
+    const rest = r.lines.filter(x => !x.code.startsWith("REVENUE"));
+    return `<div class="table-wrap"><table class="cmv2-lines">
+      <thead><tr><th>항목</th><th class="num">금액(공급가액)</th><th>출처</th><th>상태</th></tr></thead>
+      <tbody>
+        ${rev.map(row).join("")}
+        <tr class="cmv2-sub"><th scope="row">= 순매출</th><td class="num"><b>${won(r.revenue)}</b></td><td></td><td></td></tr>
+        ${rest.map(row).join("")}
+        <tr class="cmv2-total"><th scope="row">= 공헌이익 <small>메인 · 취소 처리월 기준</small></th>
+          <td class="num"><b class="${tone(r.cm)}">${won(r.cm)}</b></td><td></td>
+          <td class="cmv2-st">${r._confirmed ? chip("CONFIRMED") : `<span class="cmv2-prov">${r._ready ? "승인 대기" : "잠정"}</span>`}</td></tr>
+      </tbody></table></div>`;
+  }
+
+  function adsHtml(a) {
+    if (a.billed == null) {
+      return `<p class="cmv2-note">${chip("ACCRUED")} 이 기간과 맞는 로켓그로스 정산 광고비 자료가 없어 집행액 ${won(a.cm_amount)} 전체를 미리 잡았어요.</p>`;
+    }
+    return `<dl class="cmv2-ads">
+      <div><dt>광고 성과용 집행액 <small>WING 일별 합계</small></dt><dd>${won(a.performance_spend)}</dd></div>
+      <div><dt>공헌이익용 실제 청구액</dt><dd><b>${won(a.cm_amount)}</b></dd></div>
+      <div class="cmv2-ads-parts">
+        <span>로켓그로스 정산 청구액 ${won(a.billed)} ${chip(a.billed_status)}</span>
+        ${a.outside_billed ? `<span>정산 밖 광고비 실제 청구 ${won(a.outside_billed)} ${chip("CONFIRMED")}${(a.invoices_used || []).length ? ` <small>계정 전체 청구 ${a.invoices_used.length}건</small>` : ""}</span>` : ""}
+        ${(a.evidence_linked || []).length ? `<span><small>증빙(캠페인 청구서·카드 명세서·세금계산서) ${a.evidence_linked.length}건은 저장만 - 비용에 쓰지 않아요</small></span>` : ""}
+        ${(a.billing_unreconciled || []).length ? `<span>${chip("ACCRUED")} 계정 전체 청구로 대사되지 않은 광고 문서 ${a.billing_unreconciled.length}건(PARTIAL_BILLING_UNRECONCILED) - 세지 않았어요</span>` : ""}
+        ${(a.billing_held || []).length ? `<span>${chip("ACCRUED")} 보류한 계정 청구 ${a.billing_held.length}건(기간 겹침·일별 ACCRUED 없음) - 세지 않았어요</span>` : ""}
+        ${a.outside_accrued ? `<span>정산 밖 광고비 ${won(a.outside_accrued)} ${chip("ACCRUED")} <small>청구 확인 전이라 미리 잡아 뒀어요 - 실제 청구 기록이 들어오면 그 금액으로 바뀌어요(더하지 않음)</small></span>` : ""}
+        <span>빼는 것: 예산 초과 미청구 ${won(a.over_budget)} · 일별 합계 반올림 ${won(a.rounding)}</span>
+      </div></dl>`;
+  }
+
+  const INPUT_STATUS = { NEEDED: ["check", "입력 필요"], PENDING_APPROVAL: ["approval", "승인 대기"], DONE: ["ok", "완료"] };
+  const range = (lo, hi) => lo == null && hi == null ? "금액 미정" : lo == null ? `? ~ ${signed(hi)}` : hi == null ? `${signed(lo)} ~ ?` :
+    Math.round(lo) === Math.round(hi) ? signed(lo) : `${signed(lo)} ~ ${signed(hi)}`;
+
+  /** 월 확정 전에 넣어야 할 확정 자료 목록(서버 required_inputs) - 영향은 최종 공헌이익에 더해질 범위 */
+  function requiredInputsHtml(list) {
+    if (!list || !list.length) return "";
+    const UI = global.ErpUi;
+    const b = (st) => { const [k, t] = INPUT_STATUS[st] || ["info", st]; return UI && UI.badge ? UI.badge(k, { text: t, small: true }) : `<span class="erp-badge erp-badge--sm">${esc(t)}</span>`; };
+    return `<details class="cmv2-inputs" open><summary>확정 자료 입력 목록 · ${list.filter(x => x.status !== "DONE").length}건 남음 <small>모두 끝나야 월 확정 가능</small></summary>
+      <div class="table-wrap"><table class="cmv2-lines cmv2-inputs-t">
+        <thead><tr><th>자료</th><th>상태</th><th class="num">최종 금액 영향(범위)</th><th>입력 방법</th></tr></thead>
+        <tbody>${list.map(x => `<tr><th scope="row">${esc(x.label)}<br><small>${esc(x.impact_note || "")}</small></th><td>${b(x.status)}</td>
+          <td class="num">${range(x.impact_low, x.impact_high)}</td><td><small>${esc(x.how || "")}</small></td></tr>`).join("")}</tbody></table></div></details>`;
+  }
+
+  /** 환불 세부 구분(주문 취소/반품) - 공헌이익은 환불 전체를 한 번만 빼고, 세부 구분은 '참고 추정'으로만 보여 줘요 */
+  function refundsRefHtml(rf) {
+    if (!rf || !rf.total_rows) return "";
+    const parts = Object.entries(rf.by_class || {}).map(([, v]) => `${esc(v.label)} ${fmt(v.rows)}건 ${won(v.supply)}`).join(" · ");
+    const how = rf.estimated_rows === 0 ? "쿠팡 취소·반품 조회 자료와 맞춘 구분이지만" : "결제 뒤 경과일(0~1일 주문 취소 · 2일 이상 반품) 또는 쿠팡 취소·반품 조회 자료로 나눈 값이라";
+    return `<p class="cmv2-note">환불(정산취소 전체) ${fmt(rf.total_rows)}건 ${won(rf.total_supply)}은 위에서 한 번만 뺐어요.
+      <span class="cmv2-ref-tag">참고 추정</span> 세부 구분: ${parts} - ${how} 확정 자료가 아니고 원가환입 근거로 쓰지 않아요.</p>`;
+  }
+
+  /** 공헌이익 화면에 붙는 새 계산 카드. cur = loadCurrent 결과, prod = prodParts(같은 기간), recovery = CmRecovery 상태(선택) */
+  function detailHtml(cur, prod, { month, recovery } = {}) {
+    if (!cur) {
+      return `<div class="card cmv2" id="cmv2"><h2>정산자료 기준 공헌이익 <span class="cmv2-tag">새 계산 · 시험 표시</span></h2>
+        <p class="cmv2-note">${esc(month || "")} 새 계산 결과가 아직 없어요. 지금 공헌이익은 위의 운영 계산이에요.</p></div>`;
+    }
+    if (cur.error) {
+      return `<div class="card cmv2" id="cmv2"><h2>정산자료 기준 공헌이익 <span class="cmv2-tag">새 계산 · 시험 표시</span></h2>
+        <p class="cmv2-note">${chip("COST_UNCONFIRMED", { text: "불러오지 못함" })} ${esc(cur.error)} · 위 운영 공헌이익은 그대로예요.</p></div>`;
+    }
+    const main = cur.MAIN, cohort = cur.COHORT && cur.COHORT.result;
+    // 확정은 DB 판정 + 승인 권한자 로그인 승인(뷰의 confirmed)만 - 계산 결과 안의 status 는 쓰지 않아요
+    const r = { ...main.result, _confirmed: main.confirmed === true, _ready: main.calc_assessment === "READY_FOR_APPROVAL" };
+    const pe = String(main.period_end).slice(5), ps = String(main.period_start).slice(5);
+    const cmp = prod ? compare(main, prod) : null;
+    const rec = r.cost_recovery || {};
+    const cd = r.coupang_display;
+    const fee = r.fee;
+    return `
+    <section class="card cmv2" id="cmv2" aria-labelledby="cmv2-h">
+      <div class="card-head"><h2 id="cmv2-h">정산자료 기준 공헌이익 <span class="cmv2-tag">새 계산 · 시험 표시</span></h2>
+        <div class="cmv2-reasons">${reasonsHtml(main.reasons)}</div></div>
+      <p class="cmv2-meta">${esc(month)} · ${esc(ps)}~${esc(pe)} · 쿠팡 매출인식일 기준 · 계산 ${esc(String(main.created_at || "").slice(0, 16).replace("T", " "))}</p>
+
+      <div class="cmv2-vs" role="group" aria-label="운영 계산과 새 계산 비교(같은 기간)">
+        <div class="cmv2-vs-col">
+          <span class="cmv2-vs-label">지금 운영 화면 <small>주문 기준 · 잠정</small></span>
+          <b class="${tone(cmp ? cmp.production : 0)}">${cmp ? won(cmp.production) : "—"}</b>
+          <small>${esc(ps)}~${esc(pe)} 같은 기간으로 다시 계산</small>
+        </div>
+        <div class="cmv2-vs-arrow" aria-hidden="true">→</div>
+        <div class="cmv2-vs-col cmv2-vs-new">
+          <span class="cmv2-vs-label">새 계산 <small>정산자료 기준 · ${main.confirmed === true ? "확정" : main.calc_assessment === "READY_FOR_APPROVAL" ? "승인 대기" : "잠정"}</small></span>
+          <b class="${tone(main.cm)}">${won(main.cm)}</b>
+          <small>공헌이익률 ${r.cm_rate == null ? "—" : r.cm_rate.toFixed(1) + "%"} · 순매출 ${won(r.revenue)}</small>
+        </div>
+        <div class="cmv2-vs-col cmv2-vs-diff">
+          <span class="cmv2-vs-label">차이</span>
+          <b class="${tone(cmp ? cmp.diff : 0)}">${cmp ? signed(cmp.diff) : "—"}</b>
+        </div>
+      </div>
+
+      ${cmp ? `<details class="cmv2-diff" open><summary>차이 구성 (금액이 큰 순)</summary>
+        <div class="table-wrap"><table class="cmv2-lines cmv2-two"><tbody>
+          ${[...cmp.items].sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount)).map(x => `<tr><th scope="row">${esc(x.label)}</th>
+            <td class="num ${tone(x.amount)}">${signed(x.amount)}</td></tr>`).join("")}
+          <tr class="cmv2-total"><th scope="row">= 차이</th><td class="num"><b class="${tone(cmp.diff)}">${signed(cmp.diff)}</b></td></tr>
+        </tbody></table></div></details>` : ""}
+
+      ${requiredInputsHtml(r.required_inputs)}
+
+      <h3 class="cmv2-h3">계산 내역</h3>
+      ${linesHtml(r)}
+      ${refundsRefHtml(r.refunds_reference)}
+      ${r.revenue_rg_by_state ? `<p class="cmv2-note">로켓그로스 순매출 ${won(r.revenue_rg)} = 정산 확정 ${won(r.revenue_rg_by_state.SETTLED_ACTUAL)} ·
+        정산 진행 중 ${won(r.revenue_rg_by_state.CYCLE_OPEN)} · 예상(정산 행 없음) ${won(r.revenue_rg_by_state.ESTIMATED)}</p>` : ""}
+      <p class="cmv2-note">판매수수료 합계 ${won(fee.total)} = 정산 확정 ${won(fee.settled)} · 정산 진행 중 ${won(fee.cycle_open)} · 예상 ${won(fee.estimated)}
+        (정산 행이 없는 주문만 예상).${fee.unknown_rate_rows ? ` 요율을 몰라 계산하지 못한 주문 ${fmt(fee.unknown_rate_rows)}건은 0원으로 두지 않고 잠정으로 표시해요.` : ""}
+        수수료 VAT ${won(fee.vat_total)}는 매입세액이라 공헌이익에서 빼지 않고 부가세 화면에서 한 번만 잡아요.</p>
+
+      <h3 class="cmv2-h3">광고비 - 두 값을 따로</h3>
+      ${adsHtml(r.ads)}
+
+      ${r.cost_fallback && r.cost_fallback.length ? `<h3 class="cmv2-h3">현재 상품 원가로 계산한 판매 ${chip("COST_UNCONFIRMED")} <small>판매일 원가 이력·판매 행 원가 없음 - 이 달은 확정할 수 없어요</small></h3>
+        <div class="table-wrap"><table class="cmv2-lines cmv2-two"><tbody>
+          ${r.cost_fallback.map(f => `<tr><th scope="row">${esc(f.product_code)} <small>${fmt(f.rows)}줄 · ${fmt(f.qty)}개</small></th><td class="num">${won(f.amount)}</td></tr>`).join("")}
+        </tbody></table></div>` : ""}
+
+      ${r.mp_unregistered && r.mp_unregistered.length ? `<h3 class="cmv2-h3">등록되지 않은 비용 ${chip("COST_UNREGISTERED")}</h3>
+        <ul class="cmv2-list">${r.mp_unregistered.map(u => `<li>${esc(u.product_code)} · ${esc(u.label)} · ${fmt(u.orders)}건 ${fmt(u.qty)}개 - 금액을 몰라 빼지 않았어요(0원 확정 아님)</li>`).join("")}</ul>` : ""}
+
+      <div class="cmv2-ref">
+        <h3 class="cmv2-h3">반품 원가환입 <small>WING 근거 + 승인 수량만 반영</small></h3>
+        <p>승인 반영 <b>${won(rec.confirmed || 0)}</b> (${fmt((rec.applied || []).length)}건) · 남은 후보 ${won(rec.pending || 0)} ${chip("RECOVERY_CANDIDATE")} · 승인 대기 ${fmt((rec.proposals_pending || []).length)}건
+          ${(rec.invalid || []).length ? ` · ${chip("COST_UNCONFIRMED", { text: "확인 필요" })} 정산 원본과 맞지 않는 승인 기록 ${fmt(rec.invalid.length)}건(반영 안 함)` : ""}</p>
+        <p class="cmv2-note">반품 재판매 판매분 원가 ${won(rec.candidate_amount || 0)}${(rec.candidates || []).length ? ` (${rec.candidates.map(c => `${esc(c.vendor_item_id)} ${fmt(c.qty)}개`).join(" · ")})` : ""}는 참고 시나리오 - 공헌이익 미반영.</p>
+        ${recovery && global.CmRecovery ? global.CmRecovery.panelHtml(recovery) : ""}
+      </div>
+
+      ${cohort ? `<details class="cmv2-cohort"><summary>코호트(원주문월 기준) - 분석용 · 메인 공헌이익과 섞지 않음</summary>
+        <p>${esc(month)} 주문의 취소를 원주문월에 붙이면 <b class="${tone(cohort.cm)}">${won(cohort.cm)}</b> (순매출 ${won(cohort.revenue)} · 취소 ${fmt(cohort.cancel.qty)}개).
+          ${esc(String(cur.COHORT.as_of))}까지 처리된 취소 기준이라 이후 취소로 계속 바뀌어요.</p></details>` : ""}
+
+      ${cd ? `<aside class="cmv2-coupang" aria-label="쿠팡 정산 화면 참고 금액">
+        <h3 class="cmv2-h3">쿠팡 정산 화면 표시 이익 <small>참고 · 공헌이익 아님</small></h3>
+        <p><b>${won(cd.amount)}</b> = 환불 반영 판매액 ${won(cd.sales_with_refund)} − 쿠팡 차감 ${won(cd.deductions)}</p>
+        <p class="cmv2-note">쿠팡이 할인·수수료·광고·물류·구독을 뺀 뒤의 금액이에요(부가세 포함, 상품원가 미반영). 공헌이익과 다른 지표라 비교하지 않아요.</p>
+      </aside>` : ""}
+    </section>`;
+  }
+
+  /** 대시보드 공헌이익 칸 아래에 붙는 한 줄 요약 */
+  function dashboardHtml(cur, prod) {
+    if (!cur || cur.error || !cur.MAIN) return "";
+    const main = cur.MAIN;
+    const cmp = prod ? compare(main, prod) : null;
+    return `<div class="cmv2-dash" role="note" aria-label="정산자료 기준 새 공헌이익(시험 표시)">
+      <span class="cmv2-dash-label">정산자료 기준 새 계산 <small>${esc(String(main.period_start).slice(5))}~${esc(String(main.period_end).slice(5))} · 시험 표시</small></span>
+      <b class="${tone(main.cm)}">${won(main.cm)}</b>
+      ${cmp ? `<small>같은 기간 운영 ${won(cmp.production)} · 차이 ${signed(cmp.diff)}</small>` : ""}
+      <span class="cmv2-dash-chips">${reasonsHtml(main.reasons)}</span>
+      <a class="dash-link" href="#/profit">차이 보기 ›</a></div>`;
+  }
+
+  global.CmSettlement = { SETTING_KEY, STATUS, isEnabled, loadCurrent, prodParts, compare, detailHtml, dashboardHtml, chip, requiredInputsHtml, refundsRefHtml };
+})(typeof window !== "undefined" ? window : globalThis);

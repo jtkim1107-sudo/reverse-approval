@@ -1710,7 +1710,11 @@ async function dashboardHydrate() {
     const fixed = fx.v.filter(f => f.active !== false);
     const cm = computeCmOfMonth(month, base.v.sales, adRowsAll(ad.v), fixed);
     const model = ErpDashboard.profitModel(cm, adMonthState(ad.v, month), { month });
-    put("dash-profit", ErpDashboard.profitHtml(model, { fmt, at }));
+    const html = ErpDashboard.profitHtml(model, { fmt, at });
+    put("dash-profit", html);
+    // 2026-09-14 새 공헌이익 한 줄 요약 - 스위치가 켜졌을 때만 같은 카드 아래에 덧붙여요(꺼지면 위 카드 그대로)
+    cmSettlementSection(month, base.v.sales, adRowsAll(ad.v), fixed, "dashboard")
+      .then(extra => { if (extra) put("dash-profit", html.replace(/<\/section>\s*$/, `${extra}</section>`)); }).catch(() => {});
   }).catch(e => fail("dash-profit", "공헌이익 · 광고비", e));
 
   // B. 오늘 해야 할 일 - 건수만 모아요(건수를 모르면 0 이 아니라 '확인 불가')
@@ -5527,6 +5531,37 @@ function computeCmOfMonth(month, sales, ads, fixed) {
            t, shipCharged, cmNet, cmRate, op, bepRate, dayRows, acc };
 }
 
+/* 2026-09-14 정산자료 기준 새 공헌이익(js/cm_settlement.js) - settings 'cm_settlement_v2' 가 {"enabled": true} 일 때만.
+   꺼져 있으면 빈 문자열(결과 표를 읽지 않음) → 운영 공헌이익 금액·항목·순서가 그대로예요.
+   비교용 운영 값은 같은 기간(새 계산의 끝날까지)으로 computeCmOfMonth 를 다시 불러 계산해요(읽기만). */
+async function cmSettlementSection(month, sales, ads, fixed, mode) {
+  if (!globalThis.CmSettlement || !(await CmSettlement.isEnabled(sb))) return "";
+  const cur = await CmSettlement.loadCurrent(sb, month);
+  let prod = null;
+  if (cur && cur.MAIN) {
+    const pe = String(cur.MAIN.period_end).slice(0, 10);
+    const m = computeCmOfMonth(month, sales.filter(r => (r.date || "") <= pe), ads.filter(a => String(a.date) <= pe), fixed);
+    const byCh = {};
+    m.rows.forEach(r => { const k = r.channel || "기타"; (byCh[k] = byCh[k] || { revenue: 0 }).revenue += cmOfSale(r, m.shipCharged).revenue; });
+    prod = CmSettlement.prodParts(m, byCh);
+  }
+  if (mode === "dashboard") return CmSettlement.dashboardHtml(cur, prod);
+  // 2026-09-16 반품 원가환입 제안·승인 칸(js/cm_recovery.js) - 스위치가 켜졌을 때만, 기록은 읽기만 하고 쓰기는 RPC 3개로만
+  let recovery = null;
+  if (globalThis.CmRecovery && cur && cur.MAIN && cur.MAIN.result) {
+    const got = await CmRecovery.load(sb, month);
+    recovery = { month, candidates: (cur.MAIN.result.cost_recovery || {}).refund_candidates || [], records: got.records, events: got.events,
+                 meta: got.meta, error: got.error, isApprover: !!(me && me.approver), userName,
+                 productCode: Object.fromEntries(erpProducts.map(p => [p.id, p.code])) };
+    CmRecovery.set(recovery, { sb, doc: document, toast, prompt: q => window.prompt(q), confirm: q => window.confirm(q), close: closeModal,
+                               modal: html => { document.getElementById("modal-root").innerHTML = html; }, sha: CmRecovery.fileSha256,
+                               b64: CmRecovery.fileBase64, rerender: () => route(),
+                               save: (blob, name) => { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name || "wing_evidence";
+                                                       document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); } });
+  }
+  return CmSettlement.detailHtml(cur, prod, { month, recovery });
+}
+
 async function viewProfit() {
   const { sales } = await loadErpBase();
   const [adSrc, fixRes] = await Promise.all([
@@ -5612,6 +5647,7 @@ async function viewProfit() {
     ? ` <small style="color:var(--text-sub)">${[...bases].map(InboundFreight.basisLabel).join("·")}</small>` : "";
 
   const noSetting = erpChannelList.filter(c => !Number(c.fee_rate)).map(c => c.name);
+  const cmv2Html = await cmSettlementSection(erpMonth, sales, ads, fixed, "detail").catch(() => "");
 
   return `
     <div class="card">
@@ -5657,7 +5693,7 @@ async function viewProfit() {
         ℹ️ 수수료율 0%: ${noSetting.map(esc).join(", ")} — 오픈마켓이라면
         <a onclick="location.hash='#/channels'" style="color:var(--brand);cursor:pointer">수수료율을 입력하세요</a>.</p>` : ""}
     </div>
-
+${cmv2Html}
     <div class="card">
       <h2>변동비 구성</h2>
       <div class="table-wrap"><table class="cm-list">
