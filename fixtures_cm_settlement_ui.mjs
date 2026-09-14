@@ -44,11 +44,13 @@ console.log("[3] 상세 카드");
 const h = C.detailHtml(cur, prod, { month: "2026-09" });
 check("새 계산·운영·차이 금액", [h.includes("₩12,350"), h.includes("₩20,500"), h.includes("−8,150")], [true, true, true]);
 check("미등록 비용은 '금액 없음'(0원 아님)", [h.includes("금액 없음"), h.includes("0원 확정 아님")], [true, true]);
-check("상태 배지 7종 문구", ["정산 진행 중", "예상", "비용 미등록", "원가환입 후보", "확정"].map(t => h.includes(t)), [true, true, true, true, true]);
+check("상태 배지 문구", ["정산 진행 중", "예상", "비용 미등록", "확정"].map(t => h.includes(t)), [true, true, true, true]);
+check("'원가환입 후보' → '회수·손실 확인 대기' 배지 이름", [C.chip("RECOVERY_CANDIDATE").includes("회수·손실 확인 대기"), h.includes("원가환입 후보")], [true, false]);
 check("정산 밖 광고비는 '청구 미확인(ACCRUED)' + 대체 안내", [h.includes("청구 미확인(ACCRUED)"), h.includes("그 금액으로 바뀌어요(더하지 않음)")], [true, true]);
 check("쿠팡 표시 이익: 별도 aside · '공헌이익 아님'", [/<aside class="cmv2-coupang"/.test(h), h.includes("공헌이익 아님")], [true, true]);
 check("코호트는 기본 접힌 details", /<details class="cmv2-cohort">/.test(h), true);
-check("원가환입: 승인 수량만 반영 · 재판매 후보는 참고 시나리오", [h.includes("WING 근거 + 승인 수량만 반영"), h.includes("참고 시나리오 - 공헌이익 미반영")], [true, true]);
+check("옛(v2.5) 결과: 자동 환입 전 계산 안내 · '승인 수량만 반영' 문구 없음 · 재판매분은 판매 원가로 다시 비용",
+      [h.includes("자동 원가환입 전(v2.5) 계산이에요"), h.includes("승인 수량만"), h.includes("판매 원가로 다시 비용")], [true, false, true]);
 check("결과 없음 안내", C.detailHtml(null, null, { month: "2026-09" }).includes("아직 없어요"), true);
 check("조회 실패 안내 · 운영 값 그대로 문구", C.detailHtml({ error: "boom" }, null, {}).includes("운영 공헌이익은 그대로"), true);
 check("대시보드 요약: 결과 없거나 실패면 빈 문자열", [C.dashboardHtml(null, prod), C.dashboardHtml({ error: "x" }, prod)], ["", ""]);
@@ -74,8 +76,7 @@ check("입력 목록: 남은 3건 · 상태 문구 · 범위(금액 미정/0~+9,
       h4.includes("? ~ 0"), h4.includes("0 ~ +9,113"), h4.includes("완료")], [true, true, true, true, true, true]);
 check("[핵심] 환불은 한 번만 뺐다는 문구 + 세부 구분은 '참고 추정'·확정 자료 아님", [h4.includes("정산취소 전체) 3건 ₩9,000은 위에서 한 번만 뺐어요"), h4.includes("참고 추정</span> 세부 구분:"),
       h4.includes("확정 자료가 아니고 원가환입 근거로 쓰지 않아요")], [true, true, true]);
-check("원가환입 요약: 승인 반영 · 승인 대기 · 확인 필요(정산 원본과 불일치)", [h4.includes("승인 반영 <b>₩8,500</b> (1건)"), h4.includes("승인 대기 1건"), h4.includes("맞지 않는 승인 기록 1건")],
-      [true, true, true]);
+check("정산 원본과 맞지 않는 회수 확인 기록 1건은 반품 손실 근거로 안 씀(확인 필요)", h4.includes("맞지 않는 회수 확인 기록 1건 - 반품 손실 근거로 쓰지 않았어요"), true);
 check("원가환입 제안 칸은 CmRecovery 가 없으면 그리지 않음(표시 파일은 쓰기 없음)", h4.includes('id="cmr"'), false);
 console.log("[5] v2.5 비용 출처 · 확정/잠정 상태");
 const r5 = { ...r, lines: [
@@ -122,5 +123,25 @@ check("[핵심] 계산 시각 UTC 12:24 → 2026-09-14 21:24 KST", [h6b.includes
 check("[핵심] 쿠팡 '이익' = '상품원가 차감 전 쿠팡 정산 잔액'(공헌이익 아님)", [h6b.includes("상품원가 차감 전 쿠팡 정산 잔액"), h6b.includes("표시 이익")], [true, false]);
 check("판매자배송 택배비·포장비: 상품원가에 포함 0원 · 대표 확정 · 확정", [h6b.includes("상품원가에 포함 · 별도 0원"), h6b.includes("4건 · 5개"),
       h6b.includes('<span class="cmv2-src">대표 확정</span>')], [true, true, true]);
+console.log("[7] 취소·반품 원가환입(v2.7) - 자동 환입액 · 실제 회수 확인 수량 · 반품 손실 · 확인 대기(잠정)");
+const rc7 = { confirmed: 181500, auto_rows: 21, auto_qty: 25, recovered_qty: 0, confirmed_rows: 0, loss: 0, check_pending_rows: 21, check_pending_qty: 25,
+              check_pending_amount: 181500, check_needed: [], invalid: [], candidates: [] };
+const r7 = { ...r, cost_recovery: rc7, lines: [{ code: "RECOVERY_CONFIRMED", label: "+ 취소·반품 원가환입(자동 · 환불 수량 × 원판매 원가)", amount: 181500,
+             status: "RECOVERY_CANDIDATE", source: "정산파일 · ERP", orders: 21, qty: 25 }] };
+const h7 = C.detailHtml({ ...cur, MAIN: { ...cur.MAIN, result: r7 } }, prod, { month: "2026-08" });
+check("[핵심] 네 값 따로: 자동 원가환입액 ₩181,500(21건 · 25개) · 실제 회수 확인 0개 · 반품 손실 ₩0 · 확인 대기 25개(원가 ₩181,500)",
+      [h7.includes("자동 원가환입액"), h7.includes("₩181,500 <small>21건 · 25개</small>"), h7.includes("실제 회수 확인 수량"), h7.includes("0개 <small>확인 완료 0건</small>"),
+       h7.includes("반품 손실 <small>"), h7.includes("25개 <small>원가 ₩181,500 · 손실 우선 0원</small>")], [true, true, true, true, true, true]);
+check("[핵심] 확인 전 금액은 잠정 · 원가환입 줄 상태 '잠정 회수·손실 확인 대기' · 최대 손실 안내",
+      [h7.includes('<span class="cmv2-prov">잠정</span> 회수·손실 확인 전 금액이에요'), h7.includes("최대 −₩181,500"),
+       (h7.split("<tr").find(x => x.includes("+ 취소·반품 원가환입(자동 · 환불")) || "").includes('<span class="cmv2-prov">잠정</span>')], [true, true, true]);
+const h7c = C.detailHtml({ ...cur, MAIN: { ...cur.MAIN, result: { ...r7, cost_recovery: { ...rc7, recovered_qty: 22, confirmed_rows: 21, loss: 25500, check_pending_rows: 0,
+             check_pending_qty: 0, check_pending_amount: 0 } } } }, prod, { month: "2026-08" });
+check("확인 완료 뒤: 회수 22개 · 반품 손실 −₩25,500 · 잠정 안내 없음", [h7c.includes("22개 <small>확인 완료 21건</small>"), h7c.includes("−₩25,500"), h7c.includes("회수·손실 확인 전 금액이에요")],
+      [true, true, false]);
+const cmp7 = C.compare({ ...cur.MAIN, result: { ...r, cost_recovery: { ...rc7, loss: 25500 }, cm: r.cm + 181500 - 25500 } }, prod);
+check("운영 비교: '취소·반품 원가환입(자동)' +181,500 · '반품 손실' −25,500 · 반올림 없음",
+      [cmp7.items.find(x => x.label === "취소·반품 원가환입(자동)")?.amount, cmp7.items.find(x => x.label === "반품 손실")?.amount, cmp7.items.some(x => x.label === "반올림")],
+      [181500, -25500, false]);
 console.log(`\n${n - fail}/${n} 통과`);
 process.exit(fail ? 1 : 0);

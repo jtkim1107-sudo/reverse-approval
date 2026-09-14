@@ -8,7 +8,8 @@
  *   · 메인 = 취소 처리월 기준. 코호트(원주문월)는 접힌 분석 칸에만 - 메인 숫자와 섞지 않아요.
  *   · 쿠팡 수익 현황의 '이익'(상품원가 차감 전 쿠팡 정산 잔액 · 부가세 포함)은 별도 참고 칸에만, 공헌이익이라 부르지 않아요.
  *   · 2026-09-16 환불은 정산취소 전체를 한 줄로 한 번만. 주문 취소/반품 나눔은 참고 추정 - 저장된 확정 자료 아님.
- *     반품 원가환입은 WING 근거 + 승인 수량만 반영(제안·승인 화면은 js/cm_recovery.js). 확정 자료 입력 목록을 카드 위쪽에 보여 줘요.
+ *     취소·반품 원가는 환불 때 원판매 원가를 자동 환입(v2.7). 회수 확인 기록(js/cm_recovery.js)이 승인되면 미회수분만 반품 손실,
+ *     확인 전은 '회수·손실 확인 대기'(손실 우선 0원 · 잠정). 확정 자료 입력 목록을 카드 위쪽에 보여 줘요.
  *   · 2026-09-14 v2.5 계산 내역 줄마다 출처(API · 정산파일 · ERP · 대표 확정 · 수동 입력)와 확정/잠정 상태. 취소·반품 세부 구분은 '참고 추정'.
  *   · 2026-09-14 화면 명칭(쿠팡 수익 현황과 같게): 입고비 → 입출고비, 풀필먼트비 → 배송비 · 쿠팡 '이익' → 상품원가 차감 전 쿠팡 정산 잔액 ·
  *     계산 시각은 저장 시각(UTC)을 Asia/Seoul 로 바꿔 KST 로. 저장된 결과는 그대로 두고 보여 줄 때만 이름을 바꿔요.
@@ -42,7 +43,7 @@
     COST_UNREGISTERED: { kind: "check", text: "비용 미등록" },
     VAT_UNCONFIRMED: { kind: "check", text: "VAT 미확인" },
     COST_UNCONFIRMED: { kind: "check", text: "원가 미확정" },
-    RECOVERY_CANDIDATE: { kind: "approval", text: "원가환입 후보" },
+    RECOVERY_CANDIDATE: { kind: "approval", text: "회수·손실 확인 대기" },
     ACCRUED: { kind: "check", text: "청구 미확인(ACCRUED)" },
     NOTICE_MISSING: { kind: "check", text: "프로모션 공지 미확인" },
     BILLING_UNCONFIRMED: { kind: "check", text: "청구 미확인(ACCRUED)" },
@@ -105,7 +106,8 @@
       ["로켓그로스 월 비용(입출고·배송·보관·세이버)", -r.monthly_costs.total],
       ["광고비: 집행액 → 실제 청구액", -(a.cm_amount - prod.ads)],
       ["입고 트럭 운송비", -((r.inbound_freight || 0) - (prod.inFreight || 0))],
-      ["반품 원가환입(승인 수량)", r.cost_recovery.confirmed || 0],
+      ["취소·반품 원가환입(자동)", r.cost_recovery.confirmed || 0],
+      ["반품 손실", -(r.cost_recovery.loss || 0)],
       ["판매자배송 취소·반품(조회 자료)", (r.mp_refunds && r.mp_refunds.supply) || 0],
     ].map(([label, amount]) => ({ label, amount }));
     const diff = r.cm - prod.cmNet;
@@ -267,10 +269,18 @@
         <ul class="cmv2-list">${r.mp_unregistered.map(u => `<li>${esc(u.product_code)} · ${esc(u.label)} · ${fmt(u.orders)}건 ${fmt(u.qty)}개 - 금액을 몰라 빼지 않았어요(0원 확정 아님)</li>`).join("")}</ul>` : ""}
 
       <div class="cmv2-ref">
-        <h3 class="cmv2-h3">반품 원가환입 <small>WING 근거 + 승인 수량만 반영</small></h3>
-        <p>승인 반영 <b>${won(rec.confirmed || 0)}</b> (${fmt((rec.applied || []).length)}건) · 남은 후보 ${won(rec.pending || 0)} ${chip("RECOVERY_CANDIDATE")} · 승인 대기 ${fmt((rec.proposals_pending || []).length)}건
-          ${(rec.invalid || []).length ? ` · ${chip("COST_UNCONFIRMED", { text: "확인 필요" })} 정산 원본과 맞지 않는 승인 기록 ${fmt(rec.invalid.length)}건(반영 안 함)` : ""}</p>
-        <p class="cmv2-note">반품 재판매 판매분 원가 ${won(rec.candidate_amount || 0)}${(rec.candidates || []).length ? ` (${rec.candidates.map(c => `${esc(c.vendor_item_id)} ${fmt(c.qty)}개`).join(" · ")})` : ""}는 참고 시나리오 - 공헌이익 미반영.</p>
+        <h3 class="cmv2-h3">취소·반품 원가환입 <small>환불 때 원판매 원가 자동 환입 · 회수 확인 뒤 미회수분만 반품 손실</small></h3>
+        ${rec.auto_qty == null ? `<p class="cmv2-note">이 결과는 자동 원가환입 전(v2.5) 계산이에요 - 다음 계산부터 자동 원가환입·회수 확인이 반영돼요.</p>` : `
+        <dl class="cmv2-ads cmv2-recov">
+          <div><dt>자동 원가환입액 <small>환불 수량 × 원판매 원가</small></dt><dd>${won(rec.confirmed || 0)} <small>${fmt(rec.auto_rows)}건 · ${fmt(rec.auto_qty)}개</small></dd></div>
+          <div><dt>실제 회수 확인 수량 <small>승인된 회수 확인 기록</small></dt><dd>${fmt(rec.recovered_qty)}개 <small>확인 완료 ${fmt(rec.confirmed_rows)}건</small></dd></div>
+          <div><dt>반품 손실 <small>(환불 − 회수) × 원판매 원가</small></dt><dd>${won(-(rec.loss || 0))}</dd></div>
+          <div><dt>회수·손실 확인 대기 ${rec.check_pending_qty > 0 ? chip("RECOVERY_CANDIDATE") : ""}</dt><dd>${fmt(rec.check_pending_qty)}개 <small>원가 ${won(rec.check_pending_amount || 0)} · 손실 우선 0원</small></dd></div>
+        </dl>
+        ${rec.check_pending_qty > 0 ? `<p class="cmv2-note"><span class="cmv2-prov">잠정</span> 회수·손실 확인 전 금액이에요. 확인되면 미회수분만 반품 손실로 빠져요(전량 미회수면 최대 ${won(-(rec.check_pending_amount || 0))}).</p>` : ""}
+        ${(rec.check_needed || []).length ? `<p class="cmv2-note">${chip("COST_UNCONFIRMED", { text: "확인 필요" })} 원주문·원판매 원가를 찾지 못한 취소·반품 ${fmt(rec.check_needed.length)}건은 환입하지 않았어요.</p>` : ""}`}
+        ${(rec.invalid || []).length ? `<p class="cmv2-note">${chip("COST_UNCONFIRMED", { text: "확인 필요" })} 정산 원본과 맞지 않는 회수 확인 기록 ${fmt(rec.invalid.length)}건 - 반품 손실 근거로 쓰지 않았어요.</p>` : ""}
+        ${(rec.candidates || []).length ? `<p class="cmv2-note">반품 재판매 판매분(${rec.candidates.map(c => `${esc(c.vendor_item_id)} ${fmt(c.qty)}개`).join(" · ")})은 환불 때 원가를 환입했으니 판매 원가로 다시 비용이에요.</p>` : ""}
         ${recovery && global.CmRecovery ? global.CmRecovery.panelHtml(recovery) : ""}
       </div>
 

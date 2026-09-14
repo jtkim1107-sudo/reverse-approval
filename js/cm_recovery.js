@@ -1,8 +1,12 @@
 /* cm_recovery.js
  * -------------------------------------------------------------------------
  * 2026-09-16 반품 원가환입 - 제안 · 승인 · 승인 취소 화면 (새 공헌이익 스위치가 켜졌을 때만 공헌이익 카드 안에 나와요)
+ * 2026-09-17 의미 변경(v2.7 · cm4): 원판매 원가는 환불 때 계산이 자동 환입해요. 이 화면은 '회수·손실 확인' 기록이에요.
+ *   · 기록 = 승인된 실제 회수 수량(0개 ~ 환불 수량, 0개도 정상 확인 결과). 승인되면 (환불 − 회수) × 원판매 원가가 반품 손실.
+ *   · 출고 전 취소(WING 주문 취소)는 재입고 없이 처리 완료 - 환불 수량 전량으로만 기록(손실 0).
+ *   · 기록이 없으면 '회수·손실 확인 대기'(손실 우선 0원 · 잠정). 확인 기록이 있는 행은 다시 기록하지 않고, 고치려면 승인 취소 뒤 다시.
  *
- *   · 후보 = 새 계산 결과의 정산취소 행(주문·옵션·환불일). 후보만으로는 공헌이익이 바뀌지 않아요.
+ *   · 대상 = 새 계산 결과의 정산취소 행(주문·옵션·환불일).
  *   · 제안(직원) = WING 취소·반품 번호·상태·재입고 수량 + 근거 파일. 파일은 ERP DB 에 보관(fn_upload_cm_evidence_file - 해시는 DB 가 계산),
  *     브라우저 해시와 DB 해시가 다르면 제안하지 않아요. 직원은 자기가 올린 파일의 해시·메타정보만 보고, 다시 내려받지는 못해요.
  *   · SHA-256 은 '올린 뒤 바뀌지 않았다(업로드 후 무결성)'만 확인해요 - WING 에서 받은 원본이라는 증명이 아니에요.
@@ -66,19 +70,23 @@
     const bad = [];
     const qty = Number(f.qty);
     const rem = remaining(c, records || []);
-    if (!Number.isInteger(qty) || qty < 1) bad.push("환입 수량은 1 이상 정수");
+    const active = (records || []).filter(r => keyOf(r) === keyOf(c) && (r.status === "PENDING_APPROVAL" || r.status === "APPROVED"));
+    if (active.length) bad.push("이미 회수 확인 기록(승인 대기·승인)이 있어요 - 고치려면 승인 취소 뒤 다시 기록");
+    if (f.qty === "" || f.qty == null || !Number.isInteger(qty) || qty < 0) bad.push("실제 회수 수량은 0 이상 정수(0개도 확인 결과로 기록)");
     else if (qty > rem) bad.push(`남은 수량 ${fmt(rem)}개보다 많아요(중복·초과 불가)`);
+    if (f.evidence_type === "WING_CANCEL" && Number.isInteger(qty) && qty !== Number(c.refund_qty || 0))
+      bad.push(`출고 전 취소는 환불 수량 전량(${fmt(c.refund_qty)}개)으로만 처리 완료해요`);
     if (!TYPE_LABEL[f.evidence_type]) bad.push("WING 에서 확인한 유형(주문 취소/반품)을 골라 주세요");
     if (String(f.wing_ref || "").trim().length < 4) bad.push("WING 취소·반품 번호");
     if (String(f.wing_status || "").trim().length < 2) bad.push("WING 처리 상태(예: 반품완료)");
     if (f.evidence_type === "WING_RETURN") {
       const rs = Number(f.wing_restock_qty);
       if (!(rs >= 0) || f.wing_restock_qty === "" || f.wing_restock_qty == null) bad.push("WING 재입고(재판매 가능) 수량");
-      else if (qty > rs) bad.push("재입고 수량보다 많이 되돌릴 수 없어요");
+      else if (qty > rs) bad.push("재입고 수량보다 많이 회수로 기록할 수 없어요");
     }
     if (String(f.source_file || "").trim().length < 3 || !HEX64.test(String(f.source_sha256 || ""))) bad.push("WING 원본 파일(이름·SHA-256)");
     if (String(f.reason || "").trim().length < 2) bad.push("사유");
-    if (c.unit_cost == null) bad.push("원주문 판매일 원가를 몰라 제안할 수 없어요");
+    if (c.unit_cost == null) bad.push("원판매 당시 원가를 몰라 기록할 수 없어요(확인 필요)");
     return bad;
   }
 
@@ -93,24 +101,45 @@
     };
   }
 
+  /** 정산취소 행의 회수·손실 확인 상태(DB 기록 기준) - WAIT(확인 대기) · PENDING(승인 대기) · DONE(확인 완료) */
+  function rowState(c, records) {
+    const mine = (records || []).filter(r => keyOf(r) === keyOf(c));
+    const appr = mine.filter(r => r.status === "APPROVED"), pend = mine.filter(r => r.status === "PENDING_APPROVAL");
+    const refund = Number(c.refund_qty || 0);
+    if (appr.length) {
+      const pre = appr.some(r => r.evidence_type === "WING_CANCEL");
+      const rec = appr.reduce((s, r) => s + Number(r.qty || 0), 0);
+      return { kind: "DONE", preship: pre, recovered: pre ? refund : rec, loss: pre ? 0 : Math.max(refund - rec, 0) };
+    }
+    if (pend.length) return { kind: "PENDING", recovered: pend.reduce((s, r) => s + Number(r.qty || 0), 0) };
+    return { kind: "WAIT" };
+  }
+
+  function stateHtml(st, c) {
+    if (st.kind === "DONE") return st.preship ? `${chip("처리 완료", "ok")} <small>출고 전 취소 · 손실 0</small>`
+      : `${chip("확인 완료", "ok")} <small>회수 ${fmt(st.recovered)}개 · 손실 ${fmt(st.loss)}개${c.unit_cost != null ? ` ${won(st.loss * c.unit_cost)}` : ""}</small>`;
+    if (st.kind === "PENDING") return `${chip("승인 대기", "approval")} <small>회수 ${fmt(st.recovered)}개로 기록</small>`;
+    return c.unit_cost == null ? chip("확인 필요", "check") : `${chip("회수·손실 확인 대기", "approval")} <small>손실 우선 0원 · 잠정</small>`;
+  }
+
   function chip(text, kind) {
     const UI = global.ErpUi;
     return UI && UI.badge ? UI.badge(kind, { text, small: true }) : `<span class="erp-badge erp-badge--sm">${esc(text)}</span>`;
   }
 
-  /** 공헌이익 카드 안 원가환입 칸 - state = {month, candidates(계산 결과 refund_candidates), records, events, isApprover, productCode(id→code)} */
+  /** 공헌이익 카드 안 회수·손실 확인 칸 - state = {month, candidates(계산 결과 refund_candidates), records, events, isApprover, productCode(id→code)} */
   function panelHtml(st) {
     const recs = st.records || [], cands = st.candidates || [];
     const code = id => (st.productCode && st.productCode[id]) || "";
-    const open = cands.map((c, i) => ({ c, i, rem: remaining(c, recs) }));
+    const open = cands.map((c, i) => ({ c, i, rem: remaining(c, recs), st: rowState(c, recs) }));
     const evBy = {};
     (st.events || []).forEach(e => { (evBy[e.recovery_id] = evBy[e.recovery_id] || []).push(e); });
-    const row = ({ c, i, rem }) => `<tr>
+    const row = ({ c, i, st }) => `<tr>
         <td>${esc(c.refund_date)}</td><td><code>${esc(c.order_id)}</code><br><small>${esc(c.option_id)} · ${esc(code(c.product_id))}</small></td>
         <td class="num">${fmt(c.refund_qty)}</td><td class="num">${c.unit_cost == null ? "모름" : won(c.unit_cost)}</td>
         <td><small>${esc(c.est_label || "")}</small></td>
-        <td class="num">${fmt(rem)}</td>
-        <td>${rem > 0 ? `<button class="btn sm secondary" onclick="CmRecovery.openPropose(${i})">원가환입 제안</button>` : "—"}</td></tr>`;
+        <td>${stateHtml(st, c)}</td>
+        <td>${st.kind === "WAIT" && c.unit_cost != null ? `<button class="btn sm secondary" onclick="CmRecovery.openPropose(${i})">회수 확인 기록</button>` : "—"}</td></tr>`;
     const meta = st.meta || {};
     const who = id => (st.userName ? st.userName(id) : "") || "—";
     const recRow = r => {
@@ -125,16 +154,18 @@
         <td>${esc(TYPE_LABEL[r.evidence_type] || r.evidence_type)} <small>${esc(r.wing_ref)} · ${esc(r.wing_status)}${r.wing_restock_qty != null ? ` · 재입고 ${fmt(r.wing_restock_qty)}개` : ""}</small>
           <br><small>${m ? `${esc(m.file_name)} · ${kb(m.byte_size)} · ${esc(who(m.uploaded_by))} ${esc(dt(m.uploaded_at).slice(5))}` : "근거 파일 정보 없음(권한 밖)"} · SHA-256 <code title="${esc(r.evidence_file_sha256)}">${esc(String(r.evidence_file_sha256 || "").slice(0, 12))}…</code></small>
           ${r.integrity_checked_at ? `<br><small>업로드 후 무결성 확인(해시 일치) ${esc(dt(r.integrity_checked_at).slice(5))} · 승인자 파일 열람 ${esc(dt(r.content_reviewed_at).slice(5))}</small>` : ""}</td>
-        <td class="num">${fmt(r.qty)} / ${fmt(r.refund_qty)}</td><td class="num">${won(r.amount)}</td>
+        <td class="num">${r.evidence_type === "WING_CANCEL" ? "출고 전 취소" : `${fmt(r.qty)} / ${fmt(r.refund_qty)}`}</td>
+        <td class="num">${won(r.evidence_type === "WING_CANCEL" ? 0 : (Number(r.refund_qty) - Number(r.qty)) * Number(r.unit_cost || 0))}</td>
         <td><small>${hist}</small></td><td>${acts}</td></tr>`;
     };
     return `<div class="cmr" id="cmr">
-      <p class="cmv2-note">정산취소 행마다 WING 취소·반품 근거로 되돌릴 수량을 제안하고, 승인 권한자가 승인한 수량만 공헌이익에 들어가요.
-        후보·승인 대기는 반영하지 않아요. '주문 취소/반품(추정)'은 결제 뒤 경과일로 본 참고값이라 근거가 아니에요.</p>
-      ${open.length ? `<details class="cmr-cands"${open.some(x => x.rem > 0) && open.length <= 10 ? " open" : ""}><summary>원가환입 후보(정산취소 행) ${fmt(open.length)}건 · 남은 수량 ${fmt(open.reduce((s, x) => s + x.rem, 0))}개</summary>
-        <div class="table-wrap"><table class="cmv2-lines"><thead><tr><th>환불 처리일</th><th>주문 · 옵션 · 상품</th><th class="num">환불 수량</th><th class="num">원주문 원가</th><th>참고(추정)</th><th class="num">남은 수량</th><th></th></tr></thead>
+      <p class="cmv2-note">원판매 원가는 환불 때 이미 자동 환입했어요. 여기서는 정산취소 행마다 WING 근거로 실제 회수 수량(0개 ~ 환불 수량)을 기록하고,
+        승인되면 (환불 − 회수) × 원판매 원가가 반품 손실로 잡혀요. 기록이 없는 행은 '회수·손실 확인 대기'(손실 우선 0원 · 잠정)예요.
+        출고 전 취소는 재입고 없이 처리 완료할 수 있어요. '주문 취소/반품(추정)'은 결제 뒤 경과일로 본 참고값이라 근거가 아니에요.</p>
+      ${open.length ? `<details class="cmr-cands"${open.some(x => x.st.kind === "WAIT") && open.length <= 10 ? " open" : ""}><summary>회수·손실 확인 대상(정산취소 행) ${fmt(open.length)}건 · 확인 대기 ${fmt(open.filter(x => x.st.kind === "WAIT").length)}건 ${fmt(open.filter(x => x.st.kind === "WAIT").reduce((s, x) => s + Number(x.c.refund_qty || 0), 0))}개</summary>
+        <div class="table-wrap"><table class="cmv2-lines"><thead><tr><th>환불 처리일</th><th>주문 · 옵션 · 상품</th><th class="num">환불 수량</th><th class="num">원판매 원가</th><th>참고(추정)</th><th>회수·손실 확인</th><th></th></tr></thead>
         <tbody>${open.map(row).join("")}</tbody></table></div></details>` : `<p class="cmv2-note">이 달 정산취소 행이 없어요.</p>`}
-      ${recs.length ? `<h4 class="cmv2-h4">제안 · 승인 이력</h4><div class="table-wrap"><table class="cmv2-lines"><thead><tr><th>상태</th><th>주문 · 환불일</th><th>WING 근거</th><th class="num">수량/환불</th><th class="num">금액</th><th>이력</th><th></th></tr></thead>
+      ${recs.length ? `<h4 class="cmv2-h4">회수 확인 기록 · 승인 이력</h4><div class="table-wrap"><table class="cmv2-lines"><thead><tr><th>상태</th><th>주문 · 환불일</th><th>WING 근거</th><th class="num">실제 회수/환불</th><th class="num">반품 손실(미회수 × 원가)</th><th>이력</th><th></th></tr></thead>
         <tbody>${recs.map(recRow).join("")}</tbody></table></div>` : ""}
       ${st.error ? `<p class="cmv2-note">기록을 불러오지 못했어요: ${esc(st.error)}</p>` : ""}
     </div>`;
@@ -148,10 +179,11 @@
   /** 승인 검토 창 - 근거 파일 정보·해시·WING 번호를 보여 주고, 내려받아 연 뒤 '내용 확인'을 체크해야 승인 버튼이 켜져요 */
   function approveModalHtml(r, m, who) {
     return `<div class="modal-backdrop" onclick="if(event.target===this)closeModal()"><div class="modal cmr-approve">
-      <h3>반품 원가환입 승인 검토</h3>
+      <h3>회수·손실 확인 승인 검토</h3>
       <dl class="cmr-kv">
         <div><dt>주문 · 옵션 · 환불 처리일</dt><dd><code>${esc(r.order_id)}</code> · ${esc(r.option_id)} · ${esc(r.refund_date)}</dd></div>
-        <div><dt>되돌릴 수량 / 환불 수량 · 금액</dt><dd>${fmt(r.qty)} / ${fmt(r.refund_qty)} · ${won(r.amount)}</dd></div>
+        <div><dt>실제 회수 수량 / 환불 수량 · 반품 손실</dt><dd>${r.evidence_type === "WING_CANCEL" ? `출고 전 취소(재입고 없이 처리 완료) · 환불 ${fmt(r.refund_qty)}개 · 손실 ${won(0)}`
+          : `${fmt(r.qty)} / ${fmt(r.refund_qty)} · 손실 ${fmt(Number(r.refund_qty) - Number(r.qty))}개 × ${won(r.unit_cost)} = ${won((Number(r.refund_qty) - Number(r.qty)) * Number(r.unit_cost || 0))}`}</dd></div>
         <div><dt>WING 유형 · 번호 · 상태</dt><dd>${esc(TYPE_LABEL[r.evidence_type] || r.evidence_type)} · <b>${esc(r.wing_ref)}</b> · ${esc(r.wing_status)}${r.wing_restock_qty != null ? ` · 재입고 ${fmt(r.wing_restock_qty)}개` : ""}</dd></div>
         <div><dt>근거 파일명 · 크기</dt><dd>${m ? `${esc(m.file_name)} · ${kb(m.byte_size)}` : "—"}</dd></div>
         <div><dt>올린 사람 · 올린 시각</dt><dd>${m ? `${esc(who(m.uploaded_by))} · ${esc(dt(m.uploaded_at))}` : "—"}</dd></div>
@@ -160,8 +192,8 @@
       <p class="cmr-warn">${esc(INTEGRITY_NOTE)}</p>
       <div class="field"><button class="btn secondary" id="cmr-dl" onclick="CmRecovery.reviewDownload('${esc(r.id)}')">근거 파일 내려받기 <small>(열람 이력이 남아요)</small></button>
         <span id="cmr-dl-state" class="cmv2-note"></span></div>
-      <label class="cmr-check"><input type="checkbox" id="cmr-reviewed" disabled> 내려받은 파일을 열어 WING 취소·반품 번호(${esc(r.wing_ref)})와 수량을 직접 확인했어요</label>
-      <div class="field"><label>승인 사유 *</label><input id="cmr-approve-reason" type="text" placeholder="예: WING 반품 목록에서 번호·재입고 수량 확인"></div>
+      <label class="cmr-check"><input type="checkbox" id="cmr-reviewed" disabled> 내려받은 파일을 열어 WING 취소·반품 번호(${esc(r.wing_ref)})와 실제 회수 수량을 직접 확인했어요</label>
+      <div class="field"><label>승인 사유 *</label><input id="cmr-approve-reason" type="text" placeholder="예: WING 반품 목록에서 번호·회수(재입고) 수량 확인"></div>
       <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">닫기</button>
         <button class="btn" id="cmr-approve-go" onclick="CmRecovery.submitApprove('${esc(r.id)}')">승인</button></div></div></div>`;
   }
@@ -177,7 +209,7 @@
   async function reviewDownload(id) {
     const d = S.deps, r = S.records.find(x => x.id === id);
     if (!d || !r) return;
-    const ok = await downloadEvidence(r.evidence_file_sha256, { reason: "원가환입 승인 검토", recoveryId: id });
+    const ok = await downloadEvidence(r.evidence_file_sha256, { reason: "회수·손실 확인 승인 검토", recoveryId: id });
     if (!ok) return;
     S.reviewed[id] = true;
     const cb = d.doc.getElementById("cmr-reviewed"); if (cb) cb.disabled = false;
@@ -194,7 +226,7 @@
     if (reason.length < 2) return d.toast("승인 사유를 적어 주세요");
     const { error } = await d.sb.rpc(RPC.approve, { p_id: id, p_reason: reason, p_content_reviewed: true });
     if (error) return d.toast("승인하지 못했어요: " + (error.message || ""));
-    d.toast("승인했어요 - 다음 계산부터 공헌이익에 반영돼요");
+    d.toast("승인했어요 - 다음 계산부터 확인 완료(미회수분은 반품 손실)로 반영돼요");
     d.close(); await d.rerender();
   }
 
@@ -209,20 +241,21 @@
     if (!c || !d) return;
     const rem = remaining(c, S.records);
     d.modal(`<div class="modal-backdrop" onclick="if(event.target===this)closeModal()"><div class="modal">
-      <h3>반품 원가환입 제안</h3>
+      <h3>회수·손실 확인 기록</h3>
       <p style="font-size:12.5px;color:var(--text-sub);line-height:1.7">주문 <code>${esc(c.order_id)}</code> · 옵션 ${esc(c.option_id)} · 환불 처리 ${esc(c.refund_date)} ·
-        환불 ${fmt(c.refund_qty)}개 · 남은 ${fmt(rem)}개 · 원주문 원가 ${c.unit_cost == null ? "모름" : won(c.unit_cost)}. 승인 전에는 공헌이익에 반영하지 않아요.</p>
+        환불 ${fmt(c.refund_qty)}개 · 원판매 원가 ${c.unit_cost == null ? "모름" : won(c.unit_cost)}. 원가는 이미 자동 환입했어요 - 실제 회수 수량을 기록하면
+        승인 뒤 (환불 − 회수) × 원가가 반품 손실로 잡혀요. 승인 전에는 '회수·손실 확인 대기'로 남아요.</p>
       <div class="form-grid">
-        <div class="field"><label>WING 에서 확인한 유형 *</label><select id="cmr-type"><option value="">선택</option><option value="WING_CANCEL">주문 취소(출고 전·재고 복귀)</option><option value="WING_RETURN">반품(회수·재입고)</option></select></div>
+        <div class="field"><label>WING 에서 확인한 유형 *</label><select id="cmr-type"><option value="">선택</option><option value="WING_CANCEL">출고 전 취소(재입고 없이 처리 완료 · 환불 수량 전량)</option><option value="WING_RETURN">반품(회수 확인)</option></select></div>
         <div class="field"><label>WING 취소·반품 번호 *</label><input id="cmr-ref" type="text"></div>
         <div class="field"><label>WING 처리 상태 *</label><input id="cmr-status" type="text" placeholder="예: 취소완료 · 반품완료"></div>
-        <div class="field"><label>재입고(재판매 가능) 수량 <small>반품이면 필수</small></label><input id="cmr-restock" type="number" min="0" step="1"></div>
-        <div class="field"><label>되돌릴 수량 *</label><input id="cmr-qty" type="number" min="1" max="${rem}" step="1" value="${rem}"></div>
+        <div class="field"><label>WING 재입고 수량 <small>반품이면 필수</small></label><input id="cmr-restock" type="number" min="0" step="1"></div>
+        <div class="field"><label>실제 회수 수량 * <small>0개 ~ ${fmt(rem)}개 · 0개도 확인 결과(전량 미회수)</small></label><input id="cmr-qty" type="number" min="0" max="${rem}" step="1" value=""></div>
         <div class="field"><label>근거 파일(WING 에서 받은 취소·반품 파일) * <small>ERP 에 보관 · 5MB 이하 · 올린 뒤에는 승인 권한자만 내려받을 수 있어요</small></label><input id="cmr-file" type="file"></div>
-        <div class="field" style="grid-column:1/-1"><label>사유 *</label><input id="cmr-reason" type="text" placeholder="예: WING 반품 입고 확인(재판매 가능 1개)"></div>
+        <div class="field" style="grid-column:1/-1"><label>사유 *</label><input id="cmr-reason" type="text" placeholder="예: WING 반품 입고 1개 · 1개 파손 폐기 확인"></div>
       </div>
       <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">취소</button>
-        <button class="btn" id="cmr-save" onclick="CmRecovery.submitPropose(${i})">제안 저장(승인 대기)</button></div></div></div>`);
+        <button class="btn" id="cmr-save" onclick="CmRecovery.submitPropose(${i})">회수 확인 저장(승인 대기)</button></div></div></div>`);
   }
 
   async function submitPropose(i) {
@@ -242,7 +275,7 @@
     // 2) 제안(승인 대기)
     const { error } = await d.sb.rpc(RPC.propose, { p: buildProposal(f, c) });
     if (error) return d.toast("제안하지 못했어요: " + (error.message || ""));
-    d.toast("원가환입을 제안했어요(승인 대기 - 아직 공헌이익에 반영되지 않아요)");
+    d.toast("회수 확인을 기록했어요(승인 대기 - 승인 전에는 '회수·손실 확인 대기'로 남아요)");
     d.close(); await d.rerender();
   }
 
@@ -254,7 +287,7 @@
   }
 
   /** 근거 파일 내려받기 - 승인 권한자 전용 RPC(서버가 권한·무결성 확인, 열람 이력 기록). 받은 바이트의 해시도 다시 확인해요. 성공하면 true */
-  async function downloadEvidence(sha, { reason = "원가환입 근거 확인", recoveryId = null } = {}) {
+  async function downloadEvidence(sha, { reason = "회수 확인 근거 확인", recoveryId = null } = {}) {
     const d = S.deps;
     if (!d || !S.isApprover || !HEX64.test(String(sha || ""))) return false;
     const { data, error } = await d.sb.rpc(RPC.download, { p_sha256: sha, p_reason: reason, p_recovery_id: recoveryId });
@@ -275,7 +308,7 @@
     if (!d || !r || !S.isApprover) return;
     if (kind === "approve") return openApprove(id);          // 승인은 검토 창에서만(내려받기·내용 확인 뒤)
     const what = r.status === "APPROVED" ? "승인 취소" : "무효";
-    const reason = (d.prompt(`원가환입 ${what} 사유(2자 이상)`) || "").trim();
+    const reason = (d.prompt(`회수 확인 기록 ${what} 사유(2자 이상)`) || "").trim();
     if (reason.length < 2) return d.toast("사유를 적어 주세요");
     if (!d.confirm(`${r.order_id} · ${fmt(r.qty)}개 · ${won(r.amount)} 을 ${what}할까요? 기록은 지워지지 않고 이력으로 남아요.`)) return;
     const { error } = await d.sb.rpc(RPC.void, { p_id: id, p_reason: reason });
@@ -284,7 +317,7 @@
     await d.rerender();
   }
 
-  global.CmRecovery = { RPC, INTEGRITY_NOTE, load, remaining, validateProposal, buildProposal, panelHtml, approveModalHtml, set, openPropose, submitPropose,
+  global.CmRecovery = { RPC, INTEGRITY_NOTE, load, remaining, rowState, validateProposal, buildProposal, panelHtml, approveModalHtml, set, openPropose, submitPropose,
                         openApprove, reviewDownload, submitApprove, fileSha256, fileBase64, downloadEvidence,
                         approve: id => act("approve", id), voidRec: id => act("void", id), _state: S };
 })(typeof window !== "undefined" ? window : globalThis);

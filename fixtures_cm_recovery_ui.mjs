@@ -15,7 +15,7 @@ const SHA = "ab".repeat(32), SHA2 = "cd".repeat(32);
 const cand = { order_id: "1102498108125", option_id: "95928260688", refund_date: "2026-09-02", product_id: "p1", refund_qty: 3, unit_cost: 8500,
                cost_basis: "CURRENT_MASTER", period: "2026-09-01~2026-09-06", file: "f.xlsx", file_sha256: SHA, est_label: "반품(추정)" };
 const rec = (id, status, qty, extra = {}) => ({ id, status, qty, refund_qty: 3, order_id: cand.order_id, option_id: cand.option_id, refund_date: cand.refund_date,
-  amount: qty * 8500, evidence_type: "WING_RETURN", wing_ref: "RT-" + id, wing_status: "반품완료", wing_restock_qty: 3, evidence_file_sha256: SHA, ...extra });
+  amount: qty * 8500, unit_cost: 8500, evidence_type: "WING_RETURN", wing_ref: "RT-" + id, wing_status: "반품완료", wing_restock_qty: 3, evidence_file_sha256: SHA, ...extra });
 const good = { evidence_type: "WING_RETURN", wing_ref: "RT-0009", wing_status: "반품완료", wing_restock_qty: "2", qty: "2", source_file: "wing.xlsx",
                source_sha256: SHA, reason: "반품 입고 확인" };
 const meta = { [SHA]: { sha256: SHA, file_name: "wing_returns_0902.xlsx", byte_size: 23456, uploaded_by: "u-staff", uploaded_at: "2026-09-16T08:50:00+09:00" } };
@@ -41,7 +41,8 @@ const st = { month: "2026-09", candidates: [cand], meta, userName,
   events: [{ recovery_id: "a1", event: "PROPOSED", created_at: "2026-09-16T10:00" }, { recovery_id: "a1", event: "APPROVED", reason: "입고 확인", created_at: "2026-09-16T11:00" }],
   isApprover: false, productCode: { p1: "1M1N-001-02" } };
 const hs = R.panelHtml(st), ha = R.panelHtml({ ...st, isApprover: true });
-check("후보 표: 참고(추정) · 남은 수량 · 제안 버튼", [hs.includes("반품(추정)"), hs.includes("남은 수량 1개"), hs.includes("원가환입 제안")], [true, true, true]);
+check("대상 표: 참고(추정) · 승인 기록 있는 행 = 확인 완료(회수 1 · 손실 2 ₩17,000) · 다시 기록 버튼 없음",
+      [hs.includes("반품(추정)"), hs.includes("확인 완료"), hs.includes("회수 1개 · 손실 2개 ₩17,000"), hs.includes("회수 확인 기록</button>")], [true, true, true, false]);
 check("[핵심] 직원: 승인 검토·승인 취소·내려받기 버튼 없음 / 승인자: 승인 검토·승인 취소 있음(목록에 바로 승인 버튼 없음)",
       [hs.includes("openApprove("), hs.includes("승인 취소</button>"), /downloadEvidence|reviewDownload|내려받기/.test(hs),
        ha.includes("CmRecovery.openApprove('p1')"), ha.includes("CmRecovery.voidRec('a1')"), ha.includes("CmRecovery.approve(")], [false, false, false, true, true, false]);
@@ -75,7 +76,7 @@ check("[핵심] 내려받기 전 승인 → 호출 없이 안내", [calls.length
 await R.reviewDownload("p1");
 const dlc = calls.at(-1);
 check("[핵심] 검토 중 내려받기 = 승인자 RPC(fn_download_cm_evidence_file · 해시 · 사유 · 기록 번호) · 해시 재확인 뒤 저장 · 체크 켜짐",
-      [dlc[0], dlc[1].p_sha256, dlc[1].p_reason, dlc[1].p_recovery_id, saved.at(-1), el("cmr-reviewed").disabled], ["fn_download_cm_evidence_file", SHA, "원가환입 승인 검토", "p1", "wing_returns_0902.xlsx", false]);
+      [dlc[0], dlc[1].p_sha256, dlc[1].p_reason, dlc[1].p_recovery_id, saved.at(-1), el("cmr-reviewed").disabled], ["fn_download_cm_evidence_file", SHA, "회수·손실 확인 승인 검토", "p1", "wing_returns_0902.xlsx", false]);
 const c1 = calls.length;
 await R.submitApprove("p1");
 check("내려받았어도 '내용 확인' 체크 없으면 → 호출 없이 안내", [calls.length - c1, toasts.at(-1)], [0, "파일 내용을 직접 확인했다는 체크가 필요해요"]);
@@ -99,16 +100,39 @@ check("서버 무결성 실패 → 저장 없음 · 안내에는 오류 코드�
 
 console.log("[4] 제안 - 보관 먼저, 해시가 같을 때만 제안");
 const cA = calls.length;
-R.set({ ...st, isApprover: false }, deps()); await R.submitPropose(0);
+const stW = { ...st, records: [st.records[2]] };      // 무효 기록만 있는 행 = 확인 대기(기록 가능)
+R.set({ ...stW, isApprover: false }, deps()); await R.submitPropose(0);
 check("[핵심] 제안 = 근거 파일 보관(fn_upload_cm_evidence_file) → 제안(fn_propose_cost_recovery) · 사용자 ID 칸 없음",
       [calls.slice(cA).map(c => c[0]), Object.keys(calls.at(-1)[1].p).filter(k => /_by$|uid|user/.test(k))], [["fn_upload_cm_evidence_file", "fn_propose_cost_recovery"], []]);
 const cB = calls.length;
-R.set({ ...st, isApprover: false }, deps({ serverSha: SHA2 })); await R.submitPropose(0);
+R.set({ ...stW, isApprover: false }, deps({ serverSha: SHA2 })); await R.submitPropose(0);
 check("[핵심] DB 가 계산한 해시가 브라우저 해시와 다르면 제안 안 함", [calls.slice(cB).map(c => c[0]), toasts.at(-1).includes("SHA-256 이 이 파일과 달라요")], [["fn_upload_cm_evidence_file"], true]);
-R.set({ ...st, isApprover: false }, deps({ error: "CEF_SIZE: 근거 파일은 1바이트 ~ 5MB 여야 해요" })); await R.submitPropose(0);
+R.set({ ...stW, isApprover: false }, deps({ error: "CEF_SIZE: 근거 파일은 1바이트 ~ 5MB 여야 해요" })); await R.submitPropose(0);
 check("보관 실패(크기) → 제안 없음 · 안내에는 오류 코드만", toasts.at(-1), "근거 파일을 보관하지 못했어요: CEF_SIZE");
 R.set({ ...st, records: [rec("a", "APPROVED", 3)] }, deps()); const c2 = calls.length; await R.submitPropose(0);
 check("[핵심] 남은 수량 0인데 제안 → 호출 없이 안내", [calls.length === c2, toasts.at(-1).includes("남은 수량")], [true, true]);
+console.log("[5] 회수·손실 확인(v2.7 · cm4) - 0개 · 일부 · 전부 · 출고 전 취소 · 미확인");
+check("[핵심] 실제 회수 0개(반품 · 재입고 0) → 입력 통과(0개도 확인 결과)", R.validateProposal({ ...good, qty: "0", wing_restock_qty: "0" }, cand, []), []);
+check("회수 수량 빈칸 → 막음(0 과 빈칸은 다름)", R.validateProposal({ ...good, qty: "" }, cand, []).some(x => x.includes("실제 회수 수량")), true);
+check("[핵심] 출고 전 취소는 환불 수량 전량만(2/3 막음 · 3/3 통과)",
+      [R.validateProposal({ ...good, evidence_type: "WING_CANCEL", qty: "2" }, cand, []).some(x => x.includes("환불 수량 전량")),
+       R.validateProposal({ ...good, evidence_type: "WING_CANCEL", qty: "3" }, cand, []).length], [true, 0]);
+check("이미 승인·승인 대기 기록이 있는 행은 다시 기록 막음(고치려면 승인 취소 뒤)",
+      R.validateProposal({ ...good, qty: "0", wing_restock_qty: "0" }, cand, [rec("z", "APPROVED", 0)]).some(x => x.includes("이미 회수 확인 기록")), true);
+const rs = recs => R.rowState(cand, recs);
+check("[핵심] 상태: 기록 없음 = 확인 대기 · 승인된 회수 0개 = 확인 완료(손실 3) · 서로 다른 상태",
+      [rs([]).kind, rs([rec("z", "APPROVED", 0)]), JSON.stringify(rs([])) === JSON.stringify(rs([rec("z", "APPROVED", 0)]))],
+      ["WAIT", { kind: "DONE", preship: false, recovered: 0, loss: 3 }, false]);
+check("상태: 일부 2 → 손실 1 · 전부 3 → 손실 0 · 출고 전 취소 → 처리 완료 손실 0 · 승인 대기 → PENDING",
+      [rs([rec("p", "APPROVED", 2)]).loss, rs([rec("f", "APPROVED", 3)]).loss, rs([rec("c", "APPROVED", 3, { evidence_type: "WING_CANCEL" })]), rs([rec("q", "PENDING_APPROVAL", 1)]).kind],
+      [1, 0, { kind: "DONE", preship: true, recovered: 3, loss: 0 }, "PENDING"]);
+const hw = R.panelHtml({ ...st, records: [] }), hz = R.panelHtml({ ...st, records: [rec("z", "APPROVED", 0)] });
+check("[핵심] 표: 기록 없음 = '회수·손실 확인 대기 · 손실 우선 0원 · 잠정' + '회수 확인 기록' 버튼 / 회수 0개 승인 = 확인 완료 · 손실 3개 ₩25,500",
+      [hw.includes("회수·손실 확인 대기"), hw.includes("손실 우선 0원 · 잠정"), hw.includes("회수 확인 기록</button>"), hz.includes("회수 0개 · 손실 3개 ₩25,500"),
+       hz.includes("0 / 3"), hz.includes("₩25,500")], [true, true, true, true, true, true]);
+const am = R.approveModalHtml(rec("z", "PENDING_APPROVAL", 0), meta[SHA], userName);
+check("승인 검토 창: 실제 회수 수량 / 환불 수량 · 반품 손실 = 3개 × ₩8,500 = ₩25,500", [am.includes("회수·손실 확인 승인 검토"), am.includes("0 / 3 · 손실 3개 × ₩8,500 = ₩25,500")], [true, true]);
+check("옛 문구 없음('원가환입 제안'·'승인한 수량만 공헌이익')", [R.panelHtml(st).includes("원가환입 제안"), R.panelHtml(st).includes("승인한 수량만")], [false, false]);
 const src = fs.readFileSync(new URL("./js/cm_recovery.js", import.meta.url), "utf8");
 check("[보안] 표 직접 쓰기 없음 · 근거 파일 표 직접 읽기 없음 · rpc 이름은 6개 목록에서만",
       [/\.(insert|update|upsert|delete)\(/.test(src), /from\(["']cm_evidence_files/.test(src), [...src.matchAll(/rpc\(([^,)]+)/g)].every(m => m[1].trim().startsWith("RPC.")), Object.values(R.RPC)],
