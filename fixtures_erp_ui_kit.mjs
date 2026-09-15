@@ -39,7 +39,9 @@ has(UI.decisionBadge({ decision: "AWAITING_INBOUND" }), "입고대기", "AWAITIN
 const dc = UI.decisionBadge({ decision: "DATA_CHECK", decision_check_label: "⚠️ 판매 데이터 부족" });
 check([dc.includes("확인 필요"), dc.includes("판매 데이터 부족"), dc.includes("⚠️")], [true, true, false], "DATA_CHECK → 확인 필요 + 사유(앞 이모지 정리)");
 has(UI.decisionBadge({ decision: "RESTOCK_EXCLUDED" }), "erp-badge--excluded", "RESTOCK_EXCLUDED → 재입고 제외(빨강)");
-has(UI.automationBadge({ decision: "OK", automation_blocked: false }), "자동화 정상", "자동화 정상");
+// 2026-09-15 [사용자 지시] '자동화 정상'은 자동 발주 조건이 다 갖춰졌을 때만(automation_ready) - 막힘 표시만 없다고 정상이 아님
+has(UI.automationBadge({ decision: "OK", automation_blocked: false, automation_ready: true }), "자동화 정상", "자동화 정상(자동 발주 조건 갖춤)");
+check(UI.automationBadge({ decision: "OK", automation_blocked: false }).includes("자동화 정상"), false, "막힘 표시만 없고 준비 여부를 모르면 '자동화 정상' 아님");
 has(UI.automationBadge({ decision: "ORDER_NOW", automation_blocked: true, automation_label: "물류정보 입력 필요" }), "erp-badge--logistics", "물류정보 입력 필요 = 별도 주황 배지");
 has(UI.automationBadge({ decision: "OK", automation_blocked: true, automation_label: "SKU 사용 보류" }), "erp-badge--hold", "SKU 사용 보류 배지");
 has(UI.automationBadge({ decision: "RESTOCK_EXCLUDED", automation_blocked: true }), "자동화 대상 아님", "재입고 제외 상품은 자동화 대상 아님");

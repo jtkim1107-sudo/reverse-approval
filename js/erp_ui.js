@@ -55,16 +55,31 @@
     const text = d.decision === "DATA_CHECK" ? "확인 필요" : (KINDS[kind] || {}).label || d.decision;
     const reason = d.decision === "DATA_CHECK" && d.decision_check_label
       ? String(d.decision_check_label).replace(/^⚠️?\s*/, "") : "";
-    return badge(kind, { text, reason: opts.noReason ? "" : reason, title: d.decision_reason || "" });
+    return badge(kind, { text, reason: opts.noReason ? "" : reason, title: reasonText(d.decision_reason) });
   }
 
-  /** 자동화 상태(서버 automation_*) → 배지. 재고 판단과 따로 보여줘요. */
+  /** 2026-09-15 서버 사유 문구에서 기계용 코드 접두어(MISSING_PROCUREMENT_DATA: 등)만 떼요 - 사람이 읽을 원인 문구는 그대로. */
+  function reasonText(s) {
+    return String(s || "").replace(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?:\([A-Z0-9_]+\))?:\s*/g, "");
+  }
+
+  /** 자동화 상태(서버 automation_*) → 배지. 재고 판단과 따로 보여줘요.
+   *  2026-09-15 [사용자 지시] '자동화 정상'은 자동 발주 조건(발주정보 완전·BigQuery 반영·VAT 확인·재고 판단 확정)이
+   *  다 갖춰졌을 때만(서버 automation_ready). 막힌 원인은 발주정보 없음 / 물류정보 입력 필요 / BigQuery 동기화 필요 /
+   *  VAT 확인 필요 / 발주 기준 확인 필요로 나눠요. 예전 응답(automation_ready 없음)은 자동 발주 허용·판정·물류·VAT 로 판단. */
   function automationBadge(d) {
     if (d.decision === "RESTOCK_EXCLUDED") return badge("muted", { text: "자동화 대상 아님", small: true });
-    if (!d.automation_blocked) return badge("ok", { text: "자동화 정상", small: true });
-    const label = String(d.automation_label || "자동화 막힘");
-    const kind = /물류정보/.test(label) ? "logistics" : /SKU 사용 보류/.test(label) ? "hold" : "check";
-    return badge(kind, { text: label, title: d.automation_reason || "", small: true });
+    if (d.automation_blocked) {
+      const label = String(d.automation_label || "자동화 막힘");
+      const kind = /물류정보|발주정보/.test(label) ? "logistics" : /SKU 사용 보류/.test(label) ? "hold" : "check";
+      return badge(kind, { text: label, title: d.automation_reason || "", small: true });
+    }
+    const ready = "automation_ready" in d ? d.automation_ready === true
+      : d.auto_po_allowed === true || (d.decision !== "DATA_CHECK" && d.procurement_vat_status === "CONFIRMED" && d.logistics_status === "COMPLETE");
+    if (ready) return badge("ok", { text: "자동화 정상", small: true });
+    const label = d.automation_ready_label
+      || (d.decision === "DATA_CHECK" ? "재고 판단 확인 필요" : d.procurement_vat_status && d.procurement_vat_status !== "CONFIRMED" ? "VAT 확인 필요" : "자동화 확인 필요");
+    return badge("check", { text: label, title: "자동 발주 조건이 아직 갖춰지지 않았어요", small: true });
   }
 
   /** 요약 카드 한 줄. items = [{ label, value, kind, sub, active, onclick, title }] */
@@ -266,7 +281,7 @@
   const isBusy = key => inflight.has(key);
 
   root.ErpUi = {
-    KINDS, DECISION_KIND, esc, badge, decisionBadge, automationBadge, summaryHtml, displayName, nameCellHtml,
+    KINDS, DECISION_KIND, esc, badge, decisionBadge, automationBadge, reasonText, summaryHtml, displayName, nameCellHtml,
     relationHtml, toggleRow, toggleCard, run, confirmModal, infoModal, isBusy, _answer,
   };
 })(typeof window !== "undefined" ? window : globalThis);

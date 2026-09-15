@@ -4182,14 +4182,17 @@ function openInventoryDecisionDetail(productId, vendorItemId = "") {
           </p>` : ""}
         ${isBase ? `<p style="font-size:12.5px;color:var(--text-sub);margin:0 0 8px">📦 이 상품은 다른 구성(세트)과 재고를 나누는 공유재고 기준상품이에요.</p>` : ""}
         ${typeof ResaleReturn !== "undefined" ? ResaleReturn.resaleNoticeHtml(d) : ""}
-        <p style="font-size:13px">${esc(d.decision_reason || "")}</p>
+        <p style="font-size:13px">${esc(globalThis.ErpUi?.reasonText ? ErpUi.reasonText(d.decision_reason) : (d.decision_reason || ""))}</p>
         ${d.decision === "RESTOCK_EXCLUDED" ? `<p style="font-size:12.5px;background:var(--gray-bg);border-radius:8px;padding:8px 10px;margin:0 0 8px">
             ⛔ 재입고 제외 SKU${d.vendor_item_id ? ` <code>${esc(d.vendor_item_id)}</code>` : ""} - 추천 발주수량을 내지 않고 자동 발주·입고 초안 대상에서 빠져요.
             상품과 과거 판매·재고·입고 이력은 그대로예요. 해제는 발주·물류 정보 화면에서 승인 권한자가 할 수 있어요.
             ${d.underlying_decision ? `<br><span style="color:var(--text-sub)">제외하지 않았다면: ${esc((INVENTORY_DECISION_META[d.underlying_decision] || { label: d.underlying_decision }).label)}</span>` : ""}</p>` : ""}
         ${d.automation_blocked && d.decision !== "RESTOCK_EXCLUDED" ? `<p style="font-size:12.5px;color:var(--amber);background:var(--amber-bg);border-radius:8px;padding:8px 10px;margin:0 0 8px">
             ⚠️ 자동화: ${esc(d.automation_label || "")} - ${esc(d.automation_reason || "")}<br>
+            ${(d.automation_flags || []).length > 1 ? `함께 막힌 이유: ${(d.automation_flags || []).slice(1).map(f => esc(f.reason || f.status)).join(" · ")}<br>` : ""}
             <span style="color:var(--text-sub)">재고 판단(${esc(inventoryDecisionLabel(d))})은 그대로예요. 정식 추천 발주수량·자동 발주·WING 입고 초안만 막혀요.</span></p>` : ""}
+        ${!d.automation_blocked && d.automation_ready === false && d.decision !== "RESTOCK_EXCLUDED" ? `<p style="font-size:12.5px;color:var(--amber);background:var(--amber-bg);border-radius:8px;padding:8px 10px;margin:0 0 8px">
+            ⚠️ 자동화: ${esc(d.automation_ready_label || "자동화 확인 필요")} - 자동 발주 조건이 아직 갖춰지지 않아 자동 발주·WING 입고 초안을 만들지 않아요.</p>` : ""}
 
         <h4 style="font-size:13px;margin:14px 0 4px">현재</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
@@ -4229,7 +4232,7 @@ function openInventoryDecisionDetail(productId, vendorItemId = "") {
         ${d.reference_shortage_ea != null && !d.recommended_order_qty_ea ? `<p style="font-size:12px;color:var(--text-sub);margin-top:4px">${esc(d.reference_shortage_note || "")}</p>` : ""}
 
         ${d.recommended_order_qty_ea && invVatOf(d) && ProcurementInput.vatNeedsAck(invVatOf(d).status) ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ 참고용 추천 - ${esc(invVatOf(d).reason)}. 자동 발주안에는 들어가지 않아요. 경고를 확인한 뒤 직접 넣고 결재를 올려야 해요.</p>` : ""}
-        ${d.data_quality_flags && d.data_quality_flags.length ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ ${d.data_quality_flags.map(esc).join(" · ")}</p>` : ""}
+        ${d.data_quality_flags && d.data_quality_flags.length ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ ${d.data_quality_flags.map(f => esc(globalThis.ErpUi?.reasonText ? ErpUi.reasonText(f) : f)).join(" · ")}</p>` : ""}
         <p style="font-size:11px;color:var(--text-sub);margin-top:8px">계산시각: ${d.calculated_at || "-"}</p>
 
         <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">닫기</button></div>
