@@ -382,7 +382,6 @@
         <div><dt>반품 손실</dt><dd>${won(-(rec.loss || 0))}</dd></div>` : ""}
       </dl>
       <div class="cmv2-dash-chips">${reasonsHtml(main.reasons)}</div>
-      <small class="cmv2-dmain-meta">계산 ${esc(kstTime(main.created_at))}${main.id != null ? ` · 결과 #${esc(main.id)}` : ""} · 출처 ${sourceLine(r)}</small>
     </div>`;
   }
 

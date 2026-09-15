@@ -89,7 +89,7 @@ let s = D.salesModel(summary, "2026-09-13", forDate);
 check([s.shown, s.isToday, s.prevDate, s.dod.toFixed(1)], ["2026-09-12", false, "2026-09-11", "-37.1"], "오늘 값이 없으면 최신 확정일 · 전일 = 바로 앞 수집일");
 check(calls.every(c => c[1] && c[1].rgOnly === true), true, "일 매출은 forDate(로켓그로스) - 기존 오늘 카드와 같은 호출");
 h = plain(D.salesHtml(s, { fmt, at: NOW }));
-check(["최신 확정일 기준 09-12", "₩289,800", "₩311,700", "₩21,900", "13개", "▼ 37.1%", "이번 달 순매출 ₩5,716,230", "로켓그로스 ₩5,018,730", "판매자배송 ₩697,500"].every(x => h.includes(x)), true,
+check(["최신 확정일 기준 09-12", "₩289,800", "₩311,700", "₩21,900", "13개", "▼ 37.1%", "이번 달 순매출 ₩5,716,230"].every(x => h.includes(x)) && !h.includes("로켓그로스 ₩5,018,730") && !h.includes("판매자배송 ₩697,500"), true,
       "순매출·전체 거래액·취소반품·주문 수량·전일 대비·이번 달 누적(최신 확정일 기준 표시)");
 s = D.salesModel({ ...summary, collected_dates: [...summary.collected_dates, "2026-09-13"] }, "2026-09-13", forDate);
 check([s.shown, s.isToday], ["2026-09-13", true], "오늘 값이 있으면 오늘");

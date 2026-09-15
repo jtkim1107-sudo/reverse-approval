@@ -188,8 +188,10 @@ check("[핵심] 조회 실패 카드: '정산자료 계산 조회 실패' · 금
       [C.noticeHtml("ERROR", { month: "2026-09", error: "timeout" }).includes("정산자료 계산 조회 실패"), /₩/.test(C.noticeHtml("ERROR", { month: "2026-09" })),
        C.noticeHtml("ERROR", { month: "2026-09" }).includes("참고값으로만")], [true, false, true]);
 const dm8 = C.dashboardMainHtml(cur8);
-check("[핵심] 대시보드 주 결과 = 상세와 같은 값·기간·상태(₩205,663 · 2026-09-01~09-13 · 잠정 · 2.39% · 결과 #7)",
-      ["₩205,663", "2026-09-01~09-13", "잠정", "2.39%", "결과 #7", "₩600,200"].map(t => dm8.includes(t)), [true, true, true, true, true, true]);
+check("[핵심] 대시보드 주 결과 = 상세와 같은 값·기간·상태(₩205,663 · 2026-09-01~09-13 · 잠정 · 2.39%)",
+      ["₩205,663", "2026-09-01~09-13", "잠정", "2.39%", "₩600,200"].map(t => dm8.includes(t)), [true, true, true, true, true]);
+check("대시보드에서 내부 계산 메타데이터 숨김",
+      [dm8.includes("결과 #7"), dm8.includes("출처 정산파일"), dm8.includes("7cee2ca102b9.json")], [false, false, false]);
 check("대시보드 제목 설명", C.dashboardMeta(cur8), "정산자료 기준 · 2026-09-01~09-13 · 잠정 · 계산 2026-09-15 07:13 KST · 결과 #7");
 // ErpDashboard.profitHtml - 정산자료 계산이 켜지면 기존 표는 접힌 '기존 계산과 비교' 안(초록 dash-up 없음), 꺼지면 기존 그대로
 vm.runInContext(fs.readFileSync(new URL("./js/erp_dashboard.js", import.meta.url), "utf8"), ctx);
@@ -200,6 +202,8 @@ const fmtK = v => Math.round(Number(v || 0)).toLocaleString("ko-KR");
 const off = Dsh.profitHtml(legacyModel, { fmt: fmtK, at: new Date("2026-09-15T07:15:00+09:00") });
 const on = Dsh.profitHtml(legacyModel, { fmt: fmtK, at: new Date("2026-09-15T07:15:00+09:00"),
   settlement: { mode: "PRIMARY", mainHtml: dm8, compareHtml: C.dashboardCompareHtml(cur8, { ...prod, cmNet: 2805650 }), meta: C.dashboardMeta(cur8) } });
+check("대시보드 공헌이익 카드의 상단 내부 메타데이터 숨김",
+      [on.includes("계산 2026-09-15 07:13 KST"), on.includes("결과 #7"), on.includes("갱신 09-15")], [false, false, false]);
 check("대시보드 꺼짐: 기존 표 그대로(₩3,077,548 초록 · 비교 칸 없음)", [off.includes("dash-up"), off.includes("₩3,077,548"), off.includes("dash-legacy")], [true, true, false]);
 check("[핵심] 대시보드 켜짐: 주 결과 ₩205,663 이 기존 값보다 먼저 · 기존 ₩3,077,548 은 접힌 '기존 계산과 비교'(참고) · 초록 없음",
       [on.indexOf("₩205,663") < on.indexOf("₩3,077,548"), /<details class="dash-legacy">/.test(on), on.includes("기존 운영 계산(참고)"), on.includes("dash-up"),

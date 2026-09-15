@@ -253,8 +253,7 @@
         <div class="dash-kpi"><span>주문 수량</span><b>${fmt(d.gross_qty)}개</b></div>
         <div class="dash-kpi"><span>전일 대비</span><b>${dod}</b><small>${m.prevDate ? `${md(m.prevDate)} ${won(m.prev.net_amount)}` : ""}</small></div>
       </div>
-      <div class="dash-month"><span>이번 달 순매출</span><b>${won(m.month.net_amount)}</b>
-        <small>로켓그로스 ${won(m.rg.net_amount)} · 판매자배송 ${won(m.mp.net_amount)} · 반영 ${esc(m.coverage)}</small></div>
+      <div class="dash-month"><span>이번 달 순매출</span><b>${won(m.month.net_amount)}</b></div>
       ${error ? `<p class="dash-stale">${badge("check", "일부 확인 필요", { small: true })} ${esc(humanize(error))}</p>` : ""}
       ${detail}` });
   }
@@ -316,7 +315,7 @@
         ${legacy}
       </details>`;
       return shellHtml({ id: "dash-profit", title: `${m.month} 공헌이익 · 광고비`, actions: link("#/profit", "상세 계산 보기"),
-        meta: `${esc(settlement.meta || "")} · 갱신 ${esc(hm(at))}`, tone: settlement.tone || null, body });
+        tone: settlement.tone || null, body });
     }
     const body = m.empty ? noDataHtml(`${m.month} 매출·광고비 기록이 아직 없어요.`) : `${table}${adRow}`;
     return shellHtml({ id: "dash-profit", title: `${m.month} 공헌이익 · 광고비`, actions: link("#/profit", "상세 계산 보기"),
