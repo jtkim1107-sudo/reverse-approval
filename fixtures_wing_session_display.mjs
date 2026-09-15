@@ -134,7 +134,8 @@ console.log("\n=== 2. 실제 만료 ===");
   const wing = m.items.filter(i => ["wing", "next"].includes(i.key));
   check(wing.length === 1 && wing[0].tone === "error" && wing[0].text === "WING 로그인 필요", "대시보드: WING 항목 하나 · 빨강", JSON.stringify(wing.map(i => [i.key, i.tone, i.text])));
   const dh = D.statusHtml(m, { at: new Date() });
-  check(dh.includes("운영 경고") && dh.includes('role="alert"') && dh.includes("dash-status--error"), "대시보드: 빨간 '운영 경고'");
+  // 2026-09-15 [사용자 지시] 문제가 있으면 제목은 '운영 확인 필요' - 실제 만료는 빨간 테두리(dash-status--error)·role=alert 로 구분
+  check(dh.includes("운영 확인 필요") && dh.includes('role="alert"') && dh.includes("dash-status--error"), "대시보드: 실제 만료 = 빨간 '운영 확인 필요'(빨간 테두리)");
   check(count(dh, "WING 로그인 필요") === 1, "대시보드: 'WING 로그인 필요' 한 번만", plain(dh));
   // 쿠키 파일이 없음 · 옛 응답(state 없음) 도 빨강(안전한 쪽)
   check(R.sessionDisplay({ ...expiredS, state: "NO_SESSION" }).kind === "expired", "NO_SESSION → 빨강");

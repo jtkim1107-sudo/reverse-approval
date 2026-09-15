@@ -1557,7 +1557,8 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
 // 쓰기 호출 없음(이동·화면 새로고침·안내 보기만 - WING 수집 버튼은 매출 화면에만, 확인창 뒤). 영역마다 따로 불러와서 하나가 실패해도 나머지는 보이고,
 // 새로고침이 실패하면 0 으로 바꾸지 않고 마지막 정상값과 오류를 같이 보여줘요.
 // 팀 목표 카드·최근 문서·제품 마스터는 아래 '다른 화면' 링크로 옮겼어요(팀 목표 축하 기록은 팀 목표 화면에서).
-const DASH_SECTIONS = [["dash-todo", "오늘 해야 할 일"], ["dash-sales", "매출 요약"], ["dash-profit", "공헌이익 · 광고비"],
+// 2026-09-15 [사용자 지시] 순서: 운영 상태(항상 맨 위) → 매출 요약 · 공헌이익 → 오늘 해야 할 일 · 재고·발주 → 입고·운송
+const DASH_SECTIONS = [["dash-sales", "매출 요약"], ["dash-profit", "공헌이익 · 광고비"], ["dash-todo", "오늘 해야 할 일"],
   ["dash-stock", "재고·발주"], ["dash-inbound", "입고·운송"]];
 let _dashGen = 0;
 const _dashLast = {};          // 영역 id → { html, at } 마지막 정상 화면
@@ -1605,8 +1606,16 @@ async function dashboardHydrate() {
     if (!slot) return;
     slot.innerHTML = html;
     if (ok) _dashLast[id] = { html, at };
+    if (id === "dash-sales") ErpDashboard.fitKpis(slot);       // 금액 칸 맞춤(글자 크기·3+2 배치만)
   };
   const fail = (id, title, e) => put(id, ErpDashboard.errorHtml(id, title, e && (e.message || e.error || String(e)), _dashLast[id]), false);
+  // 글꼴이 늦게 오거나 창 폭이 바뀌면 금액 칸을 다시 맞춰요
+  document.fonts?.ready?.then(() => { if (live()) ErpDashboard.fitKpis(document.getElementById("dash-sales-slot")); });
+  if (!globalThis.__dashKpiResize) {
+    let t = 0;
+    globalThis.__dashKpiResize = () => { clearTimeout(t); t = setTimeout(() => ErpDashboard.fitKpis(document.getElementById("dash-sales-slot")), 120); };
+    addEventListener("resize", globalThis.__dashKpiResize);
+  }
   const rows = r => { if (r.error) throw r.error; return r.data || []; };
   const settled = ps => Promise.allSettled(ps).then(rs => rs.map(r => (r.status === "fulfilled" ? { ok: true, v: r.value } : { ok: false, e: r.reason })));
 
@@ -1637,7 +1646,7 @@ async function dashboardHydrate() {
     });
     put("dash-status", ErpDashboard.statusHtml(model, { at }));
     return model;
-  }).catch(e => { fail("dash-status", "운영 상태", e); return null; });
+  }).catch(e => { fail("dash-status", "운영 상태 확인 불가", e); return null; });
 
   // E. 재고·발주 (B 의 재고 확인·물류정보 건수도 여기서)
   const stockP = settled([invP, baseP]).then(([inv, base]) => {

@@ -6,7 +6,7 @@
  *
  *   statusModel / statusHtml    A. 운영 상태(정상이면 한 줄, 문제면 원인과 이동)
  *   todoModel   / todoHtml      B. 오늘 해야 할 일(0건은 접어서 한 줄)
- *   salesModel  / salesHtml     C. 매출 요약(오늘 또는 최신 확정일)
+ *   salesModel  / salesHtml     C. 매출 요약(오늘 또는 최신 확정일) · fitKpis 금액 칸 맞춤(글자 크기·3+2 배치만)
  *   profitModel / profitHtml    D+G. 이번 달 공헌이익 · 광고비(광고비 줄은 한 번만)
  *   stockModel  / stockHtml     E. 재고·발주(위험 상품 5개)
  *   inboundModel/ inboundHtml   F. 입고·운송(가까운 일정부터)
@@ -74,7 +74,8 @@
   /** 불러오지 못함. last 가 있으면 마지막 정상값을 그대로 두고 위에 오류만 알려요(0 으로 바꾸지 않음). */
   function errorHtml(id, title, error, last) {
     const why = humanize(error) || "알 수 없는 오류";
-    if (last && last.html) {
+    // 제목 줄(dash-head)이 없는 마지막 화면(운영 상태 한 줄)은 오류를 붙일 곳이 없어 새 오류 카드로 - 조회 실패를 숨기지 않아요
+    if (last && last.html && last.html.includes('<div class="dash-head">')) {
       return last.html.replace(/(<div class="dash-head">[\s\S]*?<\/div>)/,
         `$1<div class="dash-stale" role="alert">${badge("check", "새로고침 실패", { small: true })} ${esc(why)} · 아래는 마지막 정상값(${esc(hm(last.at))})이에요</div>`);
     }
@@ -95,6 +96,7 @@
     if (lv === "warn") return { kind: "check", tone: "check", title: "WING 세션 확인 필요", reason: s.message || "" };
     return { kind: "ok", tone: "ok", title: "", reason: "" };
   };
+  const POLLER_KEYS = ["mail", "poller"];   // 실행 상태를 기록하지 않는 폴러('정보 없음'일 때만 판정 제외 - 메일 발송 실패는 그대로 확인 필요)
   const MAIL_BAD = ["MAIL_FAILED", "MAIL_SEND_UNKNOWN", "MAIL_SENT_RECORD_FAILED", "MAIL_DATA_CHECK_NEEDED", "MAIL_LEGACY_REVIEW"];
 
   /** in = { health, dataDate, today, yesterday, dayState(어제 매출 수집 이력 요약), adYesterday(광고비 어제 상태),
@@ -104,7 +106,8 @@
     const s = inp.health && inp.health.session;
     // WING 실제 인증
     if (inp.healthError || !inp.health) items.push({ key: "wing", tone: "none", text: "WING 상태 확인 불가", why: humanize(inp.healthError) || "상태 API 응답 없음" });
-    else if (!s) items.push({ key: "wing", tone: "none", text: "WING 상태 정보 없음" });
+    // 상태 API 가 실패해도 loadHealth 는 session 없이 돌아와요 - 이것도 '확인 불가'(정상 아님)
+    else if (!s) items.push({ key: "wing", tone: "none", text: "WING 상태 확인 불가", why: "WING 상태 API 응답이 없거나 실패했어요" });
     else {
       const a = s.auth || {};
       const d = sessionView(s);
@@ -180,24 +183,35 @@
 
   function statusHtml(m, { at } = {}) {
     const chip = i => `<span class="dash-status-item">${badge(i.tone, i.text, { small: true, title: i.why || "" })}${i.sub ? `<small>${esc(i.sub)}</small>` : ""}</span>`;
+    // 2026-09-15 [사용자 지시] 운영 카드는 상태와 관계없이 맨 위에 항상 - 문제가 없으면 '운영 상태' 한 줄(새로고침 유지).
+    // 상태를 확인하지 못한 항목(WING 상태 확인 불가 등)이 있으면 정상으로 보지 않고 회색 '상태 확인 필요 N건'.
+    // 입고 메일·자동입고 폴러는 원래 실행 상태를 기록하지 않아요 - 건수·정상/오류 판정에서 빼고 아래 작은 회색 글자로만.
+    const untracked = m.items.filter(i => i.tone === "none" && POLLER_KEYS.includes(i.key));
+    const note = untracked.length ? `<small class="dash-status-note">입고·자동입고 폴러 상태 기록 없음</small>` : "";
     if (!m.problems.length) {
+      const unknown = m.items.filter(i => i.tone === "none" && !untracked.includes(i));
       const okText = i => `<span class="dash-okitem${i.tone === "none" ? " dash-okitem--none" : ""}"${i.why ? ` title="${esc(i.why)}"` : ""}>${esc(i.text)}${i.sub ? ` <small>${esc(i.sub)}</small>` : ""}</span>`;
-      return `<section class="dash-status dash-status--ok" id="dash-status" aria-label="운영 상태">
-        <span class="dash-status-lead">${badge("ok", "확인된 문제 없음", { small: true, title: "정보 없음(회색) 항목은 상태를 확인할 수 없는 것이에요" })}</span>
-        <span class="dash-oklist">${m.items.map(okText).join('<span class="dash-sep" aria-hidden="true"> · </span>')}</span>
-        <small class="dash-status-at">갱신 ${esc(hm(at))}</small>
+      const lead = unknown.length
+        ? badge("none", `상태 확인 필요 ${unknown.length}건`, { small: true, title: "상태를 확인하지 못한 항목이에요 - 정상으로 보지 않아요" })
+        : badge("ok", "확인된 문제 없음", { small: true });
+      return `<section class="dash-status dash-status--${unknown.length ? "unknown" : "ok"}" id="dash-status" role="status" aria-label="운영 상태">
+        <h2 class="dash-status-title">운영 상태</h2>
+        <span class="dash-status-lead">${lead}</span>
+        <span class="dash-oklist">${[...unknown, ...m.items.filter(i => i.tone !== "none")].map(okText).join('<span class="dash-sep" aria-hidden="true"> · </span>')}</span>
+        ${note}<small class="dash-status-at">갱신 ${esc(hm(at))}</small>
         ${refreshBtn}</section>`;
     }
-    const others = m.items.filter(i => !m.problems.includes(i));
+    const others = m.items.filter(i => !m.problems.includes(i) && !untracked.includes(i));
     const guide = m.problems.some(p => p.guide);
+    // 확인할 문제가 있으면 제목은 '운영 확인 필요' - 빨강(실제 만료·실패)과 노랑(확인 필요)은 테두리·배지 색으로 나눠요
     return `<section class="card dash-status dash-status--${m.tone}" id="dash-status" role="${m.tone === "error" ? "alert" : "status"}" aria-label="운영 상태">
-      <div class="dash-head"><h2>${m.tone === "error" ? "운영 경고" : "운영 확인 필요"} <small>${m.problems.length}건</small></h2>
+      <div class="dash-head"><h2>운영 확인 필요 <small>${m.problems.length}건</small></h2>
         <div class="dash-actions">${guide ? `<button type="button" class="btn sm secondary" onclick="dashboardWingGuide()">WING 로그인 갱신 방법 보기</button>` : ""}
           ${refreshBtn}</div></div>
       <ul class="dash-problems">${m.problems.map(p => `<li>${badge(p.tone, p.text)}
         ${p.why ? `<span class="dash-why">${esc(p.why)}</span>` : ""}${p.href ? link(p.href, "해당 화면") : ""}
         ${p.detail ? `<div class="dash-wing-detail" style="flex:1 1 100%;min-width:0;color:var(--text-sub);overflow-wrap:anywhere">${p.detail}</div>` : ""}</li>`).join("")}</ul>
-      <div class="dash-status-rest">${others.map(chip).join("")}<small class="dash-status-at">갱신 ${esc(hm(at))}</small></div>
+      <div class="dash-status-rest">${others.map(chip).join("")}${note}<small class="dash-status-at">갱신 ${esc(hm(at))}</small></div>
     </section>`;
   }
 
@@ -270,6 +284,43 @@
       <div class="dash-month"><span>이번 달 순매출</span><b>${won(m.month.net_amount)}</b></div>
       ${error ? `<p class="dash-stale">${badge("check", "일부 확인 필요", { small: true })} ${esc(humanize(error))}</p>` : ""}
       ${detail}` });
+  }
+
+  /** 2026-09-15 [사용자 지시] 매출 요약 금액 칸 맞춤(화면 표시만 - 값·문구는 그대로).
+   *  1) 원래 크기(16px · 순매출 20px)로 칸에 들어가면 그대로
+   *  2) 안 들어가는 칸 중 7자리 이상 금액만 필요한 만큼 줄임(최소 14px) - 짧은 값은 줄이지 않음
+   *  3) 그래도 안 되면 PC 5칸 배치에서만 3개 + 2개 두 줄(.dash-kpis--wrap)로 바꾸고 1)·2) 다시
+   *  4) 마지막 안전장치(9자리 이상 등): 넘치지 않을 만큼만 줄임 - 숫자는 어떤 경우에도 가르거나 칸 밖으로 넘기지 않음
+   *  scope 안의 .dash-kpis 하나를 맞추고 배치("row" | "wrap" | "row-shrunk" | "wrap-shrunk")를 돌려줘요. */
+  function fitKpis(scope) {
+    const box = scope && scope.querySelector ? scope.querySelector(".dash-kpis") : null;
+    if (!box || typeof getComputedStyle !== "function") return null;
+    const bs = [...box.querySelectorAll(".dash-kpi b")];
+    const textW = el => { const r = document.createRange(); r.selectNodeContents(el); return r.getBoundingClientRect().width; };
+    const room = el => { const c = el.parentElement, cs = getComputedStyle(c); return c.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); };
+    const longAmount = el => (el.textContent.match(/\d/g) || []).length >= 7;
+    const pass = floor => {
+      bs.forEach(b => { b.style.fontSize = ""; });
+      let ok = true;
+      bs.forEach(b => {
+        const need = textW(b), have = room(b);
+        if (need <= have + 0.5) return;
+        if (floor > 0 && !longAmount(b)) { ok = false; return; }
+        const base = parseFloat(getComputedStyle(b).fontSize);
+        b.style.fontSize = `${Math.max(floor, Math.floor(base * have / need * 10) / 10)}px`;
+        if (textW(b) > have + 0.5) ok = false;
+      });
+      return ok;
+    };
+    box.classList.remove("dash-kpis--wrap");
+    const canWrap = getComputedStyle(box).gridTemplateColumns.split(" ").length === 5;
+    if (pass(14)) return "row";
+    if (canWrap) {
+      box.classList.add("dash-kpis--wrap");
+      if (pass(14)) return "wrap";
+    }
+    pass(0);
+    return canWrap ? "wrap-shrunk" : "row-shrunk";
   }
 
   // ── D+G. 공헌이익 · 광고비 ──────────────────────────────────────────────────
@@ -401,7 +452,7 @@
   root.ErpDashboard = {
     CODE_TEXT, codeText, humanize, worstTone, hm,
     shellHtml, loadingHtml, errorHtml, noDataHtml,
-    statusModel, statusHtml, todoModel, todoHtml, salesModel, salesHtml,
+    statusModel, statusHtml, todoModel, todoHtml, salesModel, salesHtml, fitKpis,
     profitModel, profitHtml, stockModel, stockHtml, inboundModel, inboundHtml,
   };
 })(typeof window !== "undefined" ? window : globalThis);

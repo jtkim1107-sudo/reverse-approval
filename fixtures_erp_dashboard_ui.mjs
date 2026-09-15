@@ -37,8 +37,25 @@ const base = { health: { session: okSession, last_success_at: iso(3) }, dataDate
 let m = D.statusModel(base);
 check([m.problems.length, m.items.map(i => i.key)], [0, ["wing", "next", "last", "date", "mail", "poller"]], "전체 정상: 문제 0 · WING·06:20·마지막 수집·기준일·메일·폴러");
 let h = D.statusHtml(m, { at: NOW });
-check([h.includes("확인된 문제 없음"), h.includes("운영 정상"), h.includes("dash-status--ok"), (h.match(/class="erp-badge /g) || []).length], [true, false, true, 1],
-      "문제가 없으면 한 줄(배지 하나 + 글자) · '확인된 문제 없음'(모르는 항목까지 정상이라 하지 않음)");
+// 2026-09-15 [사용자 지시] 운영 카드는 항상 맨 위 '운영 상태'. 폴러 2건(실행 상태 기록 없음)은 건수·판정에서 빼고 작은 회색 글자로만,
+// 그 밖에 상태를 확인하지 못한 항목(WING 상태 확인 불가 등)이 있으면 정상으로 보지 않고 회색 '상태 확인 필요 N건'
+check([h.includes(">운영 상태</h2>"), h.includes("확인된 문제 없음"), h.includes("dash-status--ok"), h.includes("상태 확인 필요"), h.includes("입고·자동입고 폴러 상태 기록 없음"),
+       h.includes("입고 메일 폴러 정보 없음"), h.includes("운영 정상"), (h.match(/class="erp-badge /g) || []).length], [true, true, true, false, true, false, false, 1],
+      "문제 없음(폴러만 기록 없음) → '운영 상태' · '확인된 문제 없음' 한 줄 · 폴러는 작은 회색 참고 문구만");
+{
+  const hf = D.statusHtml(D.statusModel({ ...base, health: null, healthError: "Failed to fetch" }), { at: NOW });
+  check([hf.includes("상태 확인 필요 2건"), hf.includes("dash-status--unknown"), hf.includes("WING 상태 확인 불가"), hf.includes("마지막 정상 수집 기록 없음"), hf.includes("확인된 문제 없음"), hf.includes("dashboardRefresh()")],
+        [true, true, true, true, false, true], "상태 API 전체 실패 → 회색 '상태 확인 필요 2건'(WING·마지막 수집, 폴러는 세지 않음) · 정상이라 하지 않음 · 새로고침");
+  const hc = D.statusHtml(D.statusModel({ ...base, dayState: { latest: { status: "FAILED", collected_at: iso(5), error: "x" }, last_check: null } }), { at: NOW });
+  check([hc.includes("운영 확인 필요"), hc.includes("dash-status--error"), hc.includes("06:20 매출 수집 실패"), hc.includes("입고·자동입고 폴러 상태 기록 없음"), hc.includes("자동입고 폴러 정보 없음")],
+        [true, true, true, true, false], "06:20 매출 수집 실패(저장값 없음) → 빨간 '운영 확인 필요' · 폴러는 참고 문구만");
+}
+{
+  const allOk = { ...m, items: m.items.filter(i => i.tone === "ok") };
+  const ho = D.statusHtml(allOk, { at: NOW });
+  check([ho.includes(">운영 상태</h2>"), ho.includes("확인된 문제 없음"), ho.includes("dash-status--ok"), ho.includes("dashboardRefresh()"), ho.includes("상태 확인 필요")],
+        [true, true, true, true, false], "모든 항목 확인됨 → '운영 상태' · '확인된 문제 없음' 한 줄 · 새로고침 버튼");
+}
 check(m.items.filter(i => ["mail", "poller"].includes(i.key)).map(i => [i.tone, i.text]), [["none", "입고 메일 폴러 정보 없음"], ["none", "자동입고 폴러 정보 없음"]],
       "[핵심] 폴러는 최근 발송·요청 기록이 있어도 '정보 없음'(정상 추정 안 함)");
 check([h.includes("화면 새로고침"), h.includes("dashboardRefresh()"), h.includes("SalesRefresh")], [true, true, false], "대시보드 새로고침은 읽기 전용 '화면 새로고침'만");
@@ -47,7 +64,8 @@ m = D.statusModel({ ...base, health: { session: { level: "alert", message: "WING
 h = D.statusHtml(m, { at: NOW });
 // 2026-09-15 [사용자 지시] WING 인증과 다음 06:20 은 한 줄로 합쳐요(같은 내용 중복 표시 없음) - fixtures_wing_session_display.mjs
 check(m.problems.map(p => [p.key, p.tone]), [["wing", "error"], ["last", "check"]], "WING 로그인 필요(다음 06:20 불가 포함 한 줄): 긴급 · 마지막 수집 하루 넘음");
-check([h.includes("운영 경고"), h.includes("dashboardWingGuide()"), h.includes('role="alert"')], [true, true, true], "크게 경고 + 'WING 로그인 갱신 방법 보기'");
+check([h.includes("운영 확인 필요"), h.includes("dash-status--error"), h.includes("dashboardWingGuide()"), h.includes('role="alert"'), h.includes("dashboardRefresh()")], [true, true, true, true, true],
+      "크게 경고(제목 '운영 확인 필요' · 빨간 테두리) + 'WING 로그인 갱신 방법 보기' + 새로고침");
 check(m.problems[0].why.includes("WING 로그인 필요"), false, "이유 문구가 제목을 반복하지 않음");
 hasNot(plain(h), "SESSION_EXPIRED", "기술 코드 안 보임");
 m = D.statusModel({ ...base, dayState: { latest: { status: "FAILED", collected_at: iso(12), error: "SESSION_EXPIRED: 로그인 필요" }, last_check: null } });

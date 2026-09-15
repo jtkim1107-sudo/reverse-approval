@@ -1036,14 +1036,18 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
 }
 
 /* ===== 2026-09-13 ERP 메인 대시보드 정리 (js/erp_dashboard.js) =====
-   위: 운영 상태(정상이면 한 줄) → 오늘 해야 할 일 · 매출 → 공헌이익·광고비 · 재고 → 입고. 720px 이하 한 줄 카드. */
+   위: 운영 확인 필요(확인할 것이 있을 때만) → 매출 · 공헌이익·광고비 → 오늘 해야 할 일 · 재고 → 입고. 720px 이하 한 줄 카드. */
 .dash { display: grid; gap: 14px; min-width: 0; }
 .dash .card { margin: 0; }
-.dash-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; align-items: start; }
-.dash-slot { min-width: 0; }
-#dash-todo-slot { grid-column: span 5; }
-#dash-sales-slot { grid-column: span 7; }
-#dash-profit-slot, #dash-stock-slot { grid-column: span 6; }
+/* 2026-09-15 [사용자 지시] 같은 줄 카드는 위·아래 경계를 맞춰요 - 고정 높이 없이 그 줄에서 내용이 많은 카드 높이로 늘리고,
+   카드 안 내용은 위쪽 정렬 그대로(늘어난 곳은 아래 빈 공간). 한 줄에 카드 하나(1100px·720px 이하)면 늘어날 높이가 없어요. */
+.dash-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; align-items: stretch; }
+.dash-slot { min-width: 0; display: flex; flex-direction: column; }
+.dash-slot > .dash-card { flex: 1 0 auto; }
+/* 2026-09-15 [사용자 지시] 순서: (운영 확인 필요) → 매출 요약 · 공헌이익·광고비 → 오늘 해야 할 일 · 재고·발주 → 입고·운송.
+   공헌이익 카드 안 4칸(₩8,606,815 등)이 들어가도록 두 줄 모두 반반(6 · 6). */
+#dash-sales-slot, #dash-profit-slot { grid-column: span 6; }
+#dash-todo-slot, #dash-stock-slot { grid-column: span 6; }
 #dash-inbound-slot { grid-column: span 12; }
 .dash-card { min-width: 0; }
 .dash-card--error { border-top: 3px solid var(--red); }
@@ -1065,8 +1069,12 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
 .dash-up { color: var(--green); } .dash-down { color: var(--red); } .dash-amber { color: var(--amber); }
 /* A. 운영 상태 */
 .dash-status { min-width: 0; }
-.dash-status--ok { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12.5px; padding: 8px 12px;
+.dash-status--ok, .dash-status--unknown { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12.5px; padding: 8px 12px;
   background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+/* 2026-09-15 상태를 확인하지 못함(정상 아님) - 실제 장애(빨강)·확인 필요(노랑)와 구분되는 회색 */
+.dash-status--unknown { background: #f6f7f9; border-color: #cfd4dc; }
+.dash-status-title { font-size: 14px; font-weight: 700; margin: 0; white-space: nowrap; }
+.dash-status-note { color: var(--text-sub); font-size: 11px; }
 .dash-status-item { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; min-width: 0; }
 .dash-status-item small, .dash-status-at { color: var(--text-sub); font-size: 11.5px; }
 .dash-oklist { color: #3f6b4f; font-size: 12.5px; min-width: 0; flex: 1 1 320px; line-height: 1.6; }
@@ -1091,14 +1099,22 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
 .dash-todo-label small { display: block; font-weight: 400; font-size: 11.5px; color: var(--text-sub); overflow-wrap: anywhere; }
 .dash-go { color: var(--text-sub); font-size: 18px; }
 /* C. 매출 */
-.dash-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(92px, 1fr)); gap: 8px; }
+/* 2026-09-15 [사용자 지시] 금액은 중간에서 두 줄로 가르지 않아요(nowrap). 글자 크기는 원래대로(16px · 순매출 20px) 두고,
+   칸에 안 들어갈 때만 ErpDashboard.fitKpis 가 7자리 이상 금액만 필요한 만큼(최소 14px) 줄여요.
+   그래도 5칸 한 줄에 안 들어가면 PC 에서는 3개 + 2개 두 줄(.dash-kpis--wrap). 모바일은 2열 그대로. */
+.dash-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+@media (min-width: 721px) {
+  .dash-kpis--wrap { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .dash-kpis--wrap > .dash-kpi { grid-column: span 2; }
+  .dash-kpis--wrap > .dash-kpi:nth-child(n+4) { grid-column: span 3; }
+}
 .dash-kpi { background: var(--bg); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .dash-kpi span { font-size: 11.5px; color: var(--text-sub); }
-.dash-kpi b { font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.dash-kpi b { font-size: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dash-kpi small { font-size: 11.5px; color: var(--text-sub); }
 .dash-kpi--main b { font-size: 20px; color: var(--brand); }
 .dash-month { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 10px 0 2px; font-size: 13px; }
-.dash-month b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.dash-month b { font-size: 17px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dash-month small { color: var(--text-sub); font-size: 11.5px; overflow-wrap: anywhere; }
 .dash-detail { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
 .dash-detail > summary { cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--brand); min-height: 32px; display: flex; align-items: center; }
@@ -1133,7 +1149,7 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
 .dash-more { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; padding: 4px 2px; }
 .dash-more a { color: var(--brand); text-decoration: none; font-weight: 600; padding: 6px 0; display: inline-flex; align-items: center; min-height: 36px; }
 @media (max-width: 1100px) {
-  #dash-todo-slot, #dash-sales-slot { grid-column: span 12; }
+  #dash-sales-slot, #dash-profit-slot { grid-column: span 12; }
 }
 @media (max-width: 720px) {
   .dash-grid { grid-template-columns: minmax(0, 1fr); }

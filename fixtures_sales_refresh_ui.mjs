@@ -325,8 +325,9 @@ const json = (status, body) => ({ status, json: async () => body });
   // 2026-09-13 대시보드 정리: 매출 요약은 erp_dashboard.js salesModel(공통 집계 forDate · 로켓그로스), 순서는 운영 상태 → 할 일 → 매출
   const dashJs = fs.readFileSync(new URL("./js/erp_dashboard.js", import.meta.url), "utf8");
   check(dash.includes("SalesMonthlySummary.forDate") && dashJs.includes("forDate(summary, shown, { rgOnly: true })"), "대시보드 매출 요약은 공통 집계(forDate · 로켓그로스)");
-  check(dash.indexOf('id="dash-status-slot"') < dash.indexOf("DASH_SECTIONS.map") && /const DASH_SECTIONS = \[\["dash-todo"[\s\S]*?"dash-sales"/.test(appSrc)
-    && dash.indexOf("rg-sales-statistics-mount") > 0, "운영 상태 → 오늘 해야 할 일 → 매출 요약(판매통계 패널은 매출 요약 상세 안)");
+  // 2026-09-15 [사용자 지시] 순서 변경: 운영 확인 필요 → 매출 요약 · 공헌이익 → 오늘 해야 할 일 · 재고·발주
+  check(dash.indexOf('id="dash-status-slot"') < dash.indexOf("DASH_SECTIONS.map") && /const DASH_SECTIONS = \[\["dash-sales"[\s\S]*?"dash-profit"[\s\S]*?"dash-todo"[\s\S]*?"dash-stock"/.test(appSrc)
+    && dash.indexOf("rg-sales-statistics-mount") > 0, "운영 상태 → 매출 요약 → 공헌이익 → 오늘 해야 할 일 → 재고(판매통계 패널은 매출 요약 상세 안)");
   const head = sales.slice(sales.indexOf("<h2>매출 내역"), sales.indexOf("${refreshHtml}"));
   check(head.includes("SalesRefresh.buttonHtml") && head.indexOf("buttonHtml") < head.indexOf("</h2>"), "‘매출 내역’ 제목 옆 새로고침 버튼");
   check(sales.includes("monthlySalesRowsHtml(monthlySummary)"), "상품별·날짜별 집계 행 유지(주문 단건 나열로 되돌리지 않음)");
