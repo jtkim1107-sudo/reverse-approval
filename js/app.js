@@ -818,15 +818,18 @@ function collectHygiene(st) {
   add(st.t.noCostRows, `원가가 비어 있는 매출 ${st.t.noCostRows}줄`, "#/products");
   add(st.t.unknownChannels.size,
       `채널 목록에 없는 이름 ${st.t.unknownChannels.size}개 (${[...st.t.unknownChannels].join(", ")})`, "#/channels");
+  const checkN = erpStockCheck ? 1 : Object.values(erpStock).filter(s => s.check && !s.isSet).length;
+  if (checkN) items.push({ n: checkN, text: erpStockDisabled ? "취소·회수 확인 기능 꺼짐 - 원장 재고 확정 안 됨"
+    : erpStockCheck ? `재고 계산 확인 필요(${erpStockCheck})` : `원장 재고 확정 안 됨 ${checkN}종(취소·반품 회수 확인 필요 등)`, href: "#/stockflow/stock" });
   // 이동 기록 없이 팔린 쿠팡 재고 — 지금까지 계산만 되고 어디에도 표시되지 않던 신호
-  const untracked = Object.entries(erpStock).filter(([, s]) => (s.coupangUntracked || 0) > 0);
+  const untracked = erpStockCheck ? [] : Object.entries(erpStock).filter(([, s]) => !s.check && (s.coupangUntracked || 0) > 0);
   if (untracked.length) items.push({
     n: untracked.length,
     text: `이동 기록 없이 팔린 쿠팡 재고 ${fmt(untracked.reduce((s, [, x]) => s + x.coupangUntracked, 0))}개`,
     href: "#/stockflow/stock",
   });
   // 위탁 상품(공급처 재고)과 연동 세트(낱개에서 파생)는 재고를 갖지 않으므로 마이너스 점검에서 제외
-  const negStock = erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p)
+  const negStock = erpStockCheck ? 0 : erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p) && !erpStock[p.id]?.check
     && ((erpStock[p.id]?.stock ?? 0) < 0 || (erpStock[p.id]?.inHouse ?? 0) < 0)).length;
   add(negStock, `마이너스가 된 재고 ${negStock}종`, "#/stockflow/stock");
   add(erpChannelList.filter(c => !Number(c.fee_rate)).length,
@@ -2499,6 +2502,58 @@ let erpTransfers = [];    // stock_transfers (쿠팡 사외재고 이동)
 let erpMonth = today().slice(0, 7);
 let erpProducts = [];
 let erpStock = {};      // product_id → {stock, lastCost}
+// 2026-09-16 ERP 장부재고(매입−판매) 보정 - 사용자 확정 재고 흐름
+//   · 판매 = 재고 −수량. 정산 취소(금전 환불)만으로는 재고가 돌아오지 않아요(재고 효과 0 · 회수 확인 대기).
+//   · 출고 전 취소 확인(WING_CANCEL) 또는 실제 회수 확인(WING_RETURN 회수 수량)이 승인된 수량만 재고로 되돌려요
+//     - 근거: cm_cost_recoveries 의 APPROVED 기록(승인 이벤트가 RPC 로 남은 것). 미회수·확인 전은 0.
+//   · 반품 재판매 SKU 판매는 (임시) 정상 매입재고에서 빼지 않아요 - 회수 입고가 원장에 없어서 빼면 두 번 빠져요.
+//     회수 이벤트 구조가 생기면 '회수 +1 · 재판매 −1' 로 바꿔요. 그 전에 회수 확인분과 겹치는 상품은 숫자를 보여 주지 않아요.
+let erpResaleVids = new Set();
+let erpStockCheck = null;   // 원천(역할·회수 확인·매출 등)을 못 읽었을 때 이유 - 재고 숫자 대신 '재고 계산 확인 필요'
+let erpStockDisabled = false;   // 취소·회수 확인 기능이 꺼져 있음(ERP_CANCEL_RECORDS_ENABLED) - 실패는 아니지만 원장 재고를 확정값으로 쓰지 않음
+function isResaleReturnSale(x) {
+  const m = /^RG-\d+-(\d+)$/.exec(String(x?.external_key || ""));
+  return !!(m && erpResaleVids.has(m[1]));
+}
+// 재고를 믿을 수 없는 상품이면 그 이유(전체 원천 실패 또는 그 상품만의 이유)
+const erpStockCheckOf = pid => erpStockCheck || erpStock[pid]?.check || null;
+// 2026-09-16 정산 취소가 원장에 연결됐는데 출고 전 취소·실제 회수가 확인되지 않은 수량(UNKNOWN)이 있으면 그 상품의
+// 원장 재고는 확정 숫자가 아니에요 - '취소·반품 회수 확인 필요'로 보여 주고 '원장상 N개'는 참고로만(판단에 안 씀).
+// 정산 취소 기록은 전용 표 sales_cancel_corrections(백엔드 동기화가 기록) - 화면은 상품별 뷰 sales_cancel_stock_by_product 만 읽고,
+// 기록이 최신인지는 sync_job_status('rg_ledger_cancel_status') 요약(마지막 성공·실패)으로 확인해요.
+const ERP_CANCEL_STATUS_JOB = "rg_ledger_cancel_status";
+const ERP_CANCEL_STATUS_MAX_AGE_H = 36;      // 하루 두 번(07:00·11:00) 도는 동기화 기준 - 넘으면 오래된 자료로 보고 숨김
+// WING 실시간 재고(재고 판단 화면과 같은 /api/inventory/decisions) - 상품 선택창은 이 값을 먼저 보여 줘요.
+let erpLiveStockByProduct = {};
+async function loadErpLiveStock(timeoutMs = 4000) {
+  try {
+    const r = inventoryDecisionsCache || await Promise.race([fetchInventoryDecisions(false), new Promise(res => setTimeout(() => res(null), timeoutMs))]);
+    if (!r || !r.ok) return false;
+    const map = {};
+    (r.decisions || []).forEach(d => {
+      if (!d.product_id || d.live_stock == null || d.stock_source !== "COUPANG_RG_LIVE") return;
+      if (d.resale_pool && d.resale_pool.role === "resale") return;       // 반품 재판매 SKU 행이 아니라 기준 SKU 행(공유재고 합계)
+      if (!(d.product_id in map)) map[d.product_id] = Number(d.live_stock);
+    });
+    erpLiveStockByProduct = map;
+    return true;
+  } catch (_) { return false; }
+}
+// 상품 선택창 한 줄의 재고 표시(판매 입력) - 확정 안 된 원장 재고는 숫자처럼 보이지 않게
+function erpStockLabel(p) {
+  if (tradeTypeOf(p) === "위탁") return "위탁";
+  if (erpStockCheck && !erpStockDisabled) return "재고 계산 확인 필요";
+  const set = isSetProd(p);
+  const s = erpStock[p.id] || {};
+  const live = erpLiveStockByProduct[p.id];
+  const liveTxt = live != null ? `쿠팡 실재고 ${fmt(live)}${set ? "세트" : "개"}(WING) · ` : "";
+  const ledger = `원장상 ${fmt(s.stock || 0)}${set ? "세트" : "개"}(참고)`;
+  if (erpStockDisabled) return `${liveTxt}취소·회수 확인 기능 꺼짐 · ${ledger}`;
+  if (s.recoveryUnknownQty > 0) return `${liveTxt}취소·반품 회수 확인 필요 · 회수 미확인 ${fmt(s.recoveryUnknownQty)}개 · ${ledger}`;
+  if (s.check) return `${liveTxt}재고 계산 확인 필요 · ${ledger}`;
+  if (live != null) return `쿠팡 실재고 ${fmt(live)}${set ? "세트" : "개"}(WING)`;
+  return set ? `${fmt(s.stock || 0)}세트 가능` : `재고 ${fmt(s.stock || 0)}`;
+}
 // 2026-09-11 입고 트럭 운송비(운송 묶음당 1건) - 판매분 배부 계산 결과(js/inbound_freight.js). loadErpBase 가 채워요.
 let erpFreight = { bySale: new Map(), records: [], history: [], costs: [], error: null };
 let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
@@ -2541,7 +2596,7 @@ function isCoupangPoolSale(x) {
 
 /* 제품·재고·거래처·채널 공통 로드 */
 async function loadErpBase() {
-  const [prodRes, buyRes, saleRes, costRes, chRes, trRes, spRes, frcRes, fraRes] = await Promise.all([
+  const [prodRes, buyRes, saleRes, costRes, chRes, trRes, spRes, frcRes, fraRes, roleRes, cancelViewRes, cancelRes] = await Promise.all([
     sb.from("products").select("*").order("name"),
     sb.from("purchases").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("sales").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
@@ -2551,7 +2606,36 @@ async function loadErpBase() {
     sb.from("suppliers").select("*").order("name"),
     sb.from("inbound_freight_costs").select("*, purchase_orders(po_no)").order("created_at"),
     sb.from("inbound_freight_allocations").select("*"),
+    sb.from("vendor_item_roles").select("vendor_item_id,product_id,role,active"),
+    sb.from("sales_cancel_stock_by_product").select("product_id,unknown_qty,unknown_order_row_qty,unknown_manual_total_day_qty,unknown_unlinked_qty,resale_unknown_qty,stock_effect_qty,recovered_qty"),
+    sb.from("sync_job_status").select("job_name,last_success_at,last_attempt_at,last_error,detail").eq("job_name", ERP_CANCEL_STATUS_JOB).maybeSingle(),
   ]);
+  // 취소 기록 동기화 요약 - 없거나·실패했거나·오래됐거나·모양이 틀리거나·원천 취소가 다 기록되지 않았으면 원장 재고를 추정하지 않아요.
+  // 기능이 꺼져 있으면(state DISABLED - 실패 아님) '취소·회수 확인 기능 꺼짐'으로 보여 주고 역시 확정값으로 쓰지 않아요.
+  const cancelRow = cancelRes.data;
+  const det = cancelRow?.detail || null;
+  const cancelAgeH = cancelRow?.last_success_at ? (Date.now() - new Date(cancelRow.last_success_at).getTime()) / 3600000 : null;
+  const cancelErr = cancelRes.error ? (cancelRes.error.message || String(cancelRes.error))
+    : !cancelRow ? "아직 기록 없음"
+    : (cancelRow.last_error && String(cancelRow.last_attempt_at || "") > String(cancelRow.last_success_at || "")) ? `최근 갱신 실패(${cancelRow.last_error})`
+    : !(cancelAgeH != null && cancelAgeH <= ERP_CANCEL_STATUS_MAX_AGE_H) ? `마지막 갱신 ${cancelAgeH == null ? "알 수 없음" : Math.floor(cancelAgeH) + "시간 전"}`
+    : !(det && det.version === 3 && (det.state === "DISABLED" || det.state === "OK")) ? "형식 오류"
+    : det.state === "DISABLED" ? null
+    : det.writes_enabled !== true ? "형식 오류"
+    : det.complete !== true ? "취소 기록 불완전(원천 변경·미기록 확인 필요)" : null;
+  const cancelDisabled = !cancelErr && det?.state === "DISABLED";
+  if (cancelErr) cancelRes.error = { message: cancelErr };
+  // 장부재고 원천 중 하나라도 못 읽으면 숫자를 추정하지 않아요(예전처럼 빈 목록으로 계산하지 않음).
+  const stockSrcErr = [["상품", prodRes], ["매입", buyRes], ["매출", saleRes], ["채널", chRes], ["재고 이동", trRes],
+                       ["반품 재판매 SKU", roleRes], ["취소·회수 기록", cancelViewRes], ["취소 자료", cancelRes]]
+    .filter(([, r]) => r.error).map(([n, r]) => `${n}: ${r.error.message || r.error}`);
+  erpStockDisabled = !stockSrcErr.length && cancelDisabled;
+  erpStockCheck = stockSrcErr.length ? stockSrcErr.join(" · ") : cancelDisabled ? "취소·회수 확인 기능 꺼짐" : null;
+  if (stockSrcErr.length) console.warn("[ERP 장부재고] 원천을 읽지 못해 재고 숫자를 표시하지 않아요:", erpStockCheck);
+  else if (erpStockDisabled) console.info("[ERP 장부재고] 취소·회수 확인 기능 꺼짐 - 원장 재고는 참고로만 보여 줘요");
+  const roles = (roleRes.data || []).filter(r => r.active && r.role === "RESALE_RETURN");
+  erpResaleVids = new Set(roles.map(r => String(r.vendor_item_id)));
+  const resaleProducts = new Set(roles.map(r => r.product_id));
   erpSupplierList = spRes.data || [];
   erpProducts = prodRes.data || [];
   const buys = buyRes.data || [];
@@ -2559,6 +2643,10 @@ async function loadErpBase() {
   const costs = costRes.data || [];
   erpChannelList = chRes.data || [];
   erpTransfers = trRes.data || [];
+  // 상품별 취소·회수 기록(뷰): unknown_qty = 출고 전 취소·실제 회수가 확인되지 않은 수량(반품 재판매 SKU 주문 취소 제외) ·
+  // stock_effect_qty = 승인된 WING_CANCEL(전량)·WING_RETURN(회수 수량)만큼 되돌릴 확정 수량 · recovered_qty = 그중 회수분
+  const cancelByProduct = {};
+  (cancelViewRes.data || []).forEach(r => { cancelByProduct[r.product_id] = r; });
   erpStock = {};
   // 재고는 '오늘까지 실제로 일어난' 입출고만 반영 (내일 입고 예정을 미리 입력해도 지금 재고는 그대로)
   const td = today();
@@ -2576,13 +2664,22 @@ async function loadErpBase() {
     const boughtCoupang = myBuys.filter(b => b.warehouse === "쿠팡").reduce((s, b) => s + Number(b.qty), 0);
     const boughtHouse = myBuys.filter(b => b.warehouse !== "쿠팡").reduce((s, b) => s + Number(b.qty), 0);
     const bought = boughtHouse + boughtCoupang;
-    const mySales = upTo(sales.filter(x => x.product_id === p.id || children.some(c => c.id === x.product_id)));
-    const sold = mySales.reduce((s, x) => s + unitQty(x), 0);
+    const mySalesAll = upTo(sales.filter(x => x.product_id === p.id || children.some(c => c.id === x.product_id)));
+    // (임시) 반품 재판매 판매는 정상 매입재고에서 빼지 않고 따로 셈 - 매출·원가(공헌이익)는 그대로
+    const mySales = mySalesAll.filter(x => !isResaleReturnSale(x));
+    const resaleSold = mySalesAll.filter(isResaleReturnSale).reduce((s, x) => s + unitQty(x), 0);
+    // 승인된 출고 전 취소·실제 회수 수량만 판매에서 되돌림(뷰가 반품 재판매 주문 취소·사람 합계일 기록은 이미 제외) · 세트는 기준 EA 로
+    const sumOf = key => [p, ...children].reduce((s, c) => s + unitQty({ product_id: c.id, qty: Number(cancelByProduct[c.id]?.[key]) || 0 }), 0);
+    const effQty = sumOf("stock_effect_qty");
+    const recoveredQty = sumOf("recovered_qty");
+    // 이 상품(세트 포함)에 걸린 회수 미확인 수량(기준상품 EA) - 원장 주문 연결분 + 사람 합계일분 + 원장에 없는 주문의 취소분
+    const recoveryUnknownQty = sumOf("unknown_qty");
+    const sold = mySales.reduce((s, x) => s + unitQty(x), 0) - effQty;
     // 창고에서 쿠팡으로 보낸(입고) − 회수
     const moved = upTo(erpTransfers.filter(t => t.product_id === p.id))
       .reduce((s, t) => s + (t.kind === "쿠팡입고" ? 1 : -1) * Number(t.qty), 0);
     // 쿠팡 사외재고에서 차감되는 판매(isCoupangPoolSale - 배송 방식 기준)
-    const coupangSold = mySales.filter(isCoupangPoolSale).reduce((s, x) => s + unitQty(x), 0);
+    const coupangSold = mySales.filter(isCoupangPoolSale).reduce((s, x) => s + unitQty(x), 0) - effQty;   // 취소·회수 기록은 로켓그로스(쿠팡 재고)
     const houseSold = sold - coupangSold;
     // 쿠팡 재고 = 직송 입고 + 창고에서 보낸 것 − 쿠팡 판매
     const atCoupangRaw = boughtCoupang + moved - coupangSold;
@@ -2591,8 +2688,11 @@ async function loadErpBase() {
     const inHouse = boughtHouse - moved - houseSold;
     const stock = bought - sold;
     erpStock[p.id] = {
-      stock, atCoupang, inHouse, bought, sold,
+      stock, atCoupang, inHouse, bought, sold, resaleSold, recoveredQty, recoveryUnknownQty,
       boughtHouse, boughtCoupang,
+      // 회수 확인분(+)과 반품 재판매 임시 제외가 한 상품에 겹치면 같은 반품 상품을 두 번 더할 수 있어 숫자를 보여 주지 않아요.
+      check: recoveryUnknownQty > 0 ? `취소·반품 회수 확인 필요(회수 미확인 ${recoveryUnknownQty}개)`
+        : recoveredQty > 0 && resaleProducts.has(p.id) ? "회수 확인분과 반품 재판매 임시 처리가 겹침 - 회수 +1·재판매 −1 방식 전환 필요" : null,
       coupangUntracked: atCoupangRaw < 0 ? -atCoupangRaw : 0, // 입고/이동 기록 누락 의심 수량
       // 최근 매입단가 우선, 없으면 제품 마스터의 등록 원가
       lastCost: (myBuys.length && Number(myBuys[0].unit_cost)) || Number(p.cost_price) || 0,
@@ -2606,16 +2706,19 @@ async function loadErpBase() {
       stock: Math.floor(Math.max(0, b.stock) / n),
       atCoupang: Math.floor(Math.max(0, b.atCoupang) / n),
       inHouse: Math.floor(Math.max(0, b.inHouse) / n),
-      bought: 0, sold: 0, boughtHouse: 0, boughtCoupang: 0, coupangUntracked: 0,
-      lastCost: effCost(p), isSet: true,
+      bought: 0, sold: 0, resaleSold: 0, recoveredQty: 0, boughtHouse: 0, boughtCoupang: 0, coupangUntracked: 0,
+      recoveryUnknownQty: (erpStock[p.set_parent_id] || {}).recoveryUnknownQty || 0,
+      lastCost: effCost(p), isSet: true, check: (erpStock[p.set_parent_id] || {}).check || null,
     };
   });
   // 2026-09-11 입고 트럭 운송비: 입고된 수량의 재고원가에 얹고, 쿠팡 재고 선입선출로 실제 판매분만 공헌이익에 배부.
   // 표를 못 읽으면(권한·미적용) 운송비 차감 없이 계산하고 화면에 알림 - 조용히 0원으로 확정하지 않음.
-  const frcErr = frcRes.error || fraRes.error;
+  const frcErr = frcRes.error || fraRes.error
+    || (roleRes.error ? { message: `반품 재판매 SKU 목록을 읽지 못함(${roleRes.error.message || roleRes.error})` } : null);
   const frCosts = frcErr ? [] : (frcRes.data || []);
   erpFreight = { ...InboundFreight.compute({
-    costs: frCosts, allocations: frcErr ? [] : (fraRes.data || []), buys, sales, transfers: erpTransfers,
+    // 2026-09-16 반품 재판매 판매에는 최초 매입 입고 운임을 다시 배부하지 않아요. 실제 반품 재입고·검수·배송 비용 기록이 생기면 그 비용만 따로.
+    costs: frCosts, allocations: frcErr ? [] : (fraRes.data || []), buys, sales: sales.filter(x => !isResaleReturnSale(x)), transfers: erpTransfers,
     products: erpProducts, isCoupangSale: isCoupangPoolSale, today: td,
   }), costs: frCosts, error: frcErr ? (frcErr.message || String(frcErr)) : null };
   erpSuppliers = [...new Set([...buys.map(b => b.supplier), ...costs.map(c => c.supplier)].filter(Boolean))];
@@ -2705,8 +2808,8 @@ function productPickLabel(p, mode) {
   const tag = mode === "buy"
     ? (p.cost_price ? `원가 ₩${fmt(p.cost_price)}` : "원가 미등록")
     : isSetProd(p)
-      ? `세트×${p.set_qty}${tradeTypeOf(p) === "사입" ? ` · ${fmt(erpStock[p.id]?.stock || 0)}세트 가능` : ""}`
-      : (tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`) + (p.is_set ? " · 세트" : "");
+      ? `세트×${p.set_qty}${tradeTypeOf(p) === "사입" ? ` · ${erpStockLabel(p)}` : ""}`
+      : erpStockLabel(p) + (p.is_set ? " · 세트" : "");
   return `${p.code ? p.code + " · " : ""}${p.name} (${tag})`;
 }
 let __pickSeq = 0;
@@ -2746,8 +2849,8 @@ function productOptions(sel, mode) {
     const tag = mode === "buy"
       ? (p.cost_price ? `원가 ₩${fmt(p.cost_price)}` : "원가 미등록") + (p.is_set ? " · 세트" : "")
       : isSetProd(p)
-        ? `세트×${p.set_qty}${tradeTypeOf(p) === "사입" ? ` · ${fmt(erpStock[p.id]?.stock || 0)}세트 가능` : ""}`
-        : (tradeTypeOf(p) === "위탁" ? "위탁" : `재고 ${fmt(erpStock[p.id]?.stock || 0)}`) + (p.is_set ? " · 세트" : "");
+        ? `세트×${p.set_qty}${tradeTypeOf(p) === "사입" ? ` · ${erpStockLabel(p)}` : ""}`
+        : erpStockLabel(p) + (p.is_set ? " · 세트" : "");
     return `<option value="${p.id}" ${p.id === sel ? "selected" : ""}>${esc(p.name)} (${tag})</option>`;
   }).join("");
 }
@@ -2876,7 +2979,7 @@ function openMonthlySalesLedger(encodedKey) {
 
 /* ---------- 매출 (전표식 다품목 입력) ---------- */
 async function viewSales() {
-  const { sales } = await loadErpBase();
+  const [{ sales }] = await Promise.all([loadErpBase(), loadErpLiveStock()]);
   const rows = sales.filter(r => monthOf(r) === erpMonth);
   erpRowsCache = rows;
   let adjustmentSummary = null;
@@ -3058,11 +3161,13 @@ async function saveSales() {
   if (priceWarns.length && !confirm(
     `단가가 평소와 많이 다릅니다. 자릿수를 확인해 주세요.\n\n${priceWarns.join("\n")}\n\n이대로 저장할까요?`)) return;
   // 같은 품목이 여러 줄이면 합산해서 비교해야 함 (줄마다 따로 보면 초과를 놓침)
+  // 2026-09-16 재고를 믿을 수 없는 품목은 숫자 비교 대신 '재고 계산 확인 필요'로 물어요(기존처럼 확인창 - 막지는 않음).
   const stockWarns = Object.entries(qtyByPid)
-    .filter(([pid, q]) => tradeTypeOfId(pid) === "사입" && q > (erpStock[pid]?.stock ?? 0))
-    .map(([pid, q]) => `'${prodName(pid)}' 재고 ${fmt(erpStock[pid]?.stock ?? 0)} < 판매 ${fmt(q)}`);
+    .filter(([pid, q]) => tradeTypeOfId(pid) === "사입" && (erpStockCheckOf(pid) || q > (erpStock[pid]?.stock ?? 0)))
+    .map(([pid, q]) => erpStockCheckOf(pid) ? `'${prodName(pid)}' 재고 확정 안 됨(${erpStockCheckOf(pid)}) - 재고가 충분한지 판단하지 못함`
+      : `'${prodName(pid)}' 재고 ${fmt(erpStock[pid]?.stock ?? 0)} < 판매 ${fmt(q)}`);
   if (stockWarns.length && !confirm(
-    `재고보다 많은 수량입니다.\n\n${stockWarns.join("\n")}\n\n그래도 저장할까요?`)) return;
+    `재고를 확인해 주세요(재고보다 많거나, 재고가 확정되지 않았어요).\n\n${stockWarns.join("\n")}\n\n그래도 저장할까요?`)) return;
   // 2026-09-08 [매출 이중집계 수정, 사용자 명시 "삭제하지 말고 최소 안전장치"]
   // 같은 date/product_id/channel에 이미 자동 동기화(external_key 있음) 행이
   // 있으면 저장을 막지는 않되(수동입력 기능 자체는 유지) 경고함 - 09-01~09-06
@@ -3549,9 +3654,10 @@ async function confirmExcelImport() {
     const byPid = {};
     recs.forEach(r => { byPid[r.product_id] = (byPid[r.product_id] || 0) + r.qty; });
     const warns = Object.entries(byPid)
-      .filter(([pid, q]) => tradeTypeOfId(pid) === "사입" && q > (erpStock[pid]?.stock ?? 0))
-      .map(([pid, q]) => `'${prodName(pid)}' 재고(${fmt(erpStock[pid]?.stock ?? 0)}) < 판매수량(${fmt(q)})`);
-    if (warns.length && !confirm(warns.join("\n") + "\n\n재고보다 많이 팔린 것으로 기록됩니다. 그래도 등록할까요?")) return;
+      .filter(([pid, q]) => tradeTypeOfId(pid) === "사입" && (erpStockCheckOf(pid) || q > (erpStock[pid]?.stock ?? 0)))
+      .map(([pid, q]) => erpStockCheckOf(pid) ? `'${prodName(pid)}' 재고 확정 안 됨(${erpStockCheckOf(pid)}) - 재고가 충분한지 판단하지 못함`
+        : `'${prodName(pid)}' 재고(${fmt(erpStock[pid]?.stock ?? 0)}) < 판매수량(${fmt(q)})`);
+    if (warns.length && !confirm(warns.join("\n") + "\n\n재고보다 많거나 재고가 확정되지 않은 품목이 있어요. 그래도 등록할까요?")) return;
   }
   const btn = document.getElementById("btn-xls-go");
   btn.disabled = true;
