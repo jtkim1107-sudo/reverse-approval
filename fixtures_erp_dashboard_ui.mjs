@@ -45,7 +45,8 @@ check([h.includes("화면 새로고침"), h.includes("dashboardRefresh()"), h.in
 check(m.items.find(i => i.key === "poller").tone, "none", "자동입고 폴러: 상태 기록이 없으니 '정보 없음'(정상이라고 지어내지 않음)");
 m = D.statusModel({ ...base, health: { session: { level: "alert", message: "WING 로그인 필요 - 실제 인증 실패(SESSION_EXPIRED)", next_collection: { risk: "EXPIRED" } }, last_success_at: iso(30) } });
 h = D.statusHtml(m, { at: NOW });
-check(m.problems.map(p => [p.key, p.tone]), [["wing", "error"], ["next", "error"], ["last", "check"]], "WING 로그인 필요: 긴급 · 다음 06:20 불가 · 마지막 수집 하루 넘음");
+// 2026-09-15 [사용자 지시] WING 인증과 다음 06:20 은 한 줄로 합쳐요(같은 내용 중복 표시 없음) - fixtures_wing_session_display.mjs
+check(m.problems.map(p => [p.key, p.tone]), [["wing", "error"], ["last", "check"]], "WING 로그인 필요(다음 06:20 불가 포함 한 줄): 긴급 · 마지막 수집 하루 넘음");
 check([h.includes("운영 경고"), h.includes("dashboardWingGuide()"), h.includes('role="alert"')], [true, true, true], "크게 경고 + 'WING 로그인 갱신 방법 보기'");
 check(m.problems[0].why.includes("WING 로그인 필요"), false, "이유 문구가 제목을 반복하지 않음");
 hasNot(plain(h), "SESSION_EXPIRED", "기술 코드 안 보임");

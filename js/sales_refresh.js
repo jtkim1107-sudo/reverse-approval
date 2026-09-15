@@ -238,11 +238,38 @@
     return m.startsWith(title) ? m.slice(title.length).replace(/^\s*[-·:]\s*/, "") : m;
   }
 
+  /* 2026-09-15 [사용자 지시: "현재 인증이 유효하면 빨간 'WING 로그인 필요'를 표시하지 않기 · 다음 06:20 전
+     만료 가능성만 있으면 노란 '다음 06:20 수집 전 로그인 갱신 권장' · 실제 인증 실패·SESSION_EXPIRED 일 때만 빨강"]
+     서버 level=alert 는 '지금 인증 실패'와 '다음 06:20 위험(AT_RISK)'을 함께 담아요. 화면에서만 둘을 나눠요
+     - 서버 판정·인증·세션 연장·수집 동작은 그대로예요. 상단 경고와 대시보드 운영 상태가 같은 판정을 써요.
+     kind: expired(빨강) · renew(노랑, 지금은 인증 정상) · check(노랑, 확인 필요) · ok */
+  const SESSION_DISPLAY = {
+    expired: { tone: "error", title: "WING 로그인 필요" },
+    renew: { tone: "check", title: "다음 06:20 수집 전 로그인 갱신 권장" },
+    check: { tone: "check", title: "WING 세션 확인 필요" },
+    ok: { tone: "ok", title: "" },
+  };
+  function sessionDisplay(s) {
+    const level = sessionLevel(s);
+    if (!s || level === "ok") return { kind: "ok", ...SESSION_DISPLAY.ok, reason: "" };
+    const nc = s.next_collection || {};
+    const msg = bodyText(bodyText(s.message, "WING 로그인 필요"), "확인 필요");
+    if (level !== "alert") return { kind: "check", ...SESSION_DISPLAY.check, reason: msg };
+    // 상태를 모르는 옛 응답은 지금처럼 빨강(안전한 쪽)
+    const failedNow = !s.state || ["SESSION_EXPIRED", "NO_SESSION"].includes(s.state) || nc.risk === "EXPIRED";
+    if (!failedNow && nc.risk === "AT_RISK") {
+      return { kind: "renew", ...SESSION_DISPLAY.renew, reason: nc.reason || msg };
+    }
+    return { kind: "expired", ...SESSION_DISPLAY.expired, reason: msg || "WING 실제 인증이 안 돼요" };
+  }
+
   function sessionBannerHtml(health) {
     const s = health && health.session;
     if (!s) return "";
     const last = health.last_success_at ? kst(health.last_success_at, true) : "기록 없음";
     const level = sessionLevel(s);
+    // 지금 인증은 정상이고 다음 06:20 만 위험 - 화면 맨 위 경고 하나로만 알려요(여기서 또 쓰지 않음)
+    if (sessionDisplay(s).kind === "renew") return "";
     if (level === "alert") {
       return `<div role="alert" class="sales-session-banner" style="border:1px solid #f2c0c0;background:#fdecec;color:#8c2020;border-radius:9px;padding:10px 12px;margin:0 0 10px;font-size:13px;line-height:1.55">
         <b>WING 로그인 필요</b> · ${esc(bodyText(s.message, "WING 로그인 필요") || "WING 실제 인증이 안 돼요")}
@@ -279,19 +306,22 @@
      로그인 완료 후 실제 health-check 성공 시 경고 자동 해제"]
      서버가 준 상태만 그려요(브라우저는 WING 을 부르지 않음). 경고가 없으면 영역을 숨겨요. */
   const RISK_LABEL = {
-    OK: "가능(추정)", WATCH: "주의 - 자동 연장 실패 중", AT_RISK: "위험 - 수집 전에 세션이 끝날 수 있음",
+    OK: "가능(추정)", WATCH: "주의 - 자동 연장 실패 중", AT_RISK: "로그인 갱신 권장 - 수집 전에 세션이 끝날 수 있음(추정)",
     EXPIRED: "불가 - 지금 실제 인증이 안 됨", UNKNOWN: "확인 필요 - 로그인 기준 시각을 모름",
   };
 
-  function topBannerHtml(s) {
-    const level = sessionLevel(s);
-    if (!s || level === "ok") return "";
+  /* 경고 아래 자세한 시각(마지막 인증 성공 · keepalive · 다음 06:20 · 로그인 기준 · 쿠키 만료 예상) + 안내.
+     시각은 모두 kst() - Asia/Seoul 로 표시해요. 상단 경고와 대시보드 운영 상태가 같은 줄을 써요. */
+  function sessionDetailHtml(s) {
+    if (!s) return "";
     const a = s.auth || {};
     const k = s.keepalive || {};
     const nc = s.next_collection || {};
     const login = s.login || {};
     const t = (x) => (x ? esc(kst(x, true)) : "기록 없음");
-    const alert = level === "alert";
+    const cookieLeft = s.cookie && s.cookie.hours_left != null ? Number(s.cookie.hours_left) : null;
+    const checkedMs = s.checked_at ? Date.parse(s.checked_at) : NaN;
+    const cookieEnd = cookieLeft != null && cookieLeft > 0 && !isNaN(checkedMs) ? new Date(checkedMs + cookieLeft * 3600000) : null;
     const rows = [
       `마지막 실제 인증 성공(AUTH_OK) ${t(a.last_ok_at)}${a.last_ok_source ? ` · ${esc(a.last_ok_source)}` : ""}`,
       `자동 연장(keepalive) 마지막 성공 ${t(k.last_success_at)} · 마지막 실패 ${t(k.last_failure_at)}` +
@@ -299,7 +329,8 @@
       `다음 06:20 수집(${t(nc.at)}): ${esc(RISK_LABEL[nc.risk] || nc.risk || "확인 필요")}` +
         (nc.login_age_at_collection_hours != null ? ` · 그때 로그인 후 ${esc(nc.login_age_at_collection_hours)}시간` : ""),
       `로그인 기준 시각 ${login.known ? t(login.login_at) : "확인 필요"}` +
-        ((s.cookie && s.cookie.hours_left != null) ? ` · 쿠키 ${Number(s.cookie.hours_left).toFixed(1)}시간 남음(참고 - 쿠키만으로 정상 판단 안 함)` : ""),
+        (cookieLeft != null ? ` · 쿠키 ${cookieLeft.toFixed(1)}시간 남음(참고 - 쿠키만으로 정상 판단 안 함)` : "") +
+        (cookieEnd ? ` · 쿠키 만료 예상 ${t(cookieEnd)}` : ""),
     ];
     const when = nc.login_now_covers_next
       ? " 지금 로그인하면 다음 06:20 수집까지 유지될 것으로 추정해요(약 24시간 패턴)."
@@ -307,12 +338,29 @@
     const hint = s.action_hint
       ? `<div style="margin-top:6px;font-weight:600">안내: ${esc(s.action_hint)}${when}</div>`
       : "";
-    const box = alert
+    return `<ul style="margin:4px 0 0;padding-left:18px;font-size:12px">${rows.map((r) => `<li>${r}</li>`).join("")}</ul>${hint}`;
+  }
+
+  function topBannerHtml(s) {
+    const d = sessionDisplay(s);
+    if (d.kind === "ok") return "";
+    const red = d.kind === "expired";
+    const box = red
       ? "border:1px solid #f2c0c0;background:#fdecec;color:#8c2020"
       : "border:1px solid #f3cfa4;background:#fff4e8;color:#8a4b12";
-    return `<div role="${alert ? "alert" : "status"}" class="wing-session-top" style="${box};border-radius:9px;padding:10px 14px;margin:10px 16px 0;font-size:13px;line-height:1.55">
-      <b>${alert ? "WING 로그인 필요" : "WING 세션 확인 필요"}</b> · ${esc(bodyText(bodyText(s.message, "WING 로그인 필요"), "확인 필요"))}
-      <ul style="margin:4px 0 0;padding-left:18px;font-size:12px">${rows.map((r) => `<li>${r}</li>`).join("")}</ul>${hint}</div>`;
+    const a = s.auth || {};
+    const nowOk = d.kind === "renew" && a.state === "AUTH_OK" && !a.stale
+      ? `지금 WING 인증은 정상이에요${a.checked_at ? `(${esc(kst(a.checked_at, true))} 확인)` : ""}. ` : "";
+    return `<div role="${red ? "alert" : "status"}" class="wing-session-top wing-session-top--${d.kind}" style="${box};border-radius:9px;padding:10px 14px;margin:10px 16px 0;font-size:13px;line-height:1.55">
+      <b>${esc(d.title)}</b> · ${nowOk}${esc(d.reason)}
+      ${sessionDetailHtml(s)}</div>`;
+  }
+
+  /* 대시보드는 운영 상태 카드가 같은 WING 경고(자세한 시각 포함)를 그려요 - 상단에 한 번 더 쓰지 않아요. */
+  function onDashboard() {
+    if (typeof location === "undefined" || !location) return false;
+    const h = String(location.hash || "").replace(/^#\/?/, "") || "dashboard";
+    return h.split(/[/?]/)[0] === "dashboard";
   }
 
   const TOP_CACHE_MS = 60 * 1000;
@@ -336,7 +384,7 @@
       }
       topCache = { at: Date.now(), session };
     }
-    const html = topBannerHtml(session);
+    const html = onDashboard() ? "" : topBannerHtml(session);
     el.innerHTML = html;
     el.hidden = !html;
     return session;
@@ -488,6 +536,7 @@
   global.SalesRefresh = {
     click, isBusy, buttonHtml, statusLineHtml, todayCardHtml, dayLineHtml, loadDayState,
     loadHealth, sessionBannerHtml, sessionStateText, topBannerHtml, renderTopBanner, reconSummary, reconText,
+    sessionDisplay, sessionDetailHtml,
     summarizeHistory, reasonText, resultHeadline, requestRefresh, kst,
     DATA_BASIS, BTN_CLASS, _lastResults: lastResults,
   };

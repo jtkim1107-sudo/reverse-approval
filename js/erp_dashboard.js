@@ -85,8 +85,16 @@
 
   // ── A. 운영 상태 ─────────────────────────────────────────────────────────
   const RISK_TEXT = { OK: ["ok", "다음 06:20 수집 가능(추정)"], WATCH: ["check", "다음 06:20 수집 주의 - 자동 연장 실패 중"],
-    AT_RISK: ["check", "다음 06:20 수집 위험 - 수집 전에 세션이 끝날 수 있음"], EXPIRED: ["error", "다음 06:20 수집 불가 - WING 로그인 필요"],
+    AT_RISK: ["check", "다음 06:20 수집 전 로그인 갱신 권장"], EXPIRED: ["error", "다음 06:20 수집 불가 - WING 로그인 필요"],
     UNKNOWN: ["check", "다음 06:20 수집 확인 필요"] };
+  // WING 경고 판정은 상단 경고와 같은 함수(SalesRefresh.sessionDisplay). 없으면(옛 스크립트) 서버 level 그대로 - 빨강은 안전한 쪽.
+  const sessionView = s => {
+    if (root.SalesRefresh && root.SalesRefresh.sessionDisplay) return root.SalesRefresh.sessionDisplay(s);
+    const lv = s.level || (s.needs_renewal ? "alert" : s.warning ? "warn" : "ok");
+    if (lv === "alert") return { kind: "expired", tone: "error", title: "WING 로그인 필요", reason: s.message || "" };
+    if (lv === "warn") return { kind: "check", tone: "check", title: "WING 세션 확인 필요", reason: s.message || "" };
+    return { kind: "ok", tone: "ok", title: "", reason: "" };
+  };
   const MAIL_BAD = ["MAIL_FAILED", "MAIL_SEND_UNKNOWN", "MAIL_SENT_RECORD_FAILED", "MAIL_DATA_CHECK_NEEDED", "MAIL_LEGACY_REVIEW"];
 
   /** in = { health, dataDate, today, yesterday, dayState(어제 매출 수집 이력 요약), adYesterday(광고비 어제 상태),
@@ -98,15 +106,21 @@
     if (inp.healthError || !inp.health) items.push({ key: "wing", tone: "none", text: "WING 상태 확인 불가", why: humanize(inp.healthError) || "상태 API 응답 없음" });
     else if (!s) items.push({ key: "wing", tone: "none", text: "WING 상태 정보 없음" });
     else {
-      const lv = s.level || (s.needs_renewal ? "alert" : s.warning ? "warn" : "ok");
       const a = s.auth || {};
-      if (lv === "alert") items.push({ key: "wing", tone: "error", text: "WING 로그인 필요", why: reason(s.message, "WING 로그인 필요") || "WING 실제 인증이 안 돼요", guide: true });
-      else if (lv === "warn") items.push({ key: "wing", tone: "check", text: "WING 세션 확인 필요", why: reason(s.message, "WING 세션 확인 필요"), guide: true });
-      else items.push({ key: "wing", tone: "ok", text: "WING 인증 정상", sub: a.checked_at ? `${hm(a.checked_at)} 확인` : "" });
-      const nc = s.next_collection;
-      if (nc && nc.risk) {
-        const [tone, text] = RISK_TEXT[nc.risk] || ["check", "다음 06:20 수집 확인 필요"];
-        items.push({ key: "next", tone, text, guide: tone !== "ok" });
+      const d = sessionView(s);
+      if (d.kind === "ok") {
+        items.push({ key: "wing", tone: "ok", text: "WING 인증 정상", sub: a.checked_at ? `${hm(a.checked_at)} 확인` : "" });
+        const nc = s.next_collection;
+        if (nc && nc.risk) {
+          const [tone, text] = RISK_TEXT[nc.risk] || ["check", "다음 06:20 수집 확인 필요"];
+          items.push({ key: "next", tone, text, guide: tone !== "ok" });
+        }
+      } else {
+        // 2026-09-15 [사용자 지시] WING 경고는 한 줄로 합쳐요(인증 상태 + 다음 06:20) - 자세한 시각은 같은 줄 아래.
+        // 대시보드에서는 화면 맨 위 WING 경고를 따로 그리지 않아요(SalesRefresh.renderTopBanner).
+        const detail = root.SalesRefresh && root.SalesRefresh.sessionDetailHtml ? root.SalesRefresh.sessionDetailHtml(s) : "";
+        items.push({ key: "wing", tone: d.tone, text: d.title, why: reason(d.reason, d.title) || (d.kind === "expired" ? "WING 실제 인증이 안 돼요" : ""),
+          guide: true, detail });
       }
     }
     // 마지막 정상 수집 · 데이터 기준일
@@ -181,9 +195,9 @@
         <div class="dash-actions">${guide ? `<button type="button" class="btn sm secondary" onclick="dashboardWingGuide()">WING 로그인 갱신 방법 보기</button>` : ""}
           ${refreshBtn}</div></div>
       <ul class="dash-problems">${m.problems.map(p => `<li>${badge(p.tone, p.text)}
-        ${p.why ? `<span class="dash-why">${esc(p.why)}</span>` : ""}${p.href ? link(p.href, "해당 화면") : ""}</li>`).join("")}</ul>
+        ${p.why ? `<span class="dash-why">${esc(p.why)}</span>` : ""}${p.href ? link(p.href, "해당 화면") : ""}
+        ${p.detail ? `<div class="dash-wing-detail" style="flex:1 1 100%;min-width:0;color:var(--text-sub);overflow-wrap:anywhere">${p.detail}</div>` : ""}</li>`).join("")}</ul>
       <div class="dash-status-rest">${others.map(chip).join("")}<small class="dash-status-at">갱신 ${esc(hm(at))}</small></div>
-      ${m.items.some(i => i.key === "wing" && i.tone !== "ok") ? `<p class="dash-note">자세한 인증·자동 연장 시각은 화면 맨 위 WING 안내에 있어요.</p>` : ""}
     </section>`;
   }
 
