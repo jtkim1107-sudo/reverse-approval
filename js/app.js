@@ -508,6 +508,8 @@ const routes = {
   inventory: { title: "재고 현황", render: viewInventory },
   purchasereco: { title: "발주 추천", render: viewPurchaseReco },
   profit: { title: "공헌이익", render: viewProfit },
+  // 2026-09-16 상품별 광고·이익(js/ad_product_profit.js) - 광고센터 보고서 올리기·조회만(광고 조작 없음)
+  adprofit: { title: "상품별 광고·이익", render: () => (globalThis.AdProductProfit ? AdProductProfit.view() : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   vat: { title: "부가세", render: viewVat },
   report: { title: "월별 리포트", render: viewReport },
   cash: { title: "자금일보", render: viewCash },

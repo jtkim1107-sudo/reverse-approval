@@ -1316,3 +1316,47 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
   .cmv2-stats .cmv2-stat-main { grid-column: 1 / -1; }
   .cmv2-stats .cmv2-stat-main .stat-value { font-size: 25px; }
 }
+
+/* ===== 2026-09-16 상품별 광고·이익 (js/ad_product_profit.js) ===== */
+.adp-page .card { margin-bottom: 14px; }
+.adp-form { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+.adp-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-sub); min-width: 0; }
+.adp-form input, .adp-form select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--text); max-width: 100%; }
+.adp-form select { max-width: 360px; }
+.adp-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 16px; margin-bottom: 14px; }
+.adp-meta > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.adp-meta span { font-size: 12px; color: var(--text-sub); }
+.adp-meta b { overflow-wrap: anywhere; }
+.adp-meta small, .adp-kv small { color: var(--text-sub); font-size: 11.5px; overflow-wrap: anywhere; }
+.adp-note, .adp-scope { font-size: 12.5px; color: var(--text-sub); margin: 6px 0 10px; line-height: 1.5; }
+.adp-scope { background: var(--amber-bg); color: #6b4a00; padding: 8px 10px; border-radius: 8px; }
+.adp-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.adp-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.adp-table td.num small, .adp-table td small { display: block; color: var(--text-sub); font-size: 11.5px; }
+.adp-table td.erp-card-head small { display: block; }
+.adp-missing { color: var(--text-sub); }
+.adp-missing small { display: block; white-space: normal; max-width: 200px; margin-left: auto; font-size: 11px; line-height: 1.3; }
+.adp-neg { color: var(--red); }
+.adp-form label.adp-check { flex-direction: row; align-items: flex-start; gap: 6px; max-width: 420px; line-height: 1.4; }
+.adp-form label.adp-check input { width: auto; margin-top: 2px; }
+.adp-muted { color: var(--text-sub); font-size: 12px; }
+.adp-detail td { background: var(--bg); white-space: normal; }
+.adp-table tr[hidden] { display: none !important; }
+.adp-v { display: flex; flex-direction: column; align-items: flex-end; min-width: 0; }
+.adp-table td.adp-status .adp-v { align-items: flex-start; }
+.adp-bep { display: flex; flex-direction: column; align-items: flex-end; }
+.adp-bep + .adp-bep { margin-top: 4px; }
+.adp-detail-btn { margin-top: 4px; }
+.adp-kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px 16px; }
+.adp-kv > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.adp-kv span { font-size: 12px; color: var(--text-sub); }
+.adp-kv b { font-weight: 600; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .adp-form { flex-direction: column; align-items: stretch; }
+  .adp-form label { width: 100%; }
+  .adp-form input, .adp-form select { width: 100%; max-width: 100%; min-width: 0; box-sizing: border-box; }
+  .adp-detail td { display: block; }
+  .adp-v { align-items: flex-end; text-align: right; }
+  .adp-missing small { max-width: none; margin-left: 0; }
+  .adp-kv { grid-template-columns: 1fr; }
+}

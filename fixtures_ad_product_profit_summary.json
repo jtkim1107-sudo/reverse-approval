@@ -1,0 +1,4891 @@
+{
+ "complete": {
+  "version": "ad_product_profit_v1",
+  "calc_version": "cm_settlement_v2.7",
+  "period": {
+   "start": "2026-09-01",
+   "end": "2026-09-02",
+   "date_basis": "광고 클릭일"
+  },
+  "today": "2026-09-20",
+  "source": {
+   "report": {
+    "file_name": "A00000000_pa_total_campaign_20260901_20260902.xlsx",
+    "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6",
+    "content_sha256": "4ef166d91596c7a92234949e6e540a2db1c7a2052c3b935a410fd5a619436cf5",
+    "report_key": "A00000000|pa|total|2026-09-01|2026-09-02",
+    "extracted_at": "2026-09-03T09:00:00+09:00",
+    "extracted_at_source": "MANUAL_CONFIRMED",
+    "extracted_at_verified": true,
+    "extracted_before_period_end": false,
+    "rows": 8,
+    "imported_at": "2026-09-17T03:44:14+09:00",
+    "import_decision": "NEW",
+    "original_extracted_at": "2026-09-03T09:00:00+09:00",
+    "original_extracted_at_source": "MANUAL_CONFIRMED",
+    "provenance_history": [
+     {
+      "kind": "IMPORT",
+      "extracted_at": "2026-09-03T09:00:00+09:00",
+      "extracted_at_source": "MANUAL_CONFIRMED",
+      "verified": true,
+      "at": "2026-09-17T03:44:14+09:00",
+      "by": "contract",
+      "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6"
+     }
+    ]
+   },
+   "margin_bundle": {
+    "run_dir": "sample",
+    "generated_at": "2026-09-03T16:00:00+09:00"
+   },
+   "settlement_ref": {
+    "file": "cmg.xlsx",
+    "collected_at": "2026-09-03T06:00:00+09:00"
+   }
+  },
+  "attribution": {
+   "window_days": 14,
+   "last_click_date": "2026-09-02",
+   "window_elapses_after": "2026-09-16",
+   "extracted_at": "2026-09-03T09:00:00+09:00",
+   "extraction_time_verified": true,
+   "status": "PROVISIONAL",
+   "note": "마지막 클릭일 2026-09-02 의 14일 전환은 2026-09-16 이 끝난 뒤 다시 받은 보고서에서만 확정 가까워져요"
+  },
+  "report_coverage": {
+   "status": "COMPLETE",
+   "campaigns": 2,
+   "basis": "정산 캠페인 이름 목록과 보고서 캠페인 이름이 같음"
+  },
+  "mapping": {
+   "status": "OK",
+   "source": {
+    "run_dir": "sample",
+    "generated_at": "2026-09-03T16:00:00+09:00"
+   },
+   "rule": "product_channel_mapping.external_id 만(상품명 연결 없음)"
+  },
+  "margin": {
+   "status": "AVAILABLE_PROVISIONAL",
+   "reason": null,
+   "period": "2026-09-01~2026-09-02",
+   "unmapped_sales": {},
+   "open_cycle_days": [],
+   "partial_month": true
+  },
+  "buckets": {
+   "RG": {
+    "spend": 890,
+    "adv_rev_14d": 99000,
+    "conv_rev_14d": 99000,
+    "conv_qty_14d": 8,
+    "options_adv": 4,
+    "options_conv": 4,
+    "options_all": 5
+   },
+   "MP": {
+    "spend": 60,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "options_adv": 1,
+    "options_conv": 1,
+    "options_all": 1
+   },
+   "UNMAPPED": {
+    "spend": 30,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 1,
+    "options_conv": 1,
+    "options_all": 1
+   },
+   "AMBIGUOUS": {
+    "spend": 10,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 1,
+    "options_conv": 1,
+    "options_all": 1
+   },
+   "MAPPING_UNKNOWN": {
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 0,
+    "options_conv": 0,
+    "options_all": 0
+   }
+  },
+  "cross_option": {
+   "rows": 2,
+   "rev_14d": 33000,
+   "spend": 40
+  },
+  "billed_allocation": {
+   "status": "ALLOCATED",
+   "by_product": {
+    "A-1": 530.7692307692307,
+    "A-1-S2": 159.23076923076923,
+    "B-1": 158.33333333333334,
+    "Z-1": 31.666666666666668
+   },
+   "campaigns": [
+    {
+     "campaign_name": "캠A",
+     "settlement_amount": 700.0,
+     "settlement_billable": 690.0,
+     "over_budget": 10.0,
+     "report_campaign_id": "105000001",
+     "report_spend": 650,
+     "report_rg_spend": 650,
+     "report_rg_minus_settlement": -50.0,
+     "status": "ALLOCATED",
+     "allocated": 690.0,
+     "unallocated": 0.0,
+     "method": "spend_share_within_campaign"
+    },
+    {
+     "campaign_name": "캠B",
+     "settlement_amount": 200.0,
+     "settlement_billable": 190.0,
+     "over_budget": 10.0,
+     "report_campaign_id": "105000002",
+     "report_spend": 340,
+     "report_rg_spend": 240,
+     "report_rg_minus_settlement": 40.0,
+     "status": "ALLOCATED",
+     "allocated": 190.0,
+     "unallocated": 0.0,
+     "method": "spend_share_within_campaign"
+    }
+   ],
+   "report_campaigns_without_settlement": [],
+   "settlement_billable_total": 880.0,
+   "allocated_total": 880.0,
+   "unallocated_billable": 0.0,
+   "ref_file": "cmg.xlsx",
+   "ref_collected_at": "2026-09-03T06:00:00+09:00",
+   "link": "캠페인 이름(정산서에 캠페인 ID 없음) - 금액 배분용, 상품 연결 근거 아님"
+  },
+  "unallocated_costs": {
+   "status": "LISTED",
+   "statement": "상품 이익·광고 후 이익·손익분기는 모두 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 아래 비용은 상품별 귀속이 확인되지 않아 배분하지 않았어요",
+   "rg_monthly_common": {
+    "range": "2026-09-01~2026-09-02",
+    "available": false,
+    "status": "COST_SUMMARY_MISSING",
+    "reason": "정산 원천 월 비용 조회(2026-09-01~2026-09-02) 없음",
+    "total": null,
+    "items": [],
+    "same_period_missing": true,
+    "other_ranges_not_used": [],
+    "attribution": "정산 원천(수익현황) 기간 합계 - 상품별 값 없음(정산 행에 물류비 칸 없음)"
+   },
+   "inbound_freight": {
+    "status": "NOT_IN_SOURCE",
+    "amount": null,
+    "reason": "기여액 입력 묶음에 입고 트럭 운송비 없음(inbound_freight_by_month 비어 있음). 상품 배부(PLT·선입선출)는 기존 화면 계산에만 있고 서버 정산 계산과 대사되지 않아 금액을 모름 - 이익에 미포함"
+   },
+   "mp_parcel_packaging": {
+    "status": "INCLUDED_IN_COGS",
+    "basis": null,
+    "effective_from": "2026-08-01",
+    "note": "판매자배송 택배비·포장비는 상품원가에 포함(대표 확인) - 별도 차감 없음"
+   },
+   "ad": {
+    "mp_spend_direct": 60,
+    "unmapped_spend_direct": 30,
+    "ambiguous_spend_direct": 10,
+    "mapping_unknown_spend_direct": 0,
+    "unallocated_billable": 0.0,
+    "outside_rg_accrued_in_contribution": 90.0,
+    "over_budget_not_billed": 20.0,
+    "note": "보고서 광고비(실제 집행)와 기여액 광고비(청구·ACCRUED)는 기준이 달라요 - 더하지 않아요"
+   }
+  },
+  "products": [
+   {
+    "bucket": "RG",
+    "product_code": "A-1",
+    "key": "A-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 500,
+     "impressions": 2000,
+     "clicks": 20,
+     "adv_rev_14d": 75000,
+     "adv_orders_14d": 6,
+     "adv_qty_14d": 6,
+     "adv_rev_1d": 75000,
+     "adv_rev_14d_same_option": 55000,
+     "adv_rev_14d_cross": 20000,
+     "conv_rev_14d": 68000,
+     "conv_qty_14d": 6,
+     "conv_orders_14d": 6,
+     "conv_rev_14d_from_own_ads": 55000,
+     "conv_rev_14d_from_other_ads": 13000,
+     "options": [
+      "9001",
+      "9003"
+     ],
+     "campaigns": [
+      "105000001"
+     ],
+     "roas_14d_advertised": 15000.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 500,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 531,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 2.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 68000,
+     "conv_qty_14d": 6,
+     "from_own_ads": 55000,
+     "from_other_ads": 13000,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 6000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 1000,
+     "cm_before_ads_and_common": 3000,
+     "margin_rate_pct": 30.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 3000,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 1.0,
+     "recovery_check_pending_amount": 3000,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 366.7,
+      "unit": "%",
+      "margin_rate": 30.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 183.3,
+      "unit": "%",
+      "margin_rate": 60.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": true,
+      "provisional": true
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 2500,
+      "margin_pct": 25.0,
+      "margin_pct_reason": null,
+      "before_ad": 3000,
+      "ad_deducted": 500,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 5500,
+      "recovery_provisional": true,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 2469,
+      "margin_pct": 24.69,
+      "margin_pct_reason": null,
+      "before_ad": 3000,
+      "ad_deducted": 531,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 5469,
+      "recovery_provisional": true,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "A-1-S2",
+    "key": "A-1-S2",
+    "set_parent_code": "A-1",
+    "ad": {
+     "spend": 150,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 20000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 20000,
+     "options": [
+      "9002"
+     ],
+     "campaigns": [
+      "105000001"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 150,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 159,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 18182,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 20000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 0,
+     "from_other_ads": 20000,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 18182,
+     "cost": 6000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 2000,
+     "cm_before_ads_and_common": 10182,
+     "margin_rate_pct": 56.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 196.4,
+      "unit": "%",
+      "margin_rate": 56.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 196.4,
+      "unit": "%",
+      "margin_rate": 56.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": true,
+      "provisional": false
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 10032,
+      "margin_pct": 55.18,
+      "margin_pct_reason": null,
+      "before_ad": 10182,
+      "ad_deducted": 150,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 10032,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 10023,
+      "margin_pct": 55.12,
+      "margin_pct_reason": null,
+      "before_ad": 10182,
+      "ad_deducted": 159,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 10023,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "B-1",
+    "key": "B-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 200,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 11000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 11000,
+     "adv_rev_14d_same_option": 11000,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 11000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 11000,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9004"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 5500.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 200,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 158,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 11000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 11000,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 20000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 1000,
+     "cm_before_ads_and_common": -11000,
+     "margin_rate_pct": -110.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "NONPOSITIVE_MARGIN: 광고비 차감 전 이익 -11,000원 - 어떤 ROAS 로도 손익분기 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "NONPOSITIVE_MARGIN: 광고비 차감 전 이익 -11,000원 - 어떤 ROAS 로도 손익분기 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": -11200,
+      "margin_pct": -112.0,
+      "margin_pct_reason": null,
+      "before_ad": -11000,
+      "ad_deducted": 200,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": -11200,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": -11158,
+      "margin_pct": -111.58,
+      "margin_pct_reason": null,
+      "before_ad": -11000,
+      "ad_deducted": 158,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": -11158,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "N-1",
+    "key": "N-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 0,
+     "note": "NO_ROWS_IN_COMPLETE_REPORT: 전체 캠페인 보고서에 이 상품 옵션 행 없음(클릭 0)"
+    },
+    "ad_spend": {
+     "direct_actual": 0,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 5000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": null,
+    "margin": {
+     "revenue_supply": 5000,
+     "cost": 2000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 500,
+     "cm_before_ads_and_common": 2500,
+     "margin_rate_pct": 50.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 220.0,
+      "unit": "%",
+      "margin_rate": 50.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 220.0,
+      "unit": "%",
+      "margin_rate": 50.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": true,
+      "provisional": false
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 2500,
+      "margin_pct": 50.0,
+      "margin_pct_reason": null,
+      "before_ad": 2500,
+      "ad_deducted": 0,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 2500,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 2500,
+      "margin_pct": 50.0,
+      "margin_pct_reason": null,
+      "before_ad": 2500,
+      "ad_deducted": 0,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 2500,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "Z-1",
+    "key": "Z-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 40,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 13000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 13000,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 13000,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9005"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 32500.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 40,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 32,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 1000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 1000,
+     "cm_before_ads_and_common": 8000,
+     "margin_rate_pct": 80.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "면세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 125.0,
+      "unit": "%",
+      "margin_rate": 80.0,
+      "vat_factor": 1.0,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 125.0,
+      "unit": "%",
+      "margin_rate": 80.0,
+      "vat_factor": 1.0,
+      "provisional_recovery_included": true,
+      "provisional": false
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 7960,
+      "margin_pct": 79.6,
+      "margin_pct_reason": null,
+      "before_ad": 8000,
+      "ad_deducted": 40,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 7960,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 7968,
+      "margin_pct": 79.68,
+      "margin_pct_reason": null,
+      "before_ad": 8000,
+      "ad_deducted": 32,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 7968,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "MP",
+    "product_code": "M-1",
+    "key": "M-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 60,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 11000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 11000,
+     "adv_rev_14d_same_option": 11000,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 11000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 11000,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9006"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 18333.3,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 60,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "정산 밖(마켓플레이스) - 계정 단위 ACCRUED 에만 있음",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 11000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 11000,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 1000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": null,
+     "cm_before_ads_and_common": null,
+     "margin_rate_pct": null,
+     "profit_withheld_reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄",
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 1,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     }
+    }
+   },
+   {
+    "bucket": "UNMAPPED",
+    "product_code": null,
+    "key": "UNMAPPED 9007",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 30,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9007"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 30,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "AMBIGUOUS",
+    "product_code": null,
+    "key": "AMBIGUOUS 9008",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 10,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9008"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 10,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   }
+  ],
+  "options": [
+   {
+    "option_id": "9001",
+    "bucket": "RG",
+    "product_code": "A-1",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 500,
+    "adv_rev_14d": 75000,
+    "conv_rev_14d": 55000,
+    "conv_qty_14d": 5,
+    "rows": 2
+   },
+   {
+    "option_id": "9004",
+    "bucket": "RG",
+    "product_code": "B-1",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 200,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9002",
+    "bucket": "RG",
+    "product_code": "A-1-S2",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": "A-1",
+    "candidates": null,
+    "spend": 150,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 20000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9006",
+    "bucket": "MP",
+    "product_code": "M-1",
+    "channel": "marketplace",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 60,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9005",
+    "bucket": "RG",
+    "product_code": "Z-1",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 40,
+    "adv_rev_14d": 13000,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9007",
+    "bucket": "UNMAPPED",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 30,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9008",
+    "bucket": "AMBIGUOUS",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": [
+     [
+      "marketplace",
+      "M-1"
+     ],
+     [
+      "rocket_growth",
+      "A-1"
+     ]
+    ],
+    "spend": 10,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9003",
+    "bucket": "RG",
+    "product_code": "A-1",
+    "channel": "rocket_growth",
+    "resale_return": true,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 13000,
+    "conv_qty_14d": 1,
+    "rows": 0
+   }
+  ],
+  "parent_rollup": [
+   {
+    "bucket": "RG",
+    "parent_code": "A-1",
+    "members": [
+     "A-1",
+     "A-1-S2"
+    ],
+    "spend": 650,
+    "adv_rev_14d": 75000,
+    "conv_rev_14d": 88000,
+    "roas_14d_advertised": 11538.5
+   }
+  ],
+  "reconciliation": {
+   "checks": [
+    {
+     "code": "REPORT_SPEND_BUCKETS",
+     "label": "보고서 광고비 = RG + MP + 미매핑 + 모호",
+     "status": "OK",
+     "left": 990,
+     "right": 990,
+     "diff": 0.0
+    },
+    {
+     "code": "REPORT_CONV_BY_CONVERSION_OPTION",
+     "label": "보고서 14일 전환매출 = 전환 옵션 버킷 합",
+     "status": "OK",
+     "left": 110000,
+     "right": 110000,
+     "diff": 0.0
+    },
+    {
+     "code": "REPORT_CONV_BY_ADVERTISED_OPTION",
+     "label": "보고서 14일 전환매출 = 광고집행 옵션 버킷 합",
+     "status": "OK",
+     "left": 110000,
+     "right": 110000,
+     "diff": 0.0
+    },
+    {
+     "code": "ACCOUNT_DAILY_TOTAL",
+     "label": "보고서 광고비 vs 계정 일별 합계(WING 광고 지표)",
+     "status": "DIFFERENT",
+     "left": 990,
+     "right": 1000.0,
+     "diff": -10.0
+    },
+    {
+     "code": "ACCOUNT_RANGE_TOTAL",
+     "label": "보고서 광고비 vs 계정 기간 합계(WING 구간 조회)",
+     "status": "MATCHED",
+     "left": 990,
+     "right": 990.0,
+     "diff": 0.0
+    },
+    {
+     "code": "RG_SETTLEMENT_AMOUNT",
+     "label": "RG 매핑 광고비 vs 로켓그로스 정산 광고비(집행)",
+     "status": "DIFFERENT",
+     "left": 890,
+     "right": 900.0,
+     "diff": -10.0
+    },
+    {
+     "code": "OUTSIDE_SETTLEMENT",
+     "label": "MP + 미매핑 + 모호 광고비 vs 계정 기간 합계 − 정산 광고비",
+     "status": "DIFFERENT",
+     "left": 100,
+     "right": 90.0,
+     "diff": 10.0
+    },
+    {
+     "code": "ALLOCATED_EQUALS_COVERED_BILLABLE",
+     "label": "상품 배분 청구액 합 = 연결된 캠페인 청구 대상액(전체 AD_BILLED 가 아니라 덮은 부분만)",
+     "status": "OK",
+     "left": 880,
+     "right": 880,
+     "diff": 0.0
+    },
+    {
+     "code": "ALLOCATED_NOT_ABOVE_AD_BILLED",
+     "label": "상품 배분 청구액 ≤ 기여액 AD_BILLED(이중 차감 없음)",
+     "status": "OK",
+     "left": 880,
+     "right": 880.0
+    }
+   ],
+   "failed": [],
+   "report_totals": {
+    "impressions": 8000,
+    "clicks": 80,
+    "spend": 990,
+    "orders_14d": 9,
+    "qty_14d": 9,
+    "rev_14d": 110000,
+    "orders_1d": 9,
+    "qty_1d": 9,
+    "rev_1d": 110000
+   },
+   "buckets_spend": {
+    "RG": 890,
+    "MP": 60,
+    "UNMAPPED": 30,
+    "AMBIGUOUS": 10,
+    "MAPPING_UNKNOWN": 0
+   },
+   "cross_option": {
+    "rows": 2,
+    "rev_14d": 33000,
+    "spend": 40
+   },
+   "coverage": {
+    "status": "COMPLETE",
+    "campaigns": 2,
+    "basis": "정산 캠페인 이름 목록과 보고서 캠페인 이름이 같음"
+   },
+   "product_erp_totals": {
+    "status": "MATCHED",
+    "detail": {
+     "status": "MATCHED",
+     "contribution": {
+      "revenue": 63182,
+      "cost": 36000,
+      "fee": 5500,
+      "recovery_auto": 3000
+     },
+     "product_sum": {
+      "revenue": 63182,
+      "cost": 36000,
+      "fee": 5500,
+      "recovery_auto": 3000
+     },
+     "diffs": {},
+     "ad_cm_amount_in_contribution": 970.0,
+     "note": "상품별 이익에는 광고비가 없어요 - 기여액의 광고비 줄(AD_*)은 계정·정산 단위로 따로 한 번만 빠져요"
+    },
+    "margin_status": "AVAILABLE_PROVISIONAL"
+   }
+  },
+  "labels": {
+   "vat": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+   "amount_kinds": {
+    "DIRECT_ACTUAL": "보고서 옵션 실제 집행",
+    "ALLOCATED_ESTIMATE": "정산 청구액 배분 추정",
+    "UNALLOCATED": "상품에 배분하지 않음"
+   }
+  },
+  "other_files_same_period": [
+   {
+    "file_name": "A00000000_pa_total_campaign_20260901_20260902.xlsx",
+    "decision": "PARTIAL_SUBSET",
+    "extracted_at": "2026-09-03T10:00:00+09:00",
+    "extracted_at_verified": true,
+    "confirmations": 0,
+    "campaigns": 1,
+    "spend": 650,
+    "counted": false
+   }
+  ],
+  "invariant_failures": [],
+  "status": "OK",
+  "generated_at": "2026-09-17T03:44:14+09:00"
+ },
+ "pending": {
+  "version": "ad_product_profit_v1",
+  "calc_version": "cm_settlement_v2.7",
+  "period": {
+   "start": "2026-09-01",
+   "end": "2026-09-02",
+   "date_basis": "광고 클릭일"
+  },
+  "today": "2026-09-20",
+  "source": {
+   "report": {
+    "file_name": "A00000000_pa_total_campaign_20260901_20260902.xlsx",
+    "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6",
+    "content_sha256": "4ef166d91596c7a92234949e6e540a2db1c7a2052c3b935a410fd5a619436cf5",
+    "report_key": "A00000000|pa|total|2026-09-01|2026-09-02",
+    "extracted_at": "2026-09-03T09:00:00+09:00",
+    "extracted_at_source": "MANUAL_CONFIRMED",
+    "extracted_at_verified": true,
+    "extracted_before_period_end": false,
+    "rows": 8,
+    "imported_at": "2026-09-17T03:44:14+09:00",
+    "import_decision": "NEW",
+    "original_extracted_at": "2026-09-03T09:00:00+09:00",
+    "original_extracted_at_source": "MANUAL_CONFIRMED",
+    "provenance_history": [
+     {
+      "kind": "IMPORT",
+      "extracted_at": "2026-09-03T09:00:00+09:00",
+      "extracted_at_source": "MANUAL_CONFIRMED",
+      "verified": true,
+      "at": "2026-09-17T03:44:14+09:00",
+      "by": "contract",
+      "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6"
+     }
+    ]
+   },
+   "margin_bundle": null,
+   "settlement_ref": {
+    "file": null,
+    "collected_at": null
+   }
+  },
+  "attribution": {
+   "window_days": 14,
+   "last_click_date": "2026-09-02",
+   "window_elapses_after": "2026-09-16",
+   "extracted_at": "2026-09-03T09:00:00+09:00",
+   "extraction_time_verified": true,
+   "status": "PROVISIONAL",
+   "note": "마지막 클릭일 2026-09-02 의 14일 전환은 2026-09-16 이 끝난 뒤 다시 받은 보고서에서만 확정 가까워져요"
+  },
+  "report_coverage": {
+   "status": "UNVERIFIED",
+   "reason": "정산 캠페인 목록이 없어 전체 캠페인 포함 여부 확인 불가"
+  },
+  "mapping": {
+   "status": "MISSING",
+   "source": null,
+   "rule": "product_channel_mapping.external_id 만(상품명 연결 없음)"
+  },
+  "margin": {
+   "status": "PENDING",
+   "reason": "MARGIN_SOURCE_MISSING: /var/folders/97/svybnz894bl0b2lt24cjsz280000gp/T/tmpe25w_lid 에 2026-09 · 끝날 2026-09-02 이후를 덮고 2026-09-02 다음 날 이후 만든 기여액 입력 묶음(bundle.json + manifest.json) 없음",
+   "period": null,
+   "unmapped_sales": null,
+   "open_cycle_days": null,
+   "partial_month": null
+  },
+  "buckets": {
+   "RG": {
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 0,
+    "options_conv": 0,
+    "options_all": 0
+   },
+   "MP": {
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 0,
+    "options_conv": 0,
+    "options_all": 0
+   },
+   "UNMAPPED": {
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 0,
+    "options_conv": 0,
+    "options_all": 0
+   },
+   "AMBIGUOUS": {
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 0,
+    "options_conv": 0,
+    "options_all": 0
+   },
+   "MAPPING_UNKNOWN": {
+    "spend": 990,
+    "adv_rev_14d": 110000,
+    "conv_rev_14d": 110000,
+    "conv_qty_14d": 9,
+    "options_adv": 7,
+    "options_conv": 7,
+    "options_all": 8
+   }
+  },
+  "cross_option": {
+   "rows": 2,
+   "rev_14d": 33000,
+   "spend": 40
+  },
+  "billed_allocation": {
+   "status": "UNAVAILABLE",
+   "reason": "상품 이익 입력 묶음 없음",
+   "by_product": {},
+   "campaigns": [],
+   "unallocated_billable": null
+  },
+  "unallocated_costs": {
+   "status": "SOURCE_MISSING",
+   "statement": "상품 이익·광고 후 이익·손익분기는 모두 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전",
+   "ad": {
+    "mp_spend_direct": 0,
+    "unmapped_spend_direct": 0,
+    "ambiguous_spend_direct": 0,
+    "mapping_unknown_spend_direct": 990,
+    "unallocated_billable": null,
+    "outside_rg_accrued_in_contribution": null,
+    "over_budget_not_billed": null,
+    "note": "보고서 광고비(실제 집행)와 기여액 광고비(청구·ACCRUED)는 기준이 달라요 - 더하지 않아요"
+   },
+   "rg_monthly_common": null,
+   "inbound_freight": null,
+   "mp_parcel_packaging": null
+  },
+  "products": [
+   {
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "key": "MAPPING_UNKNOWN 9001",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 500,
+     "impressions": 2000,
+     "clicks": 20,
+     "adv_rev_14d": 75000,
+     "adv_orders_14d": 6,
+     "adv_qty_14d": 6,
+     "adv_rev_1d": 75000,
+     "adv_rev_14d_same_option": 55000,
+     "adv_rev_14d_cross": 20000,
+     "conv_rev_14d": 55000,
+     "conv_qty_14d": 5,
+     "conv_orders_14d": 5,
+     "conv_rev_14d_from_own_ads": 55000,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9001"
+     ],
+     "campaigns": [
+      "105000001"
+     ],
+     "roas_14d_advertised": 15000.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 500,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 55000,
+     "conv_qty_14d": 5,
+     "from_own_ads": 55000,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "key": "MAPPING_UNKNOWN 9002",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 150,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 20000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 20000,
+     "options": [
+      "9002"
+     ],
+     "campaigns": [
+      "105000001"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 150,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 20000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 0,
+     "from_other_ads": 20000,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "key": "MAPPING_UNKNOWN 9003",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 0,
+     "impressions": 0,
+     "clicks": 0,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 13000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 13000,
+     "options": [
+      "9003"
+     ],
+     "campaigns": [],
+     "roas_14d_advertised": null,
+     "roas_reason": "NO_SPEND: 광고비 0원(전환만 받은 옵션)"
+    },
+    "ad_spend": {
+     "direct_actual": 0,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 13000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 0,
+     "from_other_ads": 13000,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "key": "MAPPING_UNKNOWN 9004",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 200,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 11000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 11000,
+     "adv_rev_14d_same_option": 11000,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 11000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 11000,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9004"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 5500.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 200,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 11000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 11000,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "key": "MAPPING_UNKNOWN 9005",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 40,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 13000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 13000,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 13000,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9005"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 32500.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 40,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "key": "MAPPING_UNKNOWN 9006",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 60,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 11000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 11000,
+     "adv_rev_14d_same_option": 11000,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 11000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 11000,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9006"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 18333.3,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 60,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 11000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 11000,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "key": "MAPPING_UNKNOWN 9007",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 30,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9007"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 30,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "key": "MAPPING_UNKNOWN 9008",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 10,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9008"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 10,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   }
+  ],
+  "options": [
+   {
+    "option_id": "9001",
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 500,
+    "adv_rev_14d": 75000,
+    "conv_rev_14d": 55000,
+    "conv_qty_14d": 5,
+    "rows": 2
+   },
+   {
+    "option_id": "9004",
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 200,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9002",
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 150,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 20000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9006",
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 60,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9005",
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 40,
+    "adv_rev_14d": 13000,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9007",
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 30,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9008",
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 10,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9003",
+    "bucket": "MAPPING_UNKNOWN",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 13000,
+    "conv_qty_14d": 1,
+    "rows": 0
+   }
+  ],
+  "parent_rollup": [],
+  "reconciliation": {
+   "checks": [
+    {
+     "code": "REPORT_SPEND_BUCKETS",
+     "label": "보고서 광고비 = RG + MP + 미매핑 + 모호",
+     "status": "OK",
+     "left": 990,
+     "right": 990,
+     "diff": 0.0
+    },
+    {
+     "code": "REPORT_CONV_BY_CONVERSION_OPTION",
+     "label": "보고서 14일 전환매출 = 전환 옵션 버킷 합",
+     "status": "OK",
+     "left": 110000,
+     "right": 110000,
+     "diff": 0.0
+    },
+    {
+     "code": "REPORT_CONV_BY_ADVERTISED_OPTION",
+     "label": "보고서 14일 전환매출 = 광고집행 옵션 버킷 합",
+     "status": "OK",
+     "left": 110000,
+     "right": 110000,
+     "diff": 0.0
+    }
+   ],
+   "failed": [],
+   "report_totals": {
+    "impressions": 8000,
+    "clicks": 80,
+    "spend": 990,
+    "orders_14d": 9,
+    "qty_14d": 9,
+    "rev_14d": 110000,
+    "orders_1d": 9,
+    "qty_1d": 9,
+    "rev_1d": 110000
+   },
+   "buckets_spend": {
+    "RG": 0,
+    "MP": 0,
+    "UNMAPPED": 0,
+    "AMBIGUOUS": 0,
+    "MAPPING_UNKNOWN": 990
+   },
+   "cross_option": {
+    "rows": 2,
+    "rev_14d": 33000,
+    "spend": 40
+   },
+   "coverage": {
+    "status": "UNVERIFIED",
+    "reason": "정산 캠페인 목록이 없어 전체 캠페인 포함 여부 확인 불가"
+   },
+   "product_erp_totals": {
+    "status": "PENDING",
+    "reason": "MARGIN_SOURCE_MISSING: /var/folders/97/svybnz894bl0b2lt24cjsz280000gp/T/tmpe25w_lid 에 2026-09 · 끝날 2026-09-02 이후를 덮고 2026-09-02 다음 날 이후 만든 기여액 입력 묶음(bundle.json + manifest.json) 없음"
+   }
+  },
+  "labels": {
+   "vat": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+   "amount_kinds": {
+    "DIRECT_ACTUAL": "보고서 옵션 실제 집행",
+    "ALLOCATED_ESTIMATE": "정산 청구액 배분 추정",
+    "UNALLOCATED": "상품에 배분하지 않음"
+   }
+  },
+  "other_files_same_period": [
+   {
+    "file_name": "A00000000_pa_total_campaign_20260901_20260902.xlsx",
+    "decision": "PARTIAL_SUBSET",
+    "extracted_at": "2026-09-03T10:00:00+09:00",
+    "extracted_at_verified": true,
+    "confirmations": 0,
+    "campaigns": 1,
+    "spend": 650,
+    "counted": false
+   }
+  ],
+  "invariant_failures": [],
+  "status": "OK",
+  "generated_at": "2026-09-17T03:44:14+09:00"
+ },
+ "no_report": {
+  "status": "NO_REPORT",
+  "period": {
+   "start": "2026-08-01",
+   "end": "2026-08-02"
+  },
+  "message": "이 기간의 활성 광고 보고서가 없어요 - 광고센터 상품광고 보고서(합계) 파일을 올려 주세요"
+ },
+ "unverified": {
+  "version": "ad_product_profit_v1",
+  "calc_version": "cm_settlement_v2.7",
+  "period": {
+   "start": "2026-09-01",
+   "end": "2026-09-02",
+   "date_basis": "광고 클릭일"
+  },
+  "today": "2026-09-20",
+  "source": {
+   "report": {
+    "file_name": "A00000000_pa_total_campaign_20260901_20260902.xlsx",
+    "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6",
+    "content_sha256": "4ef166d91596c7a92234949e6e540a2db1c7a2052c3b935a410fd5a619436cf5",
+    "report_key": "A00000000|pa|total|2026-09-01|2026-09-02",
+    "extracted_at": null,
+    "extracted_at_source": "UNKNOWN",
+    "extracted_at_verified": false,
+    "extracted_before_period_end": null,
+    "rows": 8,
+    "imported_at": "2026-09-17T03:44:14+09:00",
+    "import_decision": "NEW",
+    "original_extracted_at": null,
+    "original_extracted_at_source": "UNKNOWN",
+    "provenance_history": [
+     {
+      "kind": "IMPORT",
+      "extracted_at": null,
+      "extracted_at_source": "UNKNOWN",
+      "verified": false,
+      "at": "2026-09-17T03:44:14+09:00",
+      "by": "contract",
+      "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6"
+     }
+    ]
+   },
+   "margin_bundle": {
+    "run_dir": "sample",
+    "generated_at": "2026-09-03T16:00:00+09:00"
+   },
+   "settlement_ref": {
+    "file": "cmg.xlsx",
+    "collected_at": "2026-09-03T06:00:00+09:00"
+   }
+  },
+  "attribution": {
+   "window_days": 14,
+   "last_click_date": "2026-09-02",
+   "window_elapses_after": "2026-09-16",
+   "extracted_at": null,
+   "extraction_time_verified": false,
+   "status": "PROVISIONAL",
+   "note": "추출 시각이 확인되지 않아 14일 창이 지났는지 알 수 없어요 - 확정으로 보지 않음(실제 추출 시각을 넣어 다시 올려 주세요)"
+  },
+  "report_coverage": {
+   "status": "EXTRACTION_TIME_UNVERIFIED",
+   "reason": "추출 시각이 확인되지 않아 끝날 광고비가 다 들어간 파일인지 알 수 없어요 - 행 없는 상품 광고비를 0 으로 보지 않음"
+  },
+  "mapping": {
+   "status": "OK",
+   "source": {
+    "run_dir": "sample",
+    "generated_at": "2026-09-03T16:00:00+09:00"
+   },
+   "rule": "product_channel_mapping.external_id 만(상품명 연결 없음)"
+  },
+  "margin": {
+   "status": "AVAILABLE_PROVISIONAL",
+   "reason": null,
+   "period": "2026-09-01~2026-09-02",
+   "unmapped_sales": {},
+   "open_cycle_days": [],
+   "partial_month": true
+  },
+  "buckets": {
+   "RG": {
+    "spend": 890,
+    "adv_rev_14d": 99000,
+    "conv_rev_14d": 99000,
+    "conv_qty_14d": 8,
+    "options_adv": 4,
+    "options_conv": 4,
+    "options_all": 5
+   },
+   "MP": {
+    "spend": 60,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "options_adv": 1,
+    "options_conv": 1,
+    "options_all": 1
+   },
+   "UNMAPPED": {
+    "spend": 30,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 1,
+    "options_conv": 1,
+    "options_all": 1
+   },
+   "AMBIGUOUS": {
+    "spend": 10,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 1,
+    "options_conv": 1,
+    "options_all": 1
+   },
+   "MAPPING_UNKNOWN": {
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 0,
+    "options_conv": 0,
+    "options_all": 0
+   }
+  },
+  "cross_option": {
+   "rows": 2,
+   "rev_14d": 33000,
+   "spend": 40
+  },
+  "billed_allocation": {
+   "status": "ALLOCATED",
+   "by_product": {
+    "A-1": 530.7692307692307,
+    "A-1-S2": 159.23076923076923,
+    "B-1": 158.33333333333334,
+    "Z-1": 31.666666666666668
+   },
+   "campaigns": [
+    {
+     "campaign_name": "캠A",
+     "settlement_amount": 700.0,
+     "settlement_billable": 690.0,
+     "over_budget": 10.0,
+     "report_campaign_id": "105000001",
+     "report_spend": 650,
+     "report_rg_spend": 650,
+     "report_rg_minus_settlement": -50.0,
+     "status": "ALLOCATED",
+     "allocated": 690.0,
+     "unallocated": 0.0,
+     "method": "spend_share_within_campaign"
+    },
+    {
+     "campaign_name": "캠B",
+     "settlement_amount": 200.0,
+     "settlement_billable": 190.0,
+     "over_budget": 10.0,
+     "report_campaign_id": "105000002",
+     "report_spend": 340,
+     "report_rg_spend": 240,
+     "report_rg_minus_settlement": 40.0,
+     "status": "ALLOCATED",
+     "allocated": 190.0,
+     "unallocated": 0.0,
+     "method": "spend_share_within_campaign"
+    }
+   ],
+   "report_campaigns_without_settlement": [],
+   "settlement_billable_total": 880.0,
+   "allocated_total": 880.0,
+   "unallocated_billable": 0.0,
+   "ref_file": "cmg.xlsx",
+   "ref_collected_at": "2026-09-03T06:00:00+09:00",
+   "link": "캠페인 이름(정산서에 캠페인 ID 없음) - 금액 배분용, 상품 연결 근거 아님"
+  },
+  "unallocated_costs": {
+   "status": "LISTED",
+   "statement": "상품 이익·광고 후 이익·손익분기는 모두 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 아래 비용은 상품별 귀속이 확인되지 않아 배분하지 않았어요",
+   "rg_monthly_common": {
+    "range": "2026-09-01~2026-09-02",
+    "available": false,
+    "status": "COST_SUMMARY_MISSING",
+    "reason": "정산 원천 월 비용 조회(2026-09-01~2026-09-02) 없음",
+    "total": null,
+    "items": [],
+    "same_period_missing": true,
+    "other_ranges_not_used": [],
+    "attribution": "정산 원천(수익현황) 기간 합계 - 상품별 값 없음(정산 행에 물류비 칸 없음)"
+   },
+   "inbound_freight": {
+    "status": "NOT_IN_SOURCE",
+    "amount": null,
+    "reason": "기여액 입력 묶음에 입고 트럭 운송비 없음(inbound_freight_by_month 비어 있음). 상품 배부(PLT·선입선출)는 기존 화면 계산에만 있고 서버 정산 계산과 대사되지 않아 금액을 모름 - 이익에 미포함"
+   },
+   "mp_parcel_packaging": {
+    "status": "INCLUDED_IN_COGS",
+    "basis": null,
+    "effective_from": "2026-08-01",
+    "note": "판매자배송 택배비·포장비는 상품원가에 포함(대표 확인) - 별도 차감 없음"
+   },
+   "ad": {
+    "mp_spend_direct": 60,
+    "unmapped_spend_direct": 30,
+    "ambiguous_spend_direct": 10,
+    "mapping_unknown_spend_direct": 0,
+    "unallocated_billable": 0.0,
+    "outside_rg_accrued_in_contribution": 90.0,
+    "over_budget_not_billed": 20.0,
+    "note": "보고서 광고비(실제 집행)와 기여액 광고비(청구·ACCRUED)는 기준이 달라요 - 더하지 않아요"
+   }
+  },
+  "products": [
+   {
+    "bucket": "RG",
+    "product_code": "A-1",
+    "key": "A-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 500,
+     "impressions": 2000,
+     "clicks": 20,
+     "adv_rev_14d": 75000,
+     "adv_orders_14d": 6,
+     "adv_qty_14d": 6,
+     "adv_rev_1d": 75000,
+     "adv_rev_14d_same_option": 55000,
+     "adv_rev_14d_cross": 20000,
+     "conv_rev_14d": 68000,
+     "conv_qty_14d": 6,
+     "conv_orders_14d": 6,
+     "conv_rev_14d_from_own_ads": 55000,
+     "conv_rev_14d_from_other_ads": 13000,
+     "options": [
+      "9001",
+      "9003"
+     ],
+     "campaigns": [
+      "105000001"
+     ],
+     "roas_14d_advertised": 15000.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 500,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 531,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 2.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 68000,
+     "conv_qty_14d": 6,
+     "from_own_ads": 55000,
+     "from_other_ads": 13000,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 6000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 1000,
+     "cm_before_ads_and_common": 3000,
+     "margin_rate_pct": 30.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 3000,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 1.0,
+     "recovery_check_pending_amount": 3000,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 366.7,
+      "unit": "%",
+      "margin_rate": 30.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 183.3,
+      "unit": "%",
+      "margin_rate": 60.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": true,
+      "provisional": true
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 2500,
+      "margin_pct": 25.0,
+      "margin_pct_reason": null,
+      "before_ad": 3000,
+      "ad_deducted": 500,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 5500,
+      "recovery_provisional": true,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 2469,
+      "margin_pct": 24.69,
+      "margin_pct_reason": null,
+      "before_ad": 3000,
+      "ad_deducted": 531,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 5469,
+      "recovery_provisional": true,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "A-1-S2",
+    "key": "A-1-S2",
+    "set_parent_code": "A-1",
+    "ad": {
+     "spend": 150,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 20000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 20000,
+     "options": [
+      "9002"
+     ],
+     "campaigns": [
+      "105000001"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 150,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 159,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 18182,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 20000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 0,
+     "from_other_ads": 20000,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 18182,
+     "cost": 6000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 2000,
+     "cm_before_ads_and_common": 10182,
+     "margin_rate_pct": 56.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 196.4,
+      "unit": "%",
+      "margin_rate": 56.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 196.4,
+      "unit": "%",
+      "margin_rate": 56.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": true,
+      "provisional": false
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 10032,
+      "margin_pct": 55.18,
+      "margin_pct_reason": null,
+      "before_ad": 10182,
+      "ad_deducted": 150,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 10032,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 10023,
+      "margin_pct": 55.12,
+      "margin_pct_reason": null,
+      "before_ad": 10182,
+      "ad_deducted": 159,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 10023,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "B-1",
+    "key": "B-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 200,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 11000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 11000,
+     "adv_rev_14d_same_option": 11000,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 11000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 11000,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9004"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 5500.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 200,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 158,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 11000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 11000,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 20000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 1000,
+     "cm_before_ads_and_common": -11000,
+     "margin_rate_pct": -110.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "NONPOSITIVE_MARGIN: 광고비 차감 전 이익 -11,000원 - 어떤 ROAS 로도 손익분기 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "NONPOSITIVE_MARGIN: 광고비 차감 전 이익 -11,000원 - 어떤 ROAS 로도 손익분기 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": -11200,
+      "margin_pct": -112.0,
+      "margin_pct_reason": null,
+      "before_ad": -11000,
+      "ad_deducted": 200,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": -11200,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": -11158,
+      "margin_pct": -111.58,
+      "margin_pct_reason": null,
+      "before_ad": -11000,
+      "ad_deducted": 158,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": -11158,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "N-1",
+    "key": "N-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": null,
+     "note": "UNKNOWN: 보고서가 전체 캠페인을 덮는지 확인 안 됨(EXTRACTION_TIME_UNVERIFIED)"
+    },
+    "ad_spend": {
+     "direct_actual": null,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 5000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": null,
+    "margin": {
+     "revenue_supply": 5000,
+     "cost": 2000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 500,
+     "cm_before_ads_and_common": 2500,
+     "margin_rate_pct": 50.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 220.0,
+      "unit": "%",
+      "margin_rate": 50.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 220.0,
+      "unit": "%",
+      "margin_rate": 50.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": true,
+      "provisional": false
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "AD_SPEND_UNKNOWN: 보고서가 전체 캠페인을 덮는지 확인 안 됨 - 광고비 모름"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "ALLOCATION_UNAVAILABLE: ALLOCATED"
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "Z-1",
+    "key": "Z-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 40,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 13000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 13000,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 13000,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9005"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 32500.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 40,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 32,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 1000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 1000,
+     "cm_before_ads_and_common": 8000,
+     "margin_rate_pct": 80.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "면세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 125.0,
+      "unit": "%",
+      "margin_rate": 80.0,
+      "vat_factor": 1.0,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 125.0,
+      "unit": "%",
+      "margin_rate": 80.0,
+      "vat_factor": 1.0,
+      "provisional_recovery_included": true,
+      "provisional": false
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 7960,
+      "margin_pct": 79.6,
+      "margin_pct_reason": null,
+      "before_ad": 8000,
+      "ad_deducted": 40,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 7960,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 7968,
+      "margin_pct": 79.68,
+      "margin_pct_reason": null,
+      "before_ad": 8000,
+      "ad_deducted": 32,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 7968,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "MP",
+    "product_code": "M-1",
+    "key": "M-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 60,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 11000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 11000,
+     "adv_rev_14d_same_option": 11000,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 11000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 11000,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9006"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 18333.3,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 60,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "정산 밖(마켓플레이스) - 계정 단위 ACCRUED 에만 있음",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 11000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 11000,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 1000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": null,
+     "cm_before_ads_and_common": null,
+     "margin_rate_pct": null,
+     "profit_withheld_reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄",
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 1,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     }
+    }
+   },
+   {
+    "bucket": "UNMAPPED",
+    "product_code": null,
+    "key": "UNMAPPED 9007",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 30,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9007"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 30,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "AMBIGUOUS",
+    "product_code": null,
+    "key": "AMBIGUOUS 9008",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 10,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9008"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 10,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "PROVISIONAL"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   }
+  ],
+  "options": [
+   {
+    "option_id": "9001",
+    "bucket": "RG",
+    "product_code": "A-1",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 500,
+    "adv_rev_14d": 75000,
+    "conv_rev_14d": 55000,
+    "conv_qty_14d": 5,
+    "rows": 2
+   },
+   {
+    "option_id": "9004",
+    "bucket": "RG",
+    "product_code": "B-1",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 200,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9002",
+    "bucket": "RG",
+    "product_code": "A-1-S2",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": "A-1",
+    "candidates": null,
+    "spend": 150,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 20000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9006",
+    "bucket": "MP",
+    "product_code": "M-1",
+    "channel": "marketplace",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 60,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9005",
+    "bucket": "RG",
+    "product_code": "Z-1",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 40,
+    "adv_rev_14d": 13000,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9007",
+    "bucket": "UNMAPPED",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 30,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9008",
+    "bucket": "AMBIGUOUS",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": [
+     [
+      "marketplace",
+      "M-1"
+     ],
+     [
+      "rocket_growth",
+      "A-1"
+     ]
+    ],
+    "spend": 10,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9003",
+    "bucket": "RG",
+    "product_code": "A-1",
+    "channel": "rocket_growth",
+    "resale_return": true,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 13000,
+    "conv_qty_14d": 1,
+    "rows": 0
+   }
+  ],
+  "parent_rollup": [
+   {
+    "bucket": "RG",
+    "parent_code": "A-1",
+    "members": [
+     "A-1",
+     "A-1-S2"
+    ],
+    "spend": 650,
+    "adv_rev_14d": 75000,
+    "conv_rev_14d": 88000,
+    "roas_14d_advertised": 11538.5
+   }
+  ],
+  "reconciliation": {
+   "checks": [
+    {
+     "code": "REPORT_SPEND_BUCKETS",
+     "label": "보고서 광고비 = RG + MP + 미매핑 + 모호",
+     "status": "OK",
+     "left": 990,
+     "right": 990,
+     "diff": 0.0
+    },
+    {
+     "code": "REPORT_CONV_BY_CONVERSION_OPTION",
+     "label": "보고서 14일 전환매출 = 전환 옵션 버킷 합",
+     "status": "OK",
+     "left": 110000,
+     "right": 110000,
+     "diff": 0.0
+    },
+    {
+     "code": "REPORT_CONV_BY_ADVERTISED_OPTION",
+     "label": "보고서 14일 전환매출 = 광고집행 옵션 버킷 합",
+     "status": "OK",
+     "left": 110000,
+     "right": 110000,
+     "diff": 0.0
+    },
+    {
+     "code": "ACCOUNT_DAILY_TOTAL",
+     "label": "보고서 광고비 vs 계정 일별 합계(WING 광고 지표)",
+     "status": "DIFFERENT",
+     "left": 990,
+     "right": 1000.0,
+     "diff": -10.0
+    },
+    {
+     "code": "ACCOUNT_RANGE_TOTAL",
+     "label": "보고서 광고비 vs 계정 기간 합계(WING 구간 조회)",
+     "status": "MATCHED",
+     "left": 990,
+     "right": 990.0,
+     "diff": 0.0
+    },
+    {
+     "code": "RG_SETTLEMENT_AMOUNT",
+     "label": "RG 매핑 광고비 vs 로켓그로스 정산 광고비(집행)",
+     "status": "DIFFERENT",
+     "left": 890,
+     "right": 900.0,
+     "diff": -10.0
+    },
+    {
+     "code": "OUTSIDE_SETTLEMENT",
+     "label": "MP + 미매핑 + 모호 광고비 vs 계정 기간 합계 − 정산 광고비",
+     "status": "DIFFERENT",
+     "left": 100,
+     "right": 90.0,
+     "diff": 10.0
+    },
+    {
+     "code": "ALLOCATED_EQUALS_COVERED_BILLABLE",
+     "label": "상품 배분 청구액 합 = 연결된 캠페인 청구 대상액(전체 AD_BILLED 가 아니라 덮은 부분만)",
+     "status": "OK",
+     "left": 880,
+     "right": 880,
+     "diff": 0.0
+    },
+    {
+     "code": "ALLOCATED_NOT_ABOVE_AD_BILLED",
+     "label": "상품 배분 청구액 ≤ 기여액 AD_BILLED(이중 차감 없음)",
+     "status": "OK",
+     "left": 880,
+     "right": 880.0
+    }
+   ],
+   "failed": [],
+   "report_totals": {
+    "impressions": 8000,
+    "clicks": 80,
+    "spend": 990,
+    "orders_14d": 9,
+    "qty_14d": 9,
+    "rev_14d": 110000,
+    "orders_1d": 9,
+    "qty_1d": 9,
+    "rev_1d": 110000
+   },
+   "buckets_spend": {
+    "RG": 890,
+    "MP": 60,
+    "UNMAPPED": 30,
+    "AMBIGUOUS": 10,
+    "MAPPING_UNKNOWN": 0
+   },
+   "cross_option": {
+    "rows": 2,
+    "rev_14d": 33000,
+    "spend": 40
+   },
+   "coverage": {
+    "status": "EXTRACTION_TIME_UNVERIFIED",
+    "reason": "추출 시각이 확인되지 않아 끝날 광고비가 다 들어간 파일인지 알 수 없어요 - 행 없는 상품 광고비를 0 으로 보지 않음"
+   },
+   "product_erp_totals": {
+    "status": "MATCHED",
+    "detail": {
+     "status": "MATCHED",
+     "contribution": {
+      "revenue": 63182,
+      "cost": 36000,
+      "fee": 5500,
+      "recovery_auto": 3000
+     },
+     "product_sum": {
+      "revenue": 63182,
+      "cost": 36000,
+      "fee": 5500,
+      "recovery_auto": 3000
+     },
+     "diffs": {},
+     "ad_cm_amount_in_contribution": 970.0,
+     "note": "상품별 이익에는 광고비가 없어요 - 기여액의 광고비 줄(AD_*)은 계정·정산 단위로 따로 한 번만 빠져요"
+    },
+    "margin_status": "AVAILABLE_PROVISIONAL"
+   }
+  },
+  "labels": {
+   "vat": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+   "amount_kinds": {
+    "DIRECT_ACTUAL": "보고서 옵션 실제 집행",
+    "ALLOCATED_ESTIMATE": "정산 청구액 배분 추정",
+    "UNALLOCATED": "상품에 배분하지 않음"
+   }
+  },
+  "other_files_same_period": [],
+  "invariant_failures": [],
+  "status": "OK",
+  "generated_at": "2026-09-17T03:44:14+09:00"
+ },
+ "confirmed": {
+  "version": "ad_product_profit_v1",
+  "calc_version": "cm_settlement_v2.7",
+  "period": {
+   "start": "2026-09-01",
+   "end": "2026-09-02",
+   "date_basis": "광고 클릭일"
+  },
+  "today": "2026-09-20",
+  "source": {
+   "report": {
+    "file_name": "A00000000_pa_total_campaign_20260901_20260902.xlsx",
+    "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6",
+    "content_sha256": "4ef166d91596c7a92234949e6e540a2db1c7a2052c3b935a410fd5a619436cf5",
+    "report_key": "A00000000|pa|total|2026-09-01|2026-09-02",
+    "extracted_at": "2026-09-17T10:00:00+09:00",
+    "extracted_at_source": "MANUAL_CONFIRMED",
+    "extracted_at_verified": true,
+    "extracted_before_period_end": false,
+    "rows": 8,
+    "imported_at": "2026-09-20T12:00:00+09:00",
+    "import_decision": "NEW",
+    "original_extracted_at": null,
+    "original_extracted_at_source": "UNKNOWN",
+    "provenance_history": [
+     {
+      "kind": "IMPORT",
+      "extracted_at": null,
+      "extracted_at_source": "UNKNOWN",
+      "verified": false,
+      "at": "2026-09-20T12:00:00+09:00",
+      "by": "contract",
+      "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6"
+     },
+     {
+      "kind": "CONFIRMED",
+      "via": "SAME_FILE",
+      "extracted_at": "2026-09-17T10:00:00+09:00",
+      "extracted_at_source": "MANUAL_CONFIRMED",
+      "verified": true,
+      "at": "2026-09-20T12:00:00+09:00",
+      "by": "contract",
+      "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6"
+     }
+    ]
+   },
+   "margin_bundle": {
+    "run_dir": "sample",
+    "generated_at": "2026-09-03T16:00:00+09:00"
+   },
+   "settlement_ref": {
+    "file": "cmg.xlsx",
+    "collected_at": "2026-09-03T06:00:00+09:00"
+   }
+  },
+  "attribution": {
+   "window_days": 14,
+   "last_click_date": "2026-09-02",
+   "window_elapses_after": "2026-09-16",
+   "extracted_at": "2026-09-17T10:00:00+09:00",
+   "extraction_time_verified": true,
+   "status": "WINDOW_ELAPSED",
+   "note": "14일 창은 지났어요 - 쿠팡 반영 지연이 있을 수 있어 최신 추출 기준"
+  },
+  "report_coverage": {
+   "status": "COMPLETE",
+   "campaigns": 2,
+   "basis": "정산 캠페인 이름 목록과 보고서 캠페인 이름이 같음"
+  },
+  "mapping": {
+   "status": "OK",
+   "source": {
+    "run_dir": "sample",
+    "generated_at": "2026-09-03T16:00:00+09:00"
+   },
+   "rule": "product_channel_mapping.external_id 만(상품명 연결 없음)"
+  },
+  "margin": {
+   "status": "AVAILABLE_PROVISIONAL",
+   "reason": null,
+   "period": "2026-09-01~2026-09-02",
+   "unmapped_sales": {},
+   "open_cycle_days": [],
+   "partial_month": true
+  },
+  "buckets": {
+   "RG": {
+    "spend": 890,
+    "adv_rev_14d": 99000,
+    "conv_rev_14d": 99000,
+    "conv_qty_14d": 8,
+    "options_adv": 4,
+    "options_conv": 4,
+    "options_all": 5
+   },
+   "MP": {
+    "spend": 60,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "options_adv": 1,
+    "options_conv": 1,
+    "options_all": 1
+   },
+   "UNMAPPED": {
+    "spend": 30,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 1,
+    "options_conv": 1,
+    "options_all": 1
+   },
+   "AMBIGUOUS": {
+    "spend": 10,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 1,
+    "options_conv": 1,
+    "options_all": 1
+   },
+   "MAPPING_UNKNOWN": {
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "options_adv": 0,
+    "options_conv": 0,
+    "options_all": 0
+   }
+  },
+  "cross_option": {
+   "rows": 2,
+   "rev_14d": 33000,
+   "spend": 40
+  },
+  "billed_allocation": {
+   "status": "ALLOCATED",
+   "by_product": {
+    "A-1": 530.7692307692307,
+    "A-1-S2": 159.23076923076923,
+    "B-1": 158.33333333333334,
+    "Z-1": 31.666666666666668
+   },
+   "campaigns": [
+    {
+     "campaign_name": "캠A",
+     "settlement_amount": 700.0,
+     "settlement_billable": 690.0,
+     "over_budget": 10.0,
+     "report_campaign_id": "105000001",
+     "report_spend": 650,
+     "report_rg_spend": 650,
+     "report_rg_minus_settlement": -50.0,
+     "status": "ALLOCATED",
+     "allocated": 690.0,
+     "unallocated": 0.0,
+     "method": "spend_share_within_campaign"
+    },
+    {
+     "campaign_name": "캠B",
+     "settlement_amount": 200.0,
+     "settlement_billable": 190.0,
+     "over_budget": 10.0,
+     "report_campaign_id": "105000002",
+     "report_spend": 340,
+     "report_rg_spend": 240,
+     "report_rg_minus_settlement": 40.0,
+     "status": "ALLOCATED",
+     "allocated": 190.0,
+     "unallocated": 0.0,
+     "method": "spend_share_within_campaign"
+    }
+   ],
+   "report_campaigns_without_settlement": [],
+   "settlement_billable_total": 880.0,
+   "allocated_total": 880.0,
+   "unallocated_billable": 0.0,
+   "ref_file": "cmg.xlsx",
+   "ref_collected_at": "2026-09-03T06:00:00+09:00",
+   "link": "캠페인 이름(정산서에 캠페인 ID 없음) - 금액 배분용, 상품 연결 근거 아님"
+  },
+  "unallocated_costs": {
+   "status": "LISTED",
+   "statement": "상품 이익·광고 후 이익·손익분기는 모두 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 아래 비용은 상품별 귀속이 확인되지 않아 배분하지 않았어요",
+   "rg_monthly_common": {
+    "range": "2026-09-01~2026-09-02",
+    "available": false,
+    "status": "COST_SUMMARY_MISSING",
+    "reason": "정산 원천 월 비용 조회(2026-09-01~2026-09-02) 없음",
+    "total": null,
+    "items": [],
+    "same_period_missing": true,
+    "other_ranges_not_used": [],
+    "attribution": "정산 원천(수익현황) 기간 합계 - 상품별 값 없음(정산 행에 물류비 칸 없음)"
+   },
+   "inbound_freight": {
+    "status": "NOT_IN_SOURCE",
+    "amount": null,
+    "reason": "기여액 입력 묶음에 입고 트럭 운송비 없음(inbound_freight_by_month 비어 있음). 상품 배부(PLT·선입선출)는 기존 화면 계산에만 있고 서버 정산 계산과 대사되지 않아 금액을 모름 - 이익에 미포함"
+   },
+   "mp_parcel_packaging": {
+    "status": "INCLUDED_IN_COGS",
+    "basis": null,
+    "effective_from": "2026-08-01",
+    "note": "판매자배송 택배비·포장비는 상품원가에 포함(대표 확인) - 별도 차감 없음"
+   },
+   "ad": {
+    "mp_spend_direct": 60,
+    "unmapped_spend_direct": 30,
+    "ambiguous_spend_direct": 10,
+    "mapping_unknown_spend_direct": 0,
+    "unallocated_billable": 0.0,
+    "outside_rg_accrued_in_contribution": 90.0,
+    "over_budget_not_billed": 20.0,
+    "note": "보고서 광고비(실제 집행)와 기여액 광고비(청구·ACCRUED)는 기준이 달라요 - 더하지 않아요"
+   }
+  },
+  "products": [
+   {
+    "bucket": "RG",
+    "product_code": "A-1",
+    "key": "A-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 500,
+     "impressions": 2000,
+     "clicks": 20,
+     "adv_rev_14d": 75000,
+     "adv_orders_14d": 6,
+     "adv_qty_14d": 6,
+     "adv_rev_1d": 75000,
+     "adv_rev_14d_same_option": 55000,
+     "adv_rev_14d_cross": 20000,
+     "conv_rev_14d": 68000,
+     "conv_qty_14d": 6,
+     "conv_orders_14d": 6,
+     "conv_rev_14d_from_own_ads": 55000,
+     "conv_rev_14d_from_other_ads": 13000,
+     "options": [
+      "9001",
+      "9003"
+     ],
+     "campaigns": [
+      "105000001"
+     ],
+     "roas_14d_advertised": 15000.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 500,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 531,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 2.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 68000,
+     "conv_qty_14d": 6,
+     "from_own_ads": 55000,
+     "from_other_ads": 13000,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "WINDOW_ELAPSED"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 6000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 1000,
+     "cm_before_ads_and_common": 3000,
+     "margin_rate_pct": 30.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 3000,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 1.0,
+     "recovery_check_pending_amount": 3000,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 366.7,
+      "unit": "%",
+      "margin_rate": 30.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 183.3,
+      "unit": "%",
+      "margin_rate": 60.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": true,
+      "provisional": true
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 2500,
+      "margin_pct": 25.0,
+      "margin_pct_reason": null,
+      "before_ad": 3000,
+      "ad_deducted": 500,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 5500,
+      "recovery_provisional": true,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 2469,
+      "margin_pct": 24.69,
+      "margin_pct_reason": null,
+      "before_ad": 3000,
+      "ad_deducted": 531,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 5469,
+      "recovery_provisional": true,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "A-1-S2",
+    "key": "A-1-S2",
+    "set_parent_code": "A-1",
+    "ad": {
+     "spend": 150,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 20000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 20000,
+     "options": [
+      "9002"
+     ],
+     "campaigns": [
+      "105000001"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 150,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 159,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 18182,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 20000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 0,
+     "from_other_ads": 20000,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "WINDOW_ELAPSED"
+    },
+    "margin": {
+     "revenue_supply": 18182,
+     "cost": 6000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 2000,
+     "cm_before_ads_and_common": 10182,
+     "margin_rate_pct": 56.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 196.4,
+      "unit": "%",
+      "margin_rate": 56.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 196.4,
+      "unit": "%",
+      "margin_rate": 56.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": true,
+      "provisional": false
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 10032,
+      "margin_pct": 55.18,
+      "margin_pct_reason": null,
+      "before_ad": 10182,
+      "ad_deducted": 150,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 10032,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 10023,
+      "margin_pct": 55.12,
+      "margin_pct_reason": null,
+      "before_ad": 10182,
+      "ad_deducted": 159,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 10023,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "B-1",
+    "key": "B-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 200,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 11000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 11000,
+     "adv_rev_14d_same_option": 11000,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 11000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 11000,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9004"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 5500.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 200,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 158,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 11000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 11000,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "WINDOW_ELAPSED"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 20000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 1000,
+     "cm_before_ads_and_common": -11000,
+     "margin_rate_pct": -110.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "NONPOSITIVE_MARGIN: 광고비 차감 전 이익 -11,000원 - 어떤 ROAS 로도 손익분기 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "NONPOSITIVE_MARGIN: 광고비 차감 전 이익 -11,000원 - 어떤 ROAS 로도 손익분기 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": -11200,
+      "margin_pct": -112.0,
+      "margin_pct_reason": null,
+      "before_ad": -11000,
+      "ad_deducted": 200,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": -11200,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": -11158,
+      "margin_pct": -111.58,
+      "margin_pct_reason": null,
+      "before_ad": -11000,
+      "ad_deducted": 158,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": -11158,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "N-1",
+    "key": "N-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 0,
+     "note": "NO_ROWS_IN_COMPLETE_REPORT: 전체 캠페인 보고서에 이 상품 옵션 행 없음(클릭 0)"
+    },
+    "ad_spend": {
+     "direct_actual": 0,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 5000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": null,
+    "margin": {
+     "revenue_supply": 5000,
+     "cost": 2000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 500,
+     "cm_before_ads_and_common": 2500,
+     "margin_rate_pct": 50.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 220.0,
+      "unit": "%",
+      "margin_rate": 50.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 220.0,
+      "unit": "%",
+      "margin_rate": 50.0,
+      "vat_factor": 1.1,
+      "provisional_recovery_included": true,
+      "provisional": false
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 2500,
+      "margin_pct": 50.0,
+      "margin_pct_reason": null,
+      "before_ad": 2500,
+      "ad_deducted": 0,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 2500,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 2500,
+      "margin_pct": 50.0,
+      "margin_pct_reason": null,
+      "before_ad": 2500,
+      "ad_deducted": 0,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 2500,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "RG",
+    "product_code": "Z-1",
+    "key": "Z-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 40,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 13000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 13000,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 13000,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9005"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 32500.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 40,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": 32,
+     "allocated_basis": "로켓그로스 정산 청구 대상액을 캠페인 안 RG 옵션 집행 비율로 나눈 추정",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "WINDOW_ELAPSED"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 1000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": 1000,
+     "cm_before_ads_and_common": 8000,
+     "margin_rate_pct": 80.0,
+     "profit_withheld_reason": null,
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 0,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "면세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": 125.0,
+      "unit": "%",
+      "margin_rate": 80.0,
+      "vat_factor": 1.0,
+      "provisional_recovery_included": false,
+      "provisional": false
+     },
+     "including_provisional_recovery": {
+      "value": 125.0,
+      "unit": "%",
+      "margin_rate": 80.0,
+      "vat_factor": 1.0,
+      "provisional_recovery_included": true,
+      "provisional": false
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": 7960,
+      "margin_pct": 79.6,
+      "margin_pct_reason": null,
+      "before_ad": 8000,
+      "ad_deducted": 40,
+      "ad_kind": "DIRECT_ACTUAL",
+      "with_provisional_recovery": 7960,
+      "recovery_provisional": false,
+      "note": null
+     },
+     "accounting_basis": {
+      "value": 7968,
+      "margin_pct": 79.68,
+      "margin_pct_reason": null,
+      "before_ad": 8000,
+      "ad_deducted": 32,
+      "ad_kind": "ALLOCATED_ESTIMATE",
+      "with_provisional_recovery": 7968,
+      "recovery_provisional": false,
+      "note": null
+     }
+    }
+   },
+   {
+    "bucket": "MP",
+    "product_code": "M-1",
+    "key": "M-1",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 60,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 11000,
+     "adv_orders_14d": 1,
+     "adv_qty_14d": 1,
+     "adv_rev_1d": 11000,
+     "adv_rev_14d_same_option": 11000,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 11000,
+     "conv_qty_14d": 1,
+     "conv_orders_14d": 1,
+     "conv_rev_14d_from_own_ads": 11000,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9006"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 18333.3,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 60,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "정산 밖(마켓플레이스) - 계정 단위 ACCRUED 에만 있음",
+     "kind": "DIRECT_ACTUAL"
+    },
+    "sales_account_wide": {
+     "revenue_supply": 10000,
+     "qty": 1.0,
+     "basis": "ERP 정산 기준 순매출(공급가액·쿠폰·취소 반영)",
+     "period": "2026-09-01~2026-09-02"
+    },
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 11000,
+     "conv_qty_14d": 1,
+     "from_own_ads": 11000,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "WINDOW_ELAPSED"
+    },
+    "margin": {
+     "revenue_supply": 10000,
+     "cost": 1000,
+     "cost_basis": "HISTORY_OR_PURCHASE",
+     "fee": null,
+     "cm_before_ads_and_common": null,
+     "margin_rate_pct": null,
+     "profit_withheld_reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄",
+     "cost_unconfirmed": false,
+     "cost_fallback_rows": 0,
+     "fee_unknown_rows": 1,
+     "fee_cycle_open": 0,
+     "fee_estimated": 0,
+     "tax_type": "과세",
+     "recovery_auto_provisional": 0,
+     "return_loss": 0,
+     "recovery_check_pending_qty": 0.0,
+     "recovery_check_pending_amount": 0,
+     "recovery_check_pending_unknown_cost_rows": 0,
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 광고비 차감 전",
+     "status": "AVAILABLE_PROVISIONAL"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "FEE_INCOMPLETE: 수수료 요율 미확인 1줄"
+     }
+    }
+   },
+   {
+    "bucket": "UNMAPPED",
+    "product_code": null,
+    "key": "UNMAPPED 9007",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 30,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9007"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 30,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "WINDOW_ELAPSED"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   },
+   {
+    "bucket": "AMBIGUOUS",
+    "product_code": null,
+    "key": "AMBIGUOUS 9008",
+    "set_parent_code": null,
+    "ad": {
+     "spend": 10,
+     "impressions": 1000,
+     "clicks": 10,
+     "adv_rev_14d": 0,
+     "adv_orders_14d": 0,
+     "adv_qty_14d": 0,
+     "adv_rev_1d": 0,
+     "adv_rev_14d_same_option": 0,
+     "adv_rev_14d_cross": 0,
+     "conv_rev_14d": 0,
+     "conv_qty_14d": 0,
+     "conv_orders_14d": 0,
+     "conv_rev_14d_from_own_ads": 0,
+     "conv_rev_14d_from_other_ads": 0,
+     "options": [
+      "9008"
+     ],
+     "campaigns": [
+      "105000002"
+     ],
+     "roas_14d_advertised": 0.0,
+     "roas_reason": null
+    },
+    "ad_spend": {
+     "direct_actual": 10,
+     "direct_basis": "광고센터 보고서 광고비(VAT 제외)",
+     "allocated_billed_estimate": null,
+     "allocated_basis": "배분 없음",
+     "kind": "UNALLOCATED"
+    },
+    "sales_account_wide": null,
+    "sales_ad_attributed": {
+     "conv_rev_14d_vat_incl": 0,
+     "conv_qty_14d": 0,
+     "from_own_ads": 0,
+     "from_other_ads": 0,
+     "basis": "광고센터 14일 전환매출(VAT 포함 판매가·쿠폰 반영 여부 원천 미표기)",
+     "status": "WINDOW_ELAPSED"
+    },
+    "margin": {
+     "status": "NOT_APPLICABLE",
+     "reason": "ERP 상품 매핑 없음(미매핑·모호) - 이익 계산 대상 아님"
+    },
+    "bep_roas": {
+     "excluding_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "including_provisional_recovery": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음"
+     },
+     "convention": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+     "scope": "입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 · 상품 평균 이익률을 광고 전환매출에 적용한 추정"
+    },
+    "after_ad": {
+     "scope": "광고비 차감 후 추정 · 입출고비·배송비(풀필먼트)·보관비·세이버·입고 트럭 운송비·월 공통비 등 상품에 배분하지 않은 비용 차감 전 - 최종 순이익 아님 · 전체 공헌이익에서 광고비를 다시 빼지 않음",
+     "is_final_net_profit": false,
+     "performance_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     },
+     "accounting_basis": {
+      "value": null,
+      "reason": "UNMAPPED: ERP 상품 매핑 없음 - 상품 이익 없음"
+     }
+    }
+   }
+  ],
+  "options": [
+   {
+    "option_id": "9001",
+    "bucket": "RG",
+    "product_code": "A-1",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 500,
+    "adv_rev_14d": 75000,
+    "conv_rev_14d": 55000,
+    "conv_qty_14d": 5,
+    "rows": 2
+   },
+   {
+    "option_id": "9004",
+    "bucket": "RG",
+    "product_code": "B-1",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 200,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9002",
+    "bucket": "RG",
+    "product_code": "A-1-S2",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": "A-1",
+    "candidates": null,
+    "spend": 150,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 20000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9006",
+    "bucket": "MP",
+    "product_code": "M-1",
+    "channel": "marketplace",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 60,
+    "adv_rev_14d": 11000,
+    "conv_rev_14d": 11000,
+    "conv_qty_14d": 1,
+    "rows": 1
+   },
+   {
+    "option_id": "9005",
+    "bucket": "RG",
+    "product_code": "Z-1",
+    "channel": "rocket_growth",
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 40,
+    "adv_rev_14d": 13000,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9007",
+    "bucket": "UNMAPPED",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 30,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9008",
+    "bucket": "AMBIGUOUS",
+    "product_code": null,
+    "channel": null,
+    "resale_return": false,
+    "set_parent_code": null,
+    "candidates": [
+     [
+      "marketplace",
+      "M-1"
+     ],
+     [
+      "rocket_growth",
+      "A-1"
+     ]
+    ],
+    "spend": 10,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 0,
+    "conv_qty_14d": 0,
+    "rows": 1
+   },
+   {
+    "option_id": "9003",
+    "bucket": "RG",
+    "product_code": "A-1",
+    "channel": "rocket_growth",
+    "resale_return": true,
+    "set_parent_code": null,
+    "candidates": null,
+    "spend": 0,
+    "adv_rev_14d": 0,
+    "conv_rev_14d": 13000,
+    "conv_qty_14d": 1,
+    "rows": 0
+   }
+  ],
+  "parent_rollup": [
+   {
+    "bucket": "RG",
+    "parent_code": "A-1",
+    "members": [
+     "A-1",
+     "A-1-S2"
+    ],
+    "spend": 650,
+    "adv_rev_14d": 75000,
+    "conv_rev_14d": 88000,
+    "roas_14d_advertised": 11538.5
+   }
+  ],
+  "reconciliation": {
+   "checks": [
+    {
+     "code": "REPORT_SPEND_BUCKETS",
+     "label": "보고서 광고비 = RG + MP + 미매핑 + 모호",
+     "status": "OK",
+     "left": 990,
+     "right": 990,
+     "diff": 0.0
+    },
+    {
+     "code": "REPORT_CONV_BY_CONVERSION_OPTION",
+     "label": "보고서 14일 전환매출 = 전환 옵션 버킷 합",
+     "status": "OK",
+     "left": 110000,
+     "right": 110000,
+     "diff": 0.0
+    },
+    {
+     "code": "REPORT_CONV_BY_ADVERTISED_OPTION",
+     "label": "보고서 14일 전환매출 = 광고집행 옵션 버킷 합",
+     "status": "OK",
+     "left": 110000,
+     "right": 110000,
+     "diff": 0.0
+    },
+    {
+     "code": "ACCOUNT_DAILY_TOTAL",
+     "label": "보고서 광고비 vs 계정 일별 합계(WING 광고 지표)",
+     "status": "DIFFERENT",
+     "left": 990,
+     "right": 1000.0,
+     "diff": -10.0
+    },
+    {
+     "code": "ACCOUNT_RANGE_TOTAL",
+     "label": "보고서 광고비 vs 계정 기간 합계(WING 구간 조회)",
+     "status": "MATCHED",
+     "left": 990,
+     "right": 990.0,
+     "diff": 0.0
+    },
+    {
+     "code": "RG_SETTLEMENT_AMOUNT",
+     "label": "RG 매핑 광고비 vs 로켓그로스 정산 광고비(집행)",
+     "status": "DIFFERENT",
+     "left": 890,
+     "right": 900.0,
+     "diff": -10.0
+    },
+    {
+     "code": "OUTSIDE_SETTLEMENT",
+     "label": "MP + 미매핑 + 모호 광고비 vs 계정 기간 합계 − 정산 광고비",
+     "status": "DIFFERENT",
+     "left": 100,
+     "right": 90.0,
+     "diff": 10.0
+    },
+    {
+     "code": "ALLOCATED_EQUALS_COVERED_BILLABLE",
+     "label": "상품 배분 청구액 합 = 연결된 캠페인 청구 대상액(전체 AD_BILLED 가 아니라 덮은 부분만)",
+     "status": "OK",
+     "left": 880,
+     "right": 880,
+     "diff": 0.0
+    },
+    {
+     "code": "ALLOCATED_NOT_ABOVE_AD_BILLED",
+     "label": "상품 배분 청구액 ≤ 기여액 AD_BILLED(이중 차감 없음)",
+     "status": "OK",
+     "left": 880,
+     "right": 880.0
+    }
+   ],
+   "failed": [],
+   "report_totals": {
+    "impressions": 8000,
+    "clicks": 80,
+    "spend": 990,
+    "orders_14d": 9,
+    "qty_14d": 9,
+    "rev_14d": 110000,
+    "orders_1d": 9,
+    "qty_1d": 9,
+    "rev_1d": 110000
+   },
+   "buckets_spend": {
+    "RG": 890,
+    "MP": 60,
+    "UNMAPPED": 30,
+    "AMBIGUOUS": 10,
+    "MAPPING_UNKNOWN": 0
+   },
+   "cross_option": {
+    "rows": 2,
+    "rev_14d": 33000,
+    "spend": 40
+   },
+   "coverage": {
+    "status": "COMPLETE",
+    "campaigns": 2,
+    "basis": "정산 캠페인 이름 목록과 보고서 캠페인 이름이 같음"
+   },
+   "product_erp_totals": {
+    "status": "MATCHED",
+    "detail": {
+     "status": "MATCHED",
+     "contribution": {
+      "revenue": 63182,
+      "cost": 36000,
+      "fee": 5500,
+      "recovery_auto": 3000
+     },
+     "product_sum": {
+      "revenue": 63182,
+      "cost": 36000,
+      "fee": 5500,
+      "recovery_auto": 3000
+     },
+     "diffs": {},
+     "ad_cm_amount_in_contribution": 970.0,
+     "note": "상품별 이익에는 광고비가 없어요 - 기여액의 광고비 줄(AD_*)은 계정·정산 단위로 따로 한 번만 빠져요"
+    },
+    "margin_status": "AVAILABLE_PROVISIONAL"
+   }
+  },
+  "labels": {
+   "vat": "ROAS = 광고 전환매출(VAT 포함 판매가) ÷ 광고비(VAT 제외) - 쿠팡 광고센터 표기. 손익분기 ROAS = VAT 계수(과세 1.1 · 면세 1.0) ÷ 상품 이익률(공급가액 매출 대비, 광고비·월 공통비·미배분 비용 차감 전)",
+   "amount_kinds": {
+    "DIRECT_ACTUAL": "보고서 옵션 실제 집행",
+    "ALLOCATED_ESTIMATE": "정산 청구액 배분 추정",
+    "UNALLOCATED": "상품에 배분하지 않음"
+   }
+  },
+  "other_files_same_period": [],
+  "invariant_failures": [],
+  "status": "OK",
+  "generated_at": "2026-09-17T03:44:14+09:00"
+ },
+ "reports": {
+  "reports": [
+   {
+    "file_name": "A00000000_pa_total_campaign_20260901_20260902.xlsx",
+    "file_sha256": "f5bdf511d375db44ff1e85a29c18dee8c215c5763d5700e2e5c94e40a9821a22",
+    "start": "2026-09-01",
+    "end": "2026-09-02",
+    "decision": "PARTIAL_SUBSET",
+    "extracted_at": "2026-09-03T10:00:00+09:00",
+    "extracted_at_source": "MANUAL_CONFIRMED",
+    "extracted_before_period_end": false,
+    "imported_at": "2026-09-17T03:44:14+09:00",
+    "rows": 3,
+    "campaigns": 1,
+    "spend": 650,
+    "extracted_at_verified": true,
+    "original_extracted_at": "2026-09-03T10:00:00+09:00",
+    "confirmations": 0,
+    "active": false
+   },
+   {
+    "file_name": "A00000000_pa_total_campaign_20260901_20260902.xlsx",
+    "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6",
+    "start": "2026-09-01",
+    "end": "2026-09-02",
+    "decision": "NEW",
+    "extracted_at": "2026-09-03T09:00:00+09:00",
+    "extracted_at_source": "MANUAL_CONFIRMED",
+    "extracted_before_period_end": false,
+    "imported_at": "2026-09-17T03:44:14+09:00",
+    "rows": 8,
+    "campaigns": 2,
+    "spend": 990,
+    "extracted_at_verified": true,
+    "original_extracted_at": "2026-09-03T09:00:00+09:00",
+    "confirmations": 0,
+    "active": true
+   }
+  ]
+ },
+ "confirmed_reports": {
+  "reports": [
+   {
+    "file_name": "A00000000_pa_total_campaign_20260901_20260902.xlsx",
+    "file_sha256": "5b37594e1ee3c983000c7e6c0bb6c9ece2a0bedd311a64ec4df54e09a53322b6",
+    "start": "2026-09-01",
+    "end": "2026-09-02",
+    "decision": "NEW",
+    "extracted_at": "2026-09-17T10:00:00+09:00",
+    "extracted_at_source": "MANUAL_CONFIRMED",
+    "extracted_before_period_end": false,
+    "imported_at": "2026-09-20T12:00:00+09:00",
+    "rows": 8,
+    "campaigns": 2,
+    "spend": 990,
+    "extracted_at_verified": true,
+    "original_extracted_at": null,
+    "confirmations": 1,
+    "active": true
+   }
+  ]
+ }
+}
