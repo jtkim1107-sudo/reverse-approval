@@ -1256,6 +1256,14 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
 }
 /* 2026-09-15 정산자료 계산 = 주 결과 · 기존 운영 계산은 '기존 계산과 비교'(기본 접힘) 참고값 */
 .cmv2-primary { border: 1.5px solid #b9c0f7; }
+/* 2026-09-16 최신 자료 기여액(월 공통비 차감 전) - 확정 공헌이익 카드와 눈으로도 구분되게 테두리·태그를 다르게 */
+.cmv2-contrib { border: 1.5px dashed #f0b429; }
+.cmv2-contrib .cmv2-tag { background: #fff4e6; color: #a1670a; }
+.cmv2-contrib .cmv2-stat-main { background: #fff9ef; }
+.cmv2-det { margin-top: 10px; }
+.cmv2-det > summary { cursor: pointer; font-size: 13px; color: var(--text-sub); padding: 4px 0; }
+.cmv2-dcontrib { border-top: 1px dashed var(--border); margin-top: 8px; padding-top: 8px; }
+
 .cmv2-primary .card-head { align-items: flex-start; gap: 10px; }
 .cmv2-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .cmv2-stats { margin: 4px 0 12px; }

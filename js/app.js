@@ -1739,9 +1739,13 @@ async function dashboardHydrate() {
     const st = await cmSettlementState(month, base.v.sales, adRowsAll(ad.v), fixed);
     const settlement = st.mode === "OFF" ? null : {
       mode: st.mode,
-      mainHtml: st.mode === "PRIMARY" ? CmSettlement.dashboardMainHtml(st.cur) : CmSettlement.dashboardNoticeHtml(st.mode, st.error),
+      mainHtml: (st.mode === "PRIMARY" ? CmSettlement.dashboardMainHtml(st.cur) : CmSettlement.dashboardNoticeHtml(st.mode, st.error))
+        + (st.mode === "PRIMARY" && CmSettlement.dashboardContributionHtml ? CmSettlement.dashboardContributionHtml(st.contribution) : ""),
       compareHtml: st.mode === "PRIMARY" ? CmSettlement.dashboardCompareHtml(st.cur, st.prod) : "",
-      meta: st.mode === "PRIMARY" ? CmSettlement.dashboardMeta(st.cur) : st.mode === "ERROR" ? "정산자료 계산 조회 실패" : "정산자료 계산 결과 없음",
+      meta: st.mode === "PRIMARY"
+        ? CmSettlement.dashboardMeta(st.cur) + (st.contribution && st.contribution.detail
+            ? ` · 기여액 기준 ${st.contribution.detail.latest_data_date}` : "")
+        : st.mode === "ERROR" ? "정산자료 계산 조회 실패" : "정산자료 계산 결과 없음",
       tone: st.mode === "ERROR" ? "error" : st.mode === "PRIMARY" && Number(st.cur.MAIN.cm) < 0 ? "error" : null,
     };
     put("dash-profit", ErpDashboard.profitHtml(model, { fmt, at, settlement }));
@@ -5686,7 +5690,9 @@ async function cmSettlementState(month, sales, ads, fixed, { withRecovery = fals
     const byCh = {};
     m.rows.forEach(r => { const k = r.channel || "기타"; (byCh[k] = byCh[k] || { revenue: 0 }).revenue += cmOfSale(r, m.shipCharged).revenue; });
     const prod = CmSettlement.prodParts(m, byCh);
-    return { mode: "PRIMARY", cur, prod, recovery: withRecovery ? await cmRecoveryState(month, cur) : null };
+    // 2026-09-16 최신 자료 기여액(월 공통비 차감 전) - 확정 공헌이익과 *다른 숫자*라 따로 싣고, 확정값을 덮지 않아요.
+    const contribution = CmSettlement.loadContribution ? await CmSettlement.loadContribution(sb) : null;
+    return { mode: "PRIMARY", cur, prod, contribution, recovery: withRecovery ? await cmRecoveryState(month, cur) : null };
   } catch (e) {
     return { mode: "ERROR", error: String(e && e.message || e) };
   }
@@ -5969,7 +5975,11 @@ async function viewProfit() {
   const mainHtml = cms.mode === "PRIMARY"
     ? CmSettlement.primaryHtml(cms.cur, { month: erpMonth, recovery: cms.recovery, controls })
     : CmSettlement.noticeHtml(cms.mode, { month: erpMonth, error: cms.error, controls });
+  // 2026-09-16 최신 자료 기여액(월 공통비 차감 전) - 확정 공헌이익 카드 아래 별도 카드. 이름·표를 섞지 않아요.
+  const contribHtml = cms.mode === "PRIMARY" && CmSettlement.contributionHtml
+    ? CmSettlement.contributionHtml(cms.contribution, { confirmed: cms.cur.MAIN }) : "";
   return `${mainHtml}
+    ${contribHtml}
     <details class="cm-legacy" id="cm-legacy">
       <summary class="cm-legacy-sum"><span class="cm-legacy-title">기존 계산과 비교</span>
         <span class="cm-legacy-val">기존 운영 계산(참고) <b>${cmShown(cmNet)}</b> <small>${erpMonth} · 이번 달 1일~오늘 · 주문 기준 · 최종값 아님</small></span></summary>

@@ -403,6 +403,129 @@
       <a class="dash-link" href="#/profit">차이 구성 ›</a></p>`;
   }
 
+
+  /* ───────── 2026-09-16 최신 자료 기여액(월 공통비 차감 전) ─────────
+     월 확정 공헌이익은 정산 원천 '월 비용 조회'가 있는 구간까지만 계산돼요(지금 09-13).
+     그 뒤 날짜는 매출·정산 파일이 들어와 있어도 월 공통비가 없어서 공헌이익을 만들 수 없습니다.
+     그래서 최신 자료로는 **월 공통비를 빼기 전 기여액**만 따로 보여 줘요 - 이름도 표도 확정 공헌이익과 다릅니다.
+     자료: sync_job_status('cm_contribution_latest') 의 고정 크기 요약(백엔드 run_cm_contribution_snapshot 이 하루 1회 기록). */
+  const CONTRIB_JOB = "cm_contribution_latest";
+  const MISSING_TEXT = {
+    COST_SUMMARY_MISSING: "정산 원천 월 비용 조회가 이 기간에 아직 없어요",
+    COST_SUMMARY_STALE: "월 비용 조회 시각이 기간이 끝나기 전이라 쓰지 않아요",
+    MONTHLY_COST_DATA_CHECK: "월 비용 항목에 확인할 점이 있어 쓰지 않아요",
+  };
+
+  /** 최신 기여액 스냅샷 - null(아직 없음) · {error} · {detail, lastSuccessAt, lastAttemptAt, lastError, failures} */
+  async function loadContribution(sb) {
+    try {
+      const { data, error } = await sb.from("sync_job_status")
+        .select("job_name,last_success_at,last_attempt_at,last_error,error_kind,consecutive_failures,detail")
+        .eq("job_name", CONTRIB_JOB).maybeSingle();
+      if (error) return { error: error.message || String(error) };
+      if (!data) return null;
+      const d = typeof data.detail === "string" ? JSON.parse(data.detail || "{}") : (data.detail || {});
+      if (!d || d.version !== 1 || !d.period_end) return { error: "기여액 요약 형식을 알 수 없어요" };
+      return { detail: d, lastSuccessAt: data.last_success_at, lastAttemptAt: data.last_attempt_at,
+               lastError: data.last_error, failures: Number(data.consecutive_failures || 0) };
+    } catch (e) {
+      return { error: String((e && e.message) || e) };
+    }
+  }
+
+  /** 마지막 시도가 실패했는지(성공 시각보다 뒤에 실패한 시도가 있으면) - 값은 직전 성공분 그대로 보여 주고 사실만 알려요 */
+  function contribStale(c) {
+    if (!c || !c.detail) return null;
+    if (c.lastError && (!c.lastSuccessAt || String(c.lastAttemptAt || "") > String(c.lastSuccessAt))) {
+      return `마지막 갱신 시도가 실패했어요(${c.failures || 1}회 연속) - 아래 값은 ${kstTime(c.lastSuccessAt)} 마지막 성공분이에요`;
+    }
+    return null;
+  }
+
+  function contribLinesHtml(d) {
+    const row = ln => `<tr>
+        <th scope="row">${esc(costName(ln.label))}</th>
+        <td class="num">${won(ln.amount)}</td>
+        <td class="cmv2-srccol">${ln.source ? `<span class="cmv2-src">${esc(ln.source)}</span>` : `<span class="cmv2-none">—</span>`}</td>
+        <td class="cmv2-st">${lineStatusHtml(ln.status)}</td></tr>`;
+    const rev = (d.lines || []).filter(x => String(x.code).startsWith("REVENUE"));
+    const rest = (d.lines || []).filter(x => !String(x.code).startsWith("REVENUE"));
+    const m = d.monthly_cost || {};
+    return `<div class="table-wrap"><table class="cmv2-lines">
+      <thead><tr><th>항목</th><th class="num">금액(공급가액)</th><th>출처</th><th>상태</th></tr></thead>
+      <tbody>
+        ${rev.map(row).join("")}
+        ${rest.map(row).join("")}
+        <tr class="cmv2-total"><th scope="row">= 월 공통비 차감 전 기여액 <small>공헌이익 아님</small></th>
+          <td class="num"><b class="${Number(d.subtotal_before_monthly) < 0 ? "cmv2-neg" : ""}">${won(d.subtotal_before_monthly)}</b></td>
+          <td></td><td class="cmv2-st"><span class="cmv2-prov">잠정</span></td></tr>
+        <tr><th scope="row">− 월 공통비 <small>입출고비 · 배송비 · 보관비 · 세이버/구독</small></th>
+          <td class="num">${m.available ? won(-Number(m.total || 0)) : `<span class="cmv2-none">금액 없음</span>`}</td>
+          <td class="cmv2-srccol">${m.available ? `<span class="cmv2-src">정산파일</span>` : `<span class="cmv2-none">—</span>`}</td>
+          <td class="cmv2-st">${m.available ? lineStatusHtml("CYCLE_OPEN") : chip("COST_UNREGISTERED", { text: "자료 없음", title: esc(m.reason || "") })}</td></tr>
+      </tbody></table></div>`;
+  }
+
+  /** 공헌이익 화면 - 확정 카드 아래 '최신 자료 기여액' 카드. confirmed = cm_settlement_current 의 MAIN(있으면) */
+  function contributionHtml(c, { confirmed = null } = {}) {
+    if (!c) return `<section class="card cmv2 cmv2-contrib" aria-labelledby="cmc-h">
+      <div class="card-head"><h2 id="cmc-h">최신 자료 기여액</h2></div>
+      <p class="cmv2-note">${chip("COST_UNREGISTERED", { text: "결과 없음" })} 아직 기여액 스냅샷이 없어요(06:20 통합수집 뒤 하루 1회 계산).</p></section>`;
+    if (c.error) return `<section class="card cmv2 cmv2-contrib" aria-labelledby="cmc-h">
+      <div class="card-head"><h2 id="cmc-h">최신 자료 기여액</h2></div>
+      <p class="cmv2-fail" role="alert">${chip("COST_UNREGISTERED", { text: "조회 실패" })} 기여액을 불러오지 못했어요 (${esc(c.error)}).
+        확정 공헌이익 값을 대신 쓰지 않아요.</p></section>`;
+    const d = c.detail;
+    const m = d.monthly_cost || {};
+    const stale = contribStale(c);
+    const confPeriod = confirmed ? `${String(confirmed.period_start).slice(5)}~${String(confirmed.period_end).slice(5)}` : null;
+    return `
+    <section class="card cmv2 cmv2-contrib" id="cmv2-contrib" aria-labelledby="cmc-h" data-period-end="${esc(d.period_end)}">
+      <div class="card-head"><h2 id="cmc-h">최신 자료 기여액 <span class="cmv2-tag">월 공통비 차감 전</span></h2></div>
+      <p class="cmv2-meta">기간 <b>${esc(d.period_start)} ~ ${esc(d.period_end)}</b> · 최신 자료 기준일 <b>${esc(d.latest_data_date)}</b>
+        · 갱신 ${esc(kstTime(c.lastSuccessAt))}${d.run_id ? ` · 실행 ${esc(String(d.run_id).slice(0, 8))}` : ""}</p>
+      ${stale ? `<p class="cmv2-fail" role="alert">${chip("COST_UNREGISTERED", { text: "갱신 실패" })} ${esc(stale)}</p>` : ""}
+      <div class="grid-stats cmv2-stats">
+        <div class="stat cmv2-stat-main"><div class="stat-label">월 공통비 차감 전 기여액 <span class="cmv2-prov">잠정</span></div>
+          <div class="stat-value${Number(d.subtotal_before_monthly) < 0 ? " red" : ""}">${won(d.subtotal_before_monthly)}</div>
+          <div class="cmv2-stat-sub">${esc(d.period_start)}~${esc(d.period_end)} · 공헌이익이 아니에요</div></div>
+        <div class="stat"><div class="stat-label">월 확정 공헌이익 <small>저장된 확정 계산</small></div>
+          <div class="stat-value">${confirmed ? won(confirmed.cm) : d.confirmed_cm ? won(d.confirmed_cm.cm) : `<span class="cmv2-none">없음</span>`}</div>
+          <div class="cmv2-stat-sub">${confPeriod ? esc(confPeriod) : d.confirmed_cm ? `~${esc(String(d.confirmed_cm.period_end).slice(5))}` : "—"} 기준 · 이 카드가 덮어쓰지 않아요</div></div>
+        <div class="stat"><div class="stat-label">월 공통비</div>
+          <div class="stat-value${m.available ? "" : " amber"}">${m.available ? won(m.total) : "자료 없음"}</div>
+          <div class="cmv2-stat-sub">${esc(m.range || "")}${m.available ? "" : ` · ${esc(MISSING_TEXT[m.status] || m.status || "")}`}</div></div>
+      </div>
+      <p class="cmv2-note"><b>이 금액은 공헌이익이 아닙니다.</b> 월 공통비(입출고비·배송비·보관비·세이버/구독)를 아직 빼지 않은 금액이에요.
+        빠진 자료를 0원으로 만들거나 하루 평균으로 나눠 채우지 않아요 - 월 공통비 조회가 들어오면 그때 확정 공헌이익이 ${esc(d.period_end)} 까지 늘어납니다.</p>
+      ${whyHtml(d.reasons)}
+      <details class="cmv2-det"><summary>계산 내역 (${fmt((d.rows || {}).orders)}건 주문 · ${fmt((d.rows || {}).cancels)}건 취소)</summary>
+        ${contribLinesHtml(d)}
+        <p class="cmv2-note">정산 마감 ${d.settlement_closed ? "완료" : `진행 중${(d.open_cycle_days || []).length ? ` (${(d.open_cycle_days || []).map(esc).join(", ")})` : ""}`}
+          · 계산 ${esc(d.calc_version || "")} / ${esc(d.contrib_version || "")}${d.inputs_hash ? ` · 입력 ${esc(String(d.inputs_hash).slice(0, 12))}` : ""}
+          ${d.artifacts ? `· 보관 <code class="cmv2-file">${esc(d.artifacts)}</code>` : ""}</p>
+      </details>
+    </section>`;
+  }
+
+  /** 대시보드 공헌이익 칸 - 확정값 아래 한 줄로 '기여액 기준일'을 같이 보여 줘요(두 기준일이 한눈에) */
+  function dashboardContributionHtml(c) {
+    if (!c) return "";
+    if (c.error) return `<p class="cmv2-note">${chip("COST_UNREGISTERED", { text: "기여액 조회 실패" })} 최신 자료 기여액을 불러오지 못했어요.</p>`;
+    const d = c.detail;
+    const m = d.monthly_cost || {};
+    const stale = contribStale(c);
+    return `<div class="cmv2-dcontrib">
+      <div class="cmv2-dmain-top">
+        <span class="cmv2-dmain-label">월 공통비 차감 전 기여액 <small>최신 자료 ${esc(d.latest_data_date)} 까지 · 공헌이익 아님</small></span>
+        <b class="cmv2-dmain-amt${Number(d.subtotal_before_monthly) < 0 ? " cmv2-neg" : ""}">${won(d.subtotal_before_monthly)}</b>
+        <span class="cmv2-prov">잠정</span>
+      </div>
+      <p class="cmv2-note">${m.available ? `월 공통비 ${won(m.total)} 반영 가능` : `월 공통비 자료 없음 - ${esc(MISSING_TEXT[m.status] || m.status || "")}`}
+        · 갱신 ${esc(kstTime(c.lastSuccessAt))}${stale ? ` · <b>${esc(stale)}</b>` : ""}</p>
+    </div>`;
+  }
+
   /** 대시보드 칸 제목 아래 설명 */
   function dashboardMeta(cur) {
     const m = cur.MAIN;
@@ -411,5 +534,6 @@
 
   global.CmSettlement = { SETTING_KEY, STATUS, switchState, isEnabled, loadCurrent, prodParts, compare, primaryHtml, compareHtml, noticeHtml,
                           dashboardMainHtml, dashboardNoticeHtml, dashboardCompareHtml, dashboardMeta, chip, requiredInputsHtml, refundsRefHtml,
-                          costName, kstTime };
+                          costName, kstTime,
+                          CONTRIB_JOB, loadContribution, contributionHtml, dashboardContributionHtml, contribStale };
 })(typeof window !== "undefined" ? window : globalThis);
