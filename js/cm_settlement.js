@@ -482,15 +482,22 @@
     const d = c.detail;
     const m = d.monthly_cost || {};
     const stale = contribStale(c);
+    // 2026-09-16 최신 잠정 공헌이익 - 월 공통비까지 뺀 값이지만 *확정이 아니에요*.
+    // 저장된 스냅샷(confirmed_cm)과 다른 칸에 따로 보여 주고, 확정으로 읽히지 않게 표시해요.
+    const p = (d.provisional_cm && d.provisional_cm.is_confirmed === false) ? d.provisional_cm : null;
     const confPeriod = confirmed ? `${String(confirmed.period_start).slice(5)}~${String(confirmed.period_end).slice(5)}` : null;
     return `
     <section class="card cmv2 cmv2-contrib" id="cmv2-contrib" aria-labelledby="cmc-h" data-period-end="${esc(d.period_end)}">
-      <div class="card-head"><h2 id="cmc-h">최신 자료 기여액 <span class="cmv2-tag">월 공통비 차감 전</span></h2></div>
+      <div class="card-head"><h2 id="cmc-h">최신 자료 공헌이익 <span class="cmv2-tag">${p ? "잠정 · 확정 전" : "월 공통비 차감 전"}</span></h2></div>
       <p class="cmv2-meta">기간 <b>${esc(d.period_start)} ~ ${esc(d.period_end)}</b> · 최신 자료 기준일 <b>${esc(d.latest_data_date)}</b>
         · 갱신 ${esc(kstTime(c.lastSuccessAt))}${d.run_id ? ` · 실행 ${esc(String(d.run_id).slice(0, 8))}` : ""}</p>
       ${stale ? `<p class="cmv2-fail" role="alert">${chip("COST_UNREGISTERED", { text: "갱신 실패" })} ${esc(stale)}</p>` : ""}
       <div class="grid-stats cmv2-stats">
-        <div class="stat cmv2-stat-main"><div class="stat-label">월 공통비 차감 전 기여액 <span class="cmv2-prov">잠정</span></div>
+        ${p ? `
+        <div class="stat cmv2-stat-main"><div class="stat-label">최신 잠정 공헌이익 <span class="cmv2-prov">확정 아님</span></div>
+          <div class="stat-value${Number(p.amount) < 0 ? " red" : ""}">${won(p.amount)}</div>
+          <div class="cmv2-stat-sub">${esc(p.period_start)}~${esc(p.period_end)} · 월 확정(승인) 전이에요</div></div>` : ""}
+        <div class="stat${p ? "" : " cmv2-stat-main"}"><div class="stat-label">월 공통비 차감 전 기여액 <span class="cmv2-prov">잠정</span></div>
           <div class="stat-value${Number(d.subtotal_before_monthly) < 0 ? " red" : ""}">${won(d.subtotal_before_monthly)}</div>
           <div class="cmv2-stat-sub">${esc(d.period_start)}~${esc(d.period_end)} · 공헌이익이 아니에요</div></div>
         <div class="stat"><div class="stat-label">월 확정 공헌이익 <small>저장된 확정 계산</small></div>
@@ -500,8 +507,13 @@
           <div class="stat-value${m.available ? "" : " amber"}">${m.available ? won(m.total) : "자료 없음"}</div>
           <div class="cmv2-stat-sub">${esc(m.range || "")}${m.available ? "" : ` · ${esc(MISSING_TEXT[m.status] || m.status || "")}`}</div></div>
       </div>
+      ${p ? `
+      <p class="cmv2-note"><b>위 금액은 아직 확정이 아닙니다.</b> ${esc(p.period_start)}~${esc(p.period_end)} 자료로 월 공통비(${won(p.monthly_cost)})까지 뺀
+        <b>잠정</b> 공헌이익이에요. 월 마감 승인(월 확정)을 거치지 않았고, 저장된 공헌이익 스냅샷을 덮지도 않아요.
+        ${p.settlement_closed ? "" : `아직 정산이 끝나지 않은 날(${(p.open_cycle_days || []).map(esc).join(", ")})이 있어 수수료가 더 바뀔 수 있어요.`}</p>
+      <p class="cmv2-note">확정으로 쓰려면 남은 확인이 필요해요: ${(p.confirm_blocked_reasons || []).map(esc).join(" · ") || "-"}</p>` : `
       <p class="cmv2-note"><b>이 금액은 공헌이익이 아닙니다.</b> 월 공통비(입출고비·배송비·보관비·세이버/구독)를 아직 빼지 않은 금액이에요.
-        빠진 자료를 0원으로 만들거나 하루 평균으로 나눠 채우지 않아요 - 월 공통비 조회가 들어오면 그때 확정 공헌이익이 ${esc(d.period_end)} 까지 늘어납니다.</p>
+        빠진 자료를 0원으로 만들거나 하루 평균으로 나눠 채우지 않아요 - 월 공통비 조회가 들어오면 그때 확정 공헌이익이 ${esc(d.period_end)} 까지 늘어납니다.</p>`}
       ${whyHtml(d.reasons)}
       <details class="cmv2-det"><summary>계산 내역 (${fmt((d.rows || {}).orders)}건 주문 · ${fmt((d.rows || {}).cancels)}건 취소)</summary>
         ${contribLinesHtml(d)}
@@ -519,13 +531,16 @@
     const d = c.detail;
     const m = d.monthly_cost || {};
     const stale = contribStale(c);
+    const p = (d.provisional_cm && d.provisional_cm.is_confirmed === false) ? d.provisional_cm : null;
     return `<div class="cmv2-dcontrib">
       <div class="cmv2-dmain-top">
-        <span class="cmv2-dmain-label">월 공통비 차감 전 기여액 <small>최신 자료 ${esc(d.latest_data_date)} 까지 · 공헌이익 아님</small></span>
-        <b class="cmv2-dmain-amt${Number(d.subtotal_before_monthly) < 0 ? " cmv2-neg" : ""}">${won(d.subtotal_before_monthly)}</b>
-        <span class="cmv2-prov">잠정</span>
+        <span class="cmv2-dmain-label">${p ? "최신 잠정 공헌이익" : "월 공통비 차감 전 기여액"}
+          <small>최신 자료 ${esc(d.latest_data_date)} 까지 · ${p ? "확정 아님" : "공헌이익 아님"}</small></span>
+        <b class="cmv2-dmain-amt${Number(p ? p.amount : d.subtotal_before_monthly) < 0 ? " cmv2-neg" : ""}">${won(p ? p.amount : d.subtotal_before_monthly)}</b>
+        <span class="cmv2-prov">${p ? "확정 전" : "잠정"}</span>
       </div>
-      <p class="cmv2-note">${m.available ? `월 공통비 ${won(m.total)} 반영 가능` : `월 공통비 자료 없음 - ${esc(MISSING_TEXT[m.status] || m.status || "")}`}
+      <p class="cmv2-note">${p ? `월 공통비 ${won(p.monthly_cost)} 반영 · 기여액 ${won(p.subtotal_before_monthly)}`
+        : (m.available ? `월 공통비 ${won(m.total)} 반영 가능` : `월 공통비 자료 없음 - ${esc(MISSING_TEXT[m.status] || m.status || "")}`)}
         · 갱신 ${esc(kstTime(c.lastSuccessAt))}${stale ? ` · <b>${esc(stale)}</b>` : ""}</p>
     </div>`;
   }

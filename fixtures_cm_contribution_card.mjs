@@ -105,7 +105,37 @@ check("'공헌이익 아님' 표시", dash.includes("공헌이익 아님"), true
 check("월 공통비 자료 없음 표시", dash.includes("월 공통비 자료 없음"), true);
 check("결과 없으면 아무것도 안 그림", CM.dashboardContributionHtml(null), "");
 
-console.log("\n[7] 기존 확정 카드는 그대로");
+console.log("\n[7] 최신 잠정 공헌이익 - 확정과 명확히 구분");
+const PROV = { ...DETAIL,
+  monthly_cost: { range: "2026-09-01~2026-09-15", available: true, total: 2453157, status: "PROVISIONAL", reason: null },
+  provisional_cm: { amount: 269447, period_start: "2026-09-01", period_end: "2026-09-15", as_of: "2026-09-15",
+                    subtotal_before_monthly: 2722604, monthly_cost: 2453157, monthly_cost_range: "2026-09-01~2026-09-15",
+                    monthly_cost_status: "PROVISIONAL", inbound_freight: 0, settlement_closed: false,
+                    open_cycle_days: ["2026-09-14", "2026-09-15"], is_confirmed: false,
+                    confirm_blocked_reasons: ["정산 진행 중", "원가 미확정"],
+                    note: "최신 자료 기준 잠정값" } };
+const pg = { ...good, detail: PROV };
+const ph = CM.contributionHtml(pg, { confirmed: CONFIRMED_MAIN });
+check("잠정 공헌이익 금액 표시", ph.includes("₩269,447"), true);
+check("'확정 아님' 을 값 옆에", /최신 잠정 공헌이익[\s\S]{0,120}확정 아님/.test(ph), true);
+check("기간 표시", ph.includes("2026-09-01~2026-09-15"), true);
+check("월 확정 전임을 본문에", ph.includes("아직 확정이 아닙니다") && ph.includes("월 마감 승인(월 확정)"), true);
+check("저장 스냅샷을 덮지 않는다고 명시", ph.includes("저장된 공헌이익 스냅샷을 덮지도 않아요"), true);
+check("저장된 확정값 ₩205,663 은 그대로 함께", ph.includes("₩205,663"), true);
+check("월 공통비 금액도 보여 줌", ph.includes("₩2,453,157"), true);
+check("미마감 정산일 안내", ph.includes("2026-09-14") && ph.includes("2026-09-15"), true);
+check("확정에 필요한 남은 확인 표시", ph.includes("정산 진행 중"), true);
+check("갱신 시각 표시", /갱신 2026-09-16 \d{2}:\d{2} KST/.test(ph), true);
+// is_confirmed 가 false 가 아니면 잠정 칸을 만들지 않음(오표기 방지)
+const bad = { ...good, detail: { ...PROV, provisional_cm: { ...PROV.provisional_cm, is_confirmed: true } } };
+check("확정으로 표시된 값은 잠정 칸으로 안 그림", CM.contributionHtml(bad, {}).includes("최신 잠정 공헌이익"), false);
+check("월 공통비 없으면 기존 문구 유지", html.includes("이 금액은 공헌이익이 아닙니다"), true);
+const pd = CM.dashboardContributionHtml(pg);
+check("대시보드도 잠정 공헌이익", pd.includes("₩269,447") && pd.includes("최신 잠정 공헌이익"), true);
+check("대시보드 '확정 아님'", pd.includes("확정 아님"), true);
+check("대시보드 기여액도 함께", pd.includes("₩2,722,604"), true);
+
+console.log("\n[8] 기존 확정 카드는 그대로");
 const primary = CM.dashboardMainHtml({ MAIN: { ...CONFIRMED_MAIN, created_at: OK_AT, reasons: [], result: { revenue: 8606815 } } });
 check("확정 카드 금액 불변", primary.includes("₩205,663"), true);
 check("확정 카드에 기여액이 섞이지 않음", primary.includes("2,722,604"), false);
