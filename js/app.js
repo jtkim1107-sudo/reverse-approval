@@ -1358,6 +1358,10 @@ async function loadDailySalesBriefing(dateStr) {
     // 저장된 브리핑과 차감 합계가 같은 경우에만 유형별 금액을 보완한다.
     // 접수 내역이 이후 변경됐다면 서로 다른 시점의 값을 섞지 않는다.
     const total = adjustments.cancel_amount + adjustments.return_amount;
+    // 미수집(NULL)이면 비교 자체가 불가능해요 - '생성 이후 변경' 오해 문구를 띄우지 않습니다.
+    if (data.gross_amount == null || data.net_amount == null || data.cancel_qty == null) {
+      return { ...data, adjustment_summary: null, adjustment_display_error: null };
+    }
     const matches = Math.abs(Number(data.gross_amount) - Number(data.net_amount) - total) < 0.5
       && Number(data.cancel_qty) === adjustments.cancel_qty && Number(data.return_qty) === adjustments.return_qty;
     return { ...data, adjustment_summary: matches ? adjustments : null,
@@ -1492,6 +1496,11 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
   const needsCheck = b.status !== "OK" && otherFlags.length > 0;
   const withdrawOnlyWarning = withdrawFlags.length > 0 && otherFlags.length === 0;
 
+  // 2026-09-16 원천(판매통계) 미수집이면 그 칸은 NULL 로 저장돼요(migrations/20260916c) - 0원처럼 보이면 안 돼요.
+  const NOT_COLLECTED = '<span style="color:var(--text-sub)">미수집</span>';
+  const bQty = v => v == null ? NOT_COLLECTED : `${fmt(v)}개`;
+  const bMoney = v => v == null ? NOT_COLLECTED : `₩${fmt(v)}`;
+  const notCollected = ["gross_qty", "gross_amount", "cancel_qty", "net_qty", "net_amount"].some(k => b[k] == null);
   const cancelAmt = b.adjustment_summary?.cancel_amount;
   const returnAmt = b.adjustment_summary?.return_amount;
   const adjustmentMoney = amount => amount == null ? '금액 확인 필요' : `₩${fmt(amount)}`;
@@ -1500,7 +1509,7 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
     ? `<span style="color:${Number(b.dod_change_pct) >= 0 ? "var(--green)" : "var(--red)"}">${Number(b.dod_change_pct) >= 0 ? "▲" : "▼"} ${Math.abs(Number(b.dod_change_pct)).toFixed(1)}%</span>`
     : "-";
   const channelRows = Object.entries(b.channel_breakdown || {})
-    .map(([ch, amt]) => `<tr><td>${esc(ch)}</td><td class="num">₩${fmt(amt)}</td></tr>`).join("");
+    .map(([ch, amt]) => `<tr><td>${esc(ch)}</td><td class="num">${amt == null ? NOT_COLLECTED : `₩${fmt(amt)}`}</td></tr>`).join("");
   const top5Table = productSalesTableHtml(b.top5, { showRank: true });
 
   return `
@@ -1512,7 +1521,10 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
           : withdrawOnlyWarning ? '<span class="chip progress">⚠️ 반품 철회 확인 지연</span>'
           : b.includes_estimated ? '<span class="chip progress">추정치 포함</span>' : '<span class="chip approved">확정</span>'}
       </div>
-      ${needsCheck ? `<p style="color:var(--amber);font-size:12.5px;margin:0 0 8px">
+      ${notCollected ? `<p style="color:var(--amber);font-size:12.5px;margin:0 0 8px">
+        ⚠️ 그날 판매통계를 아직 받지 못해 '미수집'으로 표시합니다 - 매출 0원이 아니에요. 수집이 끝나면 다시 계산돼요.
+      </p>
+      ` : ""}${needsCheck ? `<p style="color:var(--amber);font-size:12.5px;margin:0 0 8px">
         ⚠️ 동기화 중 일부 오류/매핑실패가 있어 아래 수치가 확정값이 아닐 수 있습니다.
         ${otherFlags.map(esc).join(" · ")}
       </p>` : ""}
@@ -1523,12 +1535,12 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
       ${b.adjustment_display_error ? `<p role="alert">${esc(b.adjustment_display_error)}</p>` : ''}
       ${rgAdjustmentNotCollectedHtml(Number((b.channel_breakdown || {})[RG_CHANNEL_NAME] || 0) > 0)}
       <div class="grid-stats">
-        <div class="stat"><div class="stat-label">총 판매수량</div><div class="stat-value">${fmt(b.gross_qty)}개</div></div>
-        <div class="stat"><div class="stat-label">총 주문매출(잠정)</div><div class="stat-value blue">₩${fmt(b.gross_amount)}</div></div>
-        <div class="stat"><div class="stat-label">취소</div><div class="stat-value amber">${fmt(b.cancel_qty)}개 · ${adjustmentMoney(cancelAmt)}</div></div>
+        <div class="stat"><div class="stat-label">총 판매수량</div><div class="stat-value">${bQty(b.gross_qty)}</div></div>
+        <div class="stat"><div class="stat-label">총 주문매출(잠정)</div><div class="stat-value blue">${bMoney(b.gross_amount)}</div></div>
+        <div class="stat"><div class="stat-label">취소</div><div class="stat-value amber">${b.cancel_qty == null ? NOT_COLLECTED : `${fmt(b.cancel_qty)}개 · ${adjustmentMoney(cancelAmt)}`}</div></div>
         <div class="stat"><div class="stat-label">반품·환불</div><div class="stat-value amber">${fmt(b.return_qty)}개 · ${adjustmentMoney(returnAmt)}</div></div>
-        <div class="stat"><div class="stat-label">순판매수량</div><div class="stat-value">${fmt(b.net_qty)}개</div></div>
-        <div class="stat"><div class="stat-label">순매출(주문 기준)</div><div class="stat-value green">₩${fmt(b.net_amount)}</div></div>
+        <div class="stat"><div class="stat-label">순판매수량</div><div class="stat-value">${bQty(b.net_qty)}</div></div>
+        <div class="stat"><div class="stat-label">순매출(주문 기준)</div><div class="stat-value green">${bMoney(b.net_amount)}</div></div>
         <div class="stat"><div class="stat-label">취소·반품률</div><div class="stat-value">${rate}</div></div>
         <div class="stat"><div class="stat-label">전일 대비</div><div class="stat-value">${dod}</div></div>
       </div>
