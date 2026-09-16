@@ -76,6 +76,7 @@ console.log("\n[3] 월 공통비 누락은 0원으로 그리지 않음");
 check("'금액 없음'으로", html.includes("금액 없음"), true);
 check("₩0 으로 그리지 않음", /월 공통비[\s\S]{0,400}₩0</.test(html), false);
 check("누락 사유 문구", html.includes("정산 원천 월 비용 조회가 이 기간에 아직 없어요"), true);
+check("사유 배지가 코드 대신 우리말", html.includes("월 공통비 없음") && !html.includes(">COST_SUMMARY_MISSING<"), true);
 check("미마감 정산일 숨기지 않음", html.includes("2026-09-14") && html.includes("2026-09-15"), true);
 const withMonthly = { ...good, detail: { ...DETAIL, monthly_cost: { range: "2026-09-01~2026-09-13", available: true,
   total: 2055917, status: "PROVISIONAL", reason: null } } };

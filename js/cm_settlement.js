@@ -50,6 +50,10 @@
     ACCRUED: { kind: "check", text: "청구 미확인(ACCRUED)" },
     NOTICE_MISSING: { kind: "check", text: "프로모션 공지 미확인" },
     BILLING_UNCONFIRMED: { kind: "check", text: "청구 미확인(ACCRUED)" },
+    // 2026-09-16 기여액 카드 - 월 공통비를 못 구한 이유(코드가 그대로 보이지 않게)
+    COST_SUMMARY_MISSING: { kind: "check", text: "월 공통비 없음" },
+    COST_SUMMARY_STALE: { kind: "check", text: "월 공통비 조회 시점 문제" },
+    MONTHLY_COST_DATA_CHECK: { kind: "check", text: "월 공통비 확인 필요" },
   };
   function chip(status, opts = {}) {
     const s = STATUS[status] || { kind: "info", text: status };
