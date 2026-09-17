@@ -508,7 +508,7 @@
         <div class="stat${p ? "" : " cmv2-stat-main"}"><div class="stat-label">월 공통비 차감 전 기여액 <span class="cmv2-prov">잠정</span></div>
           <div class="stat-value${Number(d.subtotal_before_monthly) < 0 ? " red" : ""}">${won(d.subtotal_before_monthly)}</div>
           <div class="cmv2-stat-sub">${esc(d.period_start)}~${esc(d.period_end)} · 공헌이익이 아니에요</div></div>
-        <div class="stat"><div class="stat-label">월 확정 공헌이익 <small>저장된 확정 계산</small></div>
+        <div class="stat"><div class="stat-label">${confirmed && confirmed.confirmed ? "월 확정 공헌이익" : "저장된 월 공헌이익"} <small>${confirmed && confirmed.confirmed ? "확정" : "잠정 스냅샷"}</small></div>
           <div class="stat-value">${confirmed ? won(confirmed.cm) : d.confirmed_cm ? won(d.confirmed_cm.cm) : `<span class="cmv2-none">없음</span>`}</div>
           <div class="cmv2-stat-sub">${confPeriod ? esc(confPeriod) : d.confirmed_cm ? `~${esc(String(d.confirmed_cm.period_end).slice(5))}` : "—"} 기준 · 이 카드가 덮어쓰지 않아요</div></div>
         <div class="stat"><div class="stat-label">월 공통비</div>

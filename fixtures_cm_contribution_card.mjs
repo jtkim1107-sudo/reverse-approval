@@ -122,6 +122,7 @@ check("기간 표시", ph.includes("2026-09-01~2026-09-15"), true);
 check("월 확정 전임을 본문에", ph.includes("아직 확정이 아닙니다") && ph.includes("월 마감 승인(월 확정)"), true);
 check("저장 스냅샷을 덮지 않는다고 명시", ph.includes("저장된 공헌이익 스냅샷을 덮지도 않아요"), true);
 check("저장된 확정값 ₩205,663 은 그대로 함께", ph.includes("₩205,663"), true);
+check("승인 전 저장값을 확정으로 부르지 않음", ph.includes("저장된 월 공헌이익") && ph.includes("잠정 스냅샷"), true);
 check("월 공통비 금액도 보여 줌", ph.includes("₩2,453,157"), true);
 check("미마감 정산일 안내", ph.includes("2026-09-14") && ph.includes("2026-09-15"), true);
 check("확정에 필요한 남은 확인 표시", ph.includes("정산 진행 중"), true);
