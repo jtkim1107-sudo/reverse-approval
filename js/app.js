@@ -1792,7 +1792,7 @@ async function dashboardHydrate() {
     const cm = computeCmOfMonth(month, base.v.sales, adRowsAll(ad.v), fixed);
     const model = ErpDashboard.profitModel(cm, adMonthState(ad.v, month), { month });
     // 2026-09-15 정산자료 계산이 켜져 있으면 주 공헌이익 = 최신 MAIN(공헌이익 화면 맨 위 카드와 같은 값·기간·상태).
-    // 기존 운영 계산은 '기존 계산과 비교'(기본 접힘) 참고값. 결과를 받은 뒤 한 번만 그려요(기존 계산이 주 결과로 먼저 보이지 않게).
+    // 대시보드 펼침 칸은 같은 최신 잠정 계산 스냅샷의 항목별 내역을 보여 줘요.
     const st = await cmSettlementState(month, base.v.sales, adRowsAll(ad.v), fixed);
     const newestFirst = st.mode === "PRIMARY" && st.contribution && st.contribution.detail
       && st.contribution.detail.provisional_cm && st.contribution.detail.provisional_cm.is_confirmed === false
@@ -1803,7 +1803,7 @@ async function dashboardHydrate() {
     const settlement = st.mode === "OFF" ? null : {
       mode: st.mode,
       mainHtml: newestFirst ? latestHtml + savedHtml : savedHtml + latestHtml,
-      compareHtml: st.mode === "PRIMARY" ? CmSettlement.dashboardCompareHtml(st.cur, st.prod) : "",
+      breakdownHtml: st.mode === "PRIMARY" ? CmSettlement.dashboardProvisionalBreakdownHtml(st.contribution) : "",
       meta: st.mode === "PRIMARY"
         ? CmSettlement.dashboardMeta(st.cur) + (st.contribution && st.contribution.detail
             ? ` · 기여액 기준 ${st.contribution.detail.latest_data_date}` : "")

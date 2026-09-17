@@ -141,6 +141,10 @@ const freightHtml = CM.contributionHtml(freightProv, { confirmed: CONFIRMED_MAIN
 check("판매분 입고 운반비를 별도 차감", freightHtml.includes("판매된 수량에 배분") && freightHtml.includes("−₩345,004"), true);
 check("운반비를 뺀 잠정 공헌이익 표시", freightHtml.includes("−₩75,557"), true);
 check("대시보드에도 운반비 설명", CM.dashboardContributionHtml(freightProv).includes("판매분 입고 운반비 ₩345,004"), true);
+const breakdown = CM.dashboardProvisionalBreakdownHtml(freightProv);
+check("잠정 내역에 같은 기간·금액·원천 항목 표시", [breakdown.includes("9월 잠정 공헌이익 내역"), breakdown.includes("2026-09-01~2026-09-15"), breakdown.includes("−₩75,557"), breakdown.includes("로켓그로스 판매"), breakdown.includes("−₩345,004")], [true, true, true, true, true]);
+check("월 공통비·운반비를 각각 한 번 표시", [(breakdown.match(/<th scope="row">월 공통비<small>/g) || []).length, (breakdown.match(/<th scope="row">판매분 입고 운반비<small>/g) || []).length], [1, 1]);
+check("잠정 계산이 없으면 예전 계산을 대신 표시하지 않음", CM.dashboardProvisionalBreakdownHtml(good).includes("잠정 공헌이익 계산 내역을 확인할 수 없어요"), true);
 
 console.log("\n[8] 기존 확정 카드는 그대로");
 const primary = CM.dashboardMainHtml({ MAIN: { ...CONFIRMED_MAIN, created_at: OK_AT, reasons: [], result: { revenue: 8606815 } } });

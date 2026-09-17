@@ -553,6 +553,30 @@
     </div>`;
   }
 
+  /** 대시보드의 펼침 내역은 최신 잠정 계산의 같은 스냅샷만 사용한다. */
+  function dashboardProvisionalBreakdownHtml(c) {
+    const d = c && !c.error && c.detail;
+    const p = d && d.provisional_cm;
+    if (!p || p.is_confirmed !== false || !Array.isArray(d.lines) || !d.lines.length
+        || !d.monthly_cost || d.monthly_cost.available !== true
+        || ![p.amount, d.subtotal_before_monthly, p.monthly_cost, p.inbound_freight].every(v => v !== null && v !== undefined && Number.isFinite(Number(v)))
+        || d.lines.some(x => x.amount === null || x.amount === undefined || !Number.isFinite(Number(x.amount)))) {
+      return `<p class="dash-empty">잠정 공헌이익 계산 내역을 확인할 수 없어요. <a href="#/profit">공헌이익 화면에서 확인해 주세요.</a></p>`;
+    }
+    const row = (label, amount, sub = "", cls = "") => `<tr${cls ? ` class="${cls}"` : ""}><th scope="row">${esc(label)}${sub ? `<small>${esc(sub)}</small>` : ""}</th><td class="num">${won(amount)}</td></tr>`;
+    const month = Number(String(p.period_start || "").slice(5, 7));
+    const title = `${month >= 1 && month <= 12 ? `${month}월` : "이번 달"} 잠정 공헌이익 내역`;
+    return `<details class="dash-provisional"><summary>${title} <b class="${Number(p.amount) < 0 ? "cmv2-neg" : ""}">${won(p.amount)}</b>
+      <small>${esc(p.period_start)}~${esc(p.period_end)} · 확정 전</small></summary>
+      <table class="dash-cm dash-provisional-table" aria-label="${title}"><tbody>
+        ${d.lines.map(x => row(costName(x.label), x.amount)).join("")}
+        ${row("월 공통비 차감 전 기여액", d.subtotal_before_monthly, "공헌이익 아님", "dash-cm-total")}
+        ${row("월 공통비", -Number(p.monthly_cost), "입출고비 · 배송비 · 보관비 · 세이버/구독")}
+        ${row("판매분 입고 운반비", -Number(p.inbound_freight), "판매된 수량에 배분")}
+        ${row(`${month >= 1 && month <= 12 ? `${month}월` : "이번 달"} 잠정 공헌이익`, p.amount, "확정 전", "dash-cm-total")}
+      </tbody></table></details>`;
+  }
+
   /** 대시보드 칸 제목 아래 설명 */
   function dashboardMeta(cur) {
     const m = cur.MAIN;
@@ -562,5 +586,5 @@
   global.CmSettlement = { SETTING_KEY, STATUS, switchState, isEnabled, loadCurrent, prodParts, compare, primaryHtml, compareHtml, noticeHtml,
                           dashboardMainHtml, dashboardNoticeHtml, dashboardCompareHtml, dashboardMeta, chip, requiredInputsHtml, refundsRefHtml,
                           costName, kstTime,
-                          CONTRIB_JOB, loadContribution, contributionHtml, dashboardContributionHtml, contribStale };
+                          CONTRIB_JOB, loadContribution, contributionHtml, dashboardContributionHtml, dashboardProvisionalBreakdownHtml, contribStale };
 })(typeof window !== "undefined" ? window : globalThis);

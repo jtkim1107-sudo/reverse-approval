@@ -341,8 +341,7 @@
     return { month, t, adTotal: cm.adTotal, cmNet: cm.cmNet, cmRate: cm.cmRate, undet, lastAd, adRate, adNotes, empty: !t.revenue && !cm.adTotal };
   }
 
-  /** settlement(2026-09-15, 정산자료 계산 켜짐일 때만) = { mode, mainHtml, compareHtml, meta, tone } - 주 공헌이익은 정산자료 계산(mainHtml),
-   *  기존 운영 계산 표는 '기존 계산과 비교'(기본 접힘) 안 참고값(초록 강조 없음). 없으면(꺼짐) 기존 화면 그대로. */
+  /** 정산자료 계산이 켜진 대시보드는 최신 잠정 공헌이익 내역을 펼쳐 보여 준다. */
   function profitHtml(m, { fmt, at, settlement = null } = {}) {
     const won = v => `₩${fmt(v)}`;
     const t = m.t;
@@ -371,14 +370,9 @@
         <span class="dash-ad-notes">${m.adNotes.map(n => badge(n.tone, n.text, { small: true, title: n.why || "" })).join(" ")}</span>
       </div>`;
     if (ref) {
-      const legacy = m.empty ? noDataHtml(`${m.month} 매출·광고비 기록이 아직 없어요.`) : table;
       const body = `${settlement.mainHtml}
       ${adRow}
-      <details class="dash-legacy"><summary>기존 계산과 비교 · 기존 운영 계산(참고) <b class="dash-ref">${m.undet ? "미확정" : won(m.cmNet)}</b>
-        <small>이번 달 1일~오늘 · 주문 기준 · 최종값 아님</small></summary>
-        ${settlement.compareHtml || ""}
-        ${legacy}
-      </details>`;
+      ${settlement.breakdownHtml || ""}`;
       return shellHtml({ id: "dash-profit", title: `${m.month} 공헌이익 · 광고비`, actions: link("#/profit", "상세 계산 보기"),
         tone: settlement.tone || null, body });
     }
