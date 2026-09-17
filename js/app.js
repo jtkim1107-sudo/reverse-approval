@@ -4096,6 +4096,26 @@ function inventoryDecisionLabel(d) {
   return (INVENTORY_DECISION_META[d.decision] || { label: d.decision }).label;
 }
 
+// 상품 마스터에는 브랜드 칸이 없으므로 쿠팡 상품명의 첫 단어를 사용해
+// 재고·발주 목록을 묶어요. "아가드X돗투돗"처럼 협업 브랜드는 앞 브랜드로 묶습니다.
+function inventoryBrandName(d) {
+  const first = String(d.product_name || "").trim().split(/\s+/)[0] || "";
+  return first.split(/[X×]/)[0] || first;
+}
+
+function sortInventoryDecisionsByBrand(decisions, productIndex) {
+  const collator = new Intl.Collator("ko-KR", { numeric: true, sensitivity: "base" });
+  const displayName = d => {
+    const p = productIndex[d.product_id];
+    return p ? ErpUi.displayName(p.code, p.name) : (d.product_name || d.vendor_item_id || "");
+  };
+  return [...decisions].sort((a, b) =>
+    collator.compare(inventoryBrandName(a), inventoryBrandName(b))
+    || collator.compare(displayName(a), displayName(b))
+    || collator.compare(a.option_name || "", b.option_name || "")
+    || collator.compare(String(a.vendor_item_id || ""), String(b.vendor_item_id || "")));
+}
+
 function inventoryOutlookText(d) {
   if (d.decision === "RESTOCK_EXCLUDED") return "재입고 안 함";
   // 2026-09-14 반품 재판매 SKU 행 - 자기 재고가 0 이어도 판단은 공유재고 기준(기준 SKU 를 따름)
@@ -4155,12 +4175,10 @@ async function viewInventoryDecisions() {
   const filtered = inventoryDecisionFilter
     ? result.decisions.filter(d => d.decision === inventoryDecisionFilter)
     : result.decisions;
-  const priority = { ORDER_NOW: 0, DATA_CHECK: 1, ORDER_SOON: 2, AWAITING_INBOUND: 3, OK: 4, RESTOCK_EXCLUDED: 5 };
-  const sorted = [...filtered].sort((a, b) => (priority[a.decision] ?? 9) - (priority[b.decision] ?? 9));
-
   // 2026-09-13 [ERP UI 정리] 위쪽 핵심 요약(누르면 그 상태만) · 재고 상태와 자동화 상태 분리 · 구역(재고/입고/상태/추천) ·
   // 상품 열 고정 · 720px 이하 카드. 숫자·판정은 서버 값 그대로(화면이 다시 계산하지 않음).
   const prodIndex = await loadInventoryProductIndex();
+  const sorted = sortInventoryDecisionsByBrand(filtered, prodIndex);
   const filterClick = key => `inventoryDecisionFilter = (inventoryDecisionFilter === '${key}' ? null : '${key}'); route()`;
   const blockedCount = result.decisions.filter(d => d.automation_blocked && d.decision !== "RESTOCK_EXCLUDED").length;
   const vatCount = result.decisions.filter(d => d.recommended_order_qty_ea && ProcurementInput.vatNeedsAck((invVatOf(d) || {}).status)).length;
@@ -4209,7 +4227,7 @@ async function viewInventoryDecisions() {
       <div class="card-head">
         <h2>재고 · 발주${inventoryDecisionFilter ? ` <span class="erp-readonly">필터: ${esc((INVENTORY_DECISION_META[inventoryDecisionFilter] || {}).label || inventoryDecisionFilter)}</span>` : ""}</h2>
         <span style="font-size:11px;color:var(--text-sub)">
-          ${result.calculatedAt ? "계산: " + new Date(result.calculatedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+          브랜드명순 · ${result.calculatedAt ? "계산: " + new Date(result.calculatedAt).toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
         </span>
       </div>
       ${cacheHealthHtml}
