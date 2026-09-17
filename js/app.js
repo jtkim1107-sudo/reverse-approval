@@ -10095,6 +10095,7 @@ async function renderSyncHealthCard() {
       ${unRes.error ? `<div style="font-size:12px;color:var(--text-sub)">※ 누락 내역 테이블을 읽지 못했어요(20260910a 미적용 가능) - 누락이 없다는 뜻은 아닙니다.</div>` : ""}
       ${jobLine("erp_sales_sync", "매출 동기화")}
       ${jobLine("review_voc_collect", "리뷰 VOC 수집")}
+      ${jobLine("erp_review_sheet_sync", "리뷰 ERP 반영")}
       ${stRes.error ? `<div style="font-size:12px;color:var(--text-sub);margin-top:4px">※ 동기화 상태 테이블을 읽지 못했어요(20260910b 미적용 가능).</div>` : ""}
     </div>`;
 }
@@ -10229,11 +10230,14 @@ function vocAgeText(iso) {
 }
 
 async function renderVocStatusBanner() {
-  let st = null, unavailable = false;
+  let st = null, erp = null, unavailable = false;
   try {
-    const { data, error } = await sb.from("sync_job_status")
-      .select("*").eq("job_name", "review_voc_collect").maybeSingle();
-    if (error) unavailable = true; else st = data;
+    const [sourceRes, erpRes] = await Promise.all([
+      sb.from("sync_job_status").select("*").eq("job_name", "review_voc_collect").maybeSingle(),
+      sb.from("sync_job_status").select("*").eq("job_name", "erp_review_sheet_sync").maybeSingle(),
+    ]);
+    if (sourceRes.error || erpRes.error) unavailable = true;
+    else { st = sourceRes.data; erp = erpRes.data; }
   } catch (_) { unavailable = true; }
 
   // 상태 테이블 자체를 못 읽는 경우: 상태를 '정상'으로 단정하지 않고 모른다고 표시.
@@ -10257,11 +10261,27 @@ async function renderVocStatusBanner() {
   const successAge = vocAgeText(st.last_success_at);
   const attemptAge = vocAgeText(st.last_attempt_at);
 
+  const erpFailing = erp && (erp.consecutive_failures || 0) > 0;
+  const erpBehind = !erp?.last_success_at || !st.last_success_at ||
+    new Date(erp.last_success_at).getTime() < new Date(st.last_success_at).getTime();
+  if (!failing && (erpFailing || erpBehind)) {
+    return `<div class="card" style="border-left:4px solid var(--amber, #d98324);padding:10px 14px;margin-bottom:12px">
+      <b style="font-size:13px">⚠️ 리뷰는 수집됐지만 ERP 반영을 확인해야 합니다</b>
+      <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
+        구글시트 수집: ${st.last_success_at ? esc(new Date(st.last_success_at).toLocaleString("ko-KR")) : "기록 없음"}<br>
+        ERP 반영: ${erp?.last_success_at ? esc(new Date(erp.last_success_at).toLocaleString("ko-KR")) : "기록 없음"}
+        ${erpFailing ? `· 재시도 중 (${erp.consecutive_failures}회 실패)` : ""}
+      </div>
+      <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">아래 목록은 ERP에 마지막으로 반영된 리뷰입니다.</div>
+    </div>`;
+  }
+
   if (!failing) {
     return `<div class="card" style="border-left:4px solid var(--green);padding:10px 14px;margin-bottom:12px">
-      <b style="font-size:13px">✅ 자동수집 정상</b>
+      <b style="font-size:13px">✅ 리뷰 수집·ERP 반영 정상</b>
       <div style="font-size:12.5px;color:var(--text-sub);margin-top:4px">
-        마지막 성공: ${st.last_success_at ? `${esc(new Date(st.last_success_at).toLocaleString("ko-KR"))} (${successAge})` : "기록 없음"}
+        구글시트 수집: ${st.last_success_at ? `${esc(new Date(st.last_success_at).toLocaleString("ko-KR"))} (${successAge})` : "기록 없음"}<br>
+        ERP 반영: ${erp?.last_success_at ? esc(new Date(erp.last_success_at).toLocaleString("ko-KR")) : "기록 없음"}
       </div></div>`;
   }
 
