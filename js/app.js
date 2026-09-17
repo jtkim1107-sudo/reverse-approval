@@ -4225,11 +4225,19 @@ function inventoryIncomingText(d) {
     // 목적) - 그래서 바깥의 isWingDirectReviewFlag/WING_DIRECT_REVIEW_FLAG_PREFIXES 를 참조하면 그
     // 추출 실행에서 ReferenceError 가 난다(실제로 재현됨 - 기존 테스트 케이스들이 이 분기를 안 태워서
     // 그동안 안 잡혔을 뿐). 이 함수 자신 안에 그대로 inline 해서 어떤 추출 방식으로도 안전하게 만든다.
+    // 2026-09-18 [Codex PM 교차검증 지적, 운영 실측: 그레이 review_qty=1360(과거 신청 여러 건 누적)
+    // + 블랙 240(최신 shipment 요청480/수령240/미입고240)] "⚠️ WING 1,360 확인 필요" 문구가 이
+    // 합계를 실제 입고예정 수량이나 물리적 미입고 수량으로 오해하게 만들 위험이 있었다 - 여러 건이
+    // 누적된 합계일 뿐이고(신청ID별로 중복·재신청이 섞여 있을 수 있음), 이 함수 자체의 주석에도
+    // 이미 "자동 반영은 여전히 안 함(표시만 추가)"라고 적혀 있었지만 정작 눈에 보이는 문구는 그
+    // 구분을 못 전달했다. "미입고 기록"(집계일 뿐 확정 수량 아님) + "중복 확인"(왜 보류됐는지)으로
+    // 바꿔 오해를 줄인다 - 신청ID별 정확한 수량은 이 요약이 아니라 상세 표(loadInvWingDirectSection,
+    // WING 입고ID 단위)에서 그대로 유지되므로 여기서는 손대지 않는다.
     const reviewQty = Number(d.wing_direct_review_qty || 0);
     const wingReviewPrefixes = ["WING_DIRECT_PO_OVERLAP_REVIEW", "WING_DIRECT_LONG_DELAYED_REVIEW", "WING_DIRECT_STALE_RESUBMIT_REVIEW"];
     const hasWingReviewFlag = (d.data_quality_flags || []).some(f => wingReviewPrefixes.some(p => String(f || "").startsWith(p)));
     if (reviewQty > 0 && hasWingReviewFlag)
-      return `<span style="color:var(--amber)" title="WING 에는 신청돼 있지만 겹침·기대일 경과 등으로 자동 반영을 보류함 - 상세에서 사유 확인">⚠️ WING ${fmt(reviewQty)} 확인 필요</span>`;
+      return `<span style="color:var(--amber)" title="WING 에는 신청돼 있지만 겹침·기대일 경과 등으로 자동 반영을 보류함(신청ID별 여러 건 합계 - 실제 입고예정·미입고 확정 수량 아님) - 상세에서 신청ID별 수량·사유 확인">⚠️ WING 미입고 기록 ${fmt(reviewQty)}개 · 중복 확인</span>`;
     return "-";
   }
   const dateShort = d.incoming_date ? d.incoming_date.slice(5).replace("-", "/") : null;

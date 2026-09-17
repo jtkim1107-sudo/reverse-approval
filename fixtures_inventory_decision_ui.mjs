@@ -48,10 +48,20 @@ check(inventoryIncomingText({ incoming_qty: 80, incoming_date: null }), "+80 · 
 // WING 직접입고 검토 분기가 바깥 헬퍼(isWingDirectReviewFlag 등)를 참조해서 여기서만 ReferenceError
 // 가 났었다(실제 화면에선 app.js 전체가 로드되니 안 터짐 - 이 fixture 라서 잡힌 것). 그 분기를 함수
 // 안에 inline 해서 고쳤다 - 이 케이스들로 회귀를 잠근다.
+//
+// 2026-09-18 [Codex PM 교차검증 지적 - 운영 실측(그레이 review_qty=1360 이 과거 신청 여러 건 누적,
+// 블랙 240 은 최신 shipment 1건의 요청480/수령240/미입고240)] "⚠️ WING N 확인 필요" 문구가 이 합계를
+// 실제 입고예정·물리 미입고 수량으로 오해하게 만들 위험이 있어 "WING 미입고 기록 N개 · 중복 확인"
+// 으로 바꿨다(신청ID별 정확한 수량은 상세 표에서 그대로 유지 - 이 fixture 범위 밖).
 check(
   inventoryIncomingText({ incoming_qty: 0, wing_direct_review_qty: 240, data_quality_flags: ["WING_DIRECT_LONG_DELAYED_REVIEW"] }),
-  '<span style="color:var(--amber)" title="WING 에는 신청돼 있지만 겹침·기대일 경과 등으로 자동 반영을 보류함 - 상세에서 사유 확인">⚠️ WING 240 확인 필요</span>',
-  "[핵심] WING 겹침/기대일 경과 검토 물량이 있으면 목록에서도 바로 보임(모달 안 열어도)"
+  '<span style="color:var(--amber)" title="WING 에는 신청돼 있지만 겹침·기대일 경과 등으로 자동 반영을 보류함(신청ID별 여러 건 합계 - 실제 입고예정·미입고 확정 수량 아님) - 상세에서 신청ID별 수량·사유 확인">⚠️ WING 미입고 기록 240개 · 중복 확인</span>',
+  "[핵심] WING 겹침/기대일 경과 검토 물량이 있으면 목록에서도 바로 보임(모달 안 열어도) - '확인 필요'가 아니라 '미입고 기록 · 중복 확인'으로 오해 방지"
+);
+check(
+  inventoryIncomingText({ incoming_qty: 0, wing_direct_review_qty: 1360, data_quality_flags: ["WING_DIRECT_STALE_RESUBMIT_REVIEW"] }),
+  '<span style="color:var(--amber)" title="WING 에는 신청돼 있지만 겹침·기대일 경과 등으로 자동 반영을 보류함(신청ID별 여러 건 합계 - 실제 입고예정·미입고 확정 수량 아님) - 상세에서 신청ID별 수량·사유 확인">⚠️ WING 미입고 기록 1,360개 · 중복 확인</span>',
+  "[핵심 - 운영 실측 재현] 과거 신청 여러 건이 누적된 큰 합계(1,360)도 같은 문구로 - 실제 입고예정으로 안 보이게"
 );
 check(
   inventoryIncomingText({ incoming_qty: 0, wing_direct_review_qty: 240, data_quality_flags: [] }),
