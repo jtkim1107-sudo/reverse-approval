@@ -8131,26 +8131,52 @@ async function decidePO(id, decision) {
   route();
 }
 
+// 리파코 결제조건: 발주/매입한 달의 다음 달 20일. 청구서 수취 전에는 추정일이다.
+function ripacoEstimatedPayDate(orderDay) {
+  const [year, month] = orderDay.split("-").map(Number);
+  if (!year || !month || month < 1 || month > 12) throw new Error("발주일 형식 오류");
+  const next = new Date(year, month, 20);
+  return `${next.getFullYear()}-${pad2(next.getMonth() + 1)}-20`;
+}
+
+function poEstimatedCashPayment(po, items, products, vat) {
+  const byId = new Map(products.map(p => [p.id, p]));
+  const supply = items.reduce((sum, it) => sum + Number(it.amount || Number(it.qty) * Number(it.unit_cost) || 0), 0);
+  if (!Number.isFinite(supply) || supply <= 0) throw new Error("발주 금액을 확인해 주세요");
+  const tax = vat.enabled && !vat.purchaseCostIncludesVat
+    ? items.reduce((sum, it) => sum + (isTaxable(byId.get(it.product_id))
+      ? Math.round(Number(it.amount || Number(it.qty) * Number(it.unit_cost) || 0) * VAT_RATE) : 0), 0)
+    : 0;
+  // 운반비는 별도 청구서로 지급되므로 발주 상품대금에 더하지 않는다.
+  return supply + tax;
+}
+
 // 승인된 발주서를 실제로 거래처에 보냈을 때 → 결제 예정도 함께 등록
 async function markOrdered(id) {
   const p = poCache.find(x => x.id === id);
   const sup = erpSupplierList.find(s => s.name === p.supplier);
+  const items = poItemCache[id] || [];
+  let total;
+  try {
+    total = p.supplier === "리파코 주식회사"
+      ? poEstimatedCashPayment(p, items, erpProducts, vatCfg)
+      : Number(p.total) + poCurrentFreightEst(p);
+  }
+  catch (e) { return toast(e.message); }
+  const due = p.supplier === "리파코 주식회사" ? ripacoEstimatedPayDate(today()) : addDaysStr(today(), 30);
   const { data, error } = await sb.from("purchase_orders")
     .update({ status: "ordered", ordered_at: new Date().toISOString() }).eq("id", id).select("id");
   if (error || !data?.length) return toast("처리에 실패했습니다");
 
-  // 결제조건이 있으면 '나갈 돈'으로 미리 잡아둔다
-  // 2026-09-12 취소된 운송 묶음 기준 예상 운송비는 대금에 넣지 않아요(poCurrentFreightEst)
-  const curFreight = poCurrentFreightEst(p);
-  const total = Number(p.total) + curFreight;
+  // 리파코 상품대금은 VAT 포함 추정치. 운반비는 별도 청구서에서 잡는다.
   if (total > 0 && confirm(
-    `발주 완료로 처리했습니다.\n\n대금 ₩${fmt(total)}${curFreight ? " (운송비 포함)" : ""}을(를)\n`
-    + `자금일보의 '나갈 돈'에 미리 등록할까요?${sup?.pay_terms ? `\n(${p.supplier} 결제조건: ${sup.pay_terms})` : ""}`)) {
-    const due = addDaysStr(today(), 30);
+    `발주 완료로 처리했습니다.\n\n대금 추정 ₩${fmt(total)}을(를) ${due}에\n`
+    + `자금일보의 '나갈 돈'에 등록할까요? 청구서 수취 뒤 금액·날짜를 확인해 주세요.${p.supplier === "리파코 주식회사" ? "\n운반비는 별도입니다." : ""}${sup?.pay_terms ? `\n(${p.supplier} 결제조건: ${sup.pay_terms})` : ""}`)) {
     await sb.from("cash_plans").insert({
-      date: due, kind: "출금", title: `${p.supplier} 발주대금 (${p.po_no})`,
-      amount: total, repeat: "없음", created_by: me.name });
-    toast("자금일보 '나갈 돈'에 등록했습니다 (날짜는 자금일보에서 조정하세요)");
+      date: due, kind: "출금", title: `${p.supplier} 발주대금 추정 (${p.po_no})`,
+      amount: total, repeat: "없음", created_by: me.name,
+      memo: `발주일 기준 ${p.supplier} 지급예정 추정 · 청구서 대조 필요${p.supplier === "리파코 주식회사" ? " · 운반비 별도" : ""}` });
+    toast("자금일보 '나갈 돈'에 추정액을 등록했습니다");
   } else {
     toast("발주 완료로 처리했습니다");
   }
@@ -11262,6 +11288,15 @@ let cashAccounts = [];
 let cashTxns = [];
 let cashPlans = [];
 
+function lastBankStatementAt(txns) {
+  const dated = txns.filter(t => /BANK_STMT(?:_|:)/.test(String(t.memo || "")))
+    .map(t => {
+      const time = String(t.memo || "").match(/통장 (\d{2}:\d{2}:\d{2})/);
+      return `${t.date} ${time ? time[1] : "00:00:00"}`;
+    });
+  return dated.sort().at(-1) || null;
+}
+
 function addDaysStr(base, n) {
   const d = new Date(base + "T00:00:00");
   d.setDate(d.getDate() + n);
@@ -11345,8 +11380,13 @@ async function viewCash() {
   const planIn = occ.filter(o => o.kind === "입금").reduce((s, o) => s + Number(o.amount), 0);
   const planOut = occ.filter(o => o.kind === "출금").reduce((s, o) => s + Number(o.amount), 0);
   const minRow = projRows.reduce((m, r) => (m === null || r.bal < m.bal) ? r : m, null);
+  const bankAsOf = lastBankStatementAt(cashTxns);
 
   return `
+    <div class="card" style="border:1.5px solid ${bankAsOf?.slice(0, 10) === today() ? 'var(--green)' : 'var(--amber)'}">
+      <b>통장 대사:</b> ${bankAsOf ? `${esc(bankAsOf)} 기준 · 이후 거래는 아직 확인되지 않았습니다.` : '통장 거래내역 대사 기록이 없습니다.'}
+      새 거래내역을 받으면 기존 거래·지출결의서와 맞춰 실제 입출금만 반영하세요.
+    </div>
     <div class="grid-stats">
       <div class="stat"><div class="stat-label">${cashDate} 총 잔액 (실제)</div>
         <div class="stat-value blue">₩${fmt(tot.bal)}</div></div>
@@ -11354,7 +11394,7 @@ async function viewCash() {
         <div class="stat-value green">₩${fmt(tot.dayIn)}</div></div>
       <div class="stat"><div class="stat-label">당일 출금</div>
         <div class="stat-value red">₩${fmt(tot.dayOut)}</div></div>
-      <div class="stat"><div class="stat-label">들어올 돈 (30일)</div>
+      <div class="stat"><div class="stat-label">들어올 돈 (45일)</div>
         <div class="stat-value green">+₩${fmt(planIn)}</div></div>
     </div>
 
@@ -11429,7 +11469,7 @@ async function viewCash() {
           <div class="stat-value green">+₩${fmt(planIn)}</div></div>
         <div class="stat"><div class="stat-label">45일 내 예정 출금</div>
           <div class="stat-value red">−₩${fmt(planOut)}</div></div>
-        <div class="stat"><div class="stat-label">30일 후 예상 잔액</div>
+        <div class="stat"><div class="stat-label">45일 후 예상 잔액</div>
           <div class="stat-value ${curBal + planIn - planOut < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut)}</div></div>
       </div>
 

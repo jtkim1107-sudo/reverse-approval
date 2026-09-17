@@ -3,9 +3,9 @@
 // 2026-09-12 [사용자 확정] 발주서에 저장된 예상 운송비(freight_est)가 취소된 운송 묶음 기준이면 현재 비용으로 쓰지 않음(네트워크 0건).
 // app.js 의 openReceiveModal·saveReceive·markOrdered 와 poFreight* 도우미는 소스에서 실제 정의를 잘라 실행(미러 아님). DB 는 가짜.
 //   1) PO-016 모양(운송비 기록이 무효·대체뿐): 입고 처리에 187,000 미리 채우지 않음 · 입고 확정해도 purchase_costs 운송비 0건
-//   2) 발주 완료 대금(자금일보 나갈 돈)에 187,000 더하지 않음 - 4,080,000
+//   2) 발주 완료 대금(자금일보 나갈 돈)은 VAT 포함 상품대금이며 운반비는 별도 청구
 //   3) 발주서 목록·상세는 원래 값 ₩187,000 을 그대로 보여주되 '취소된 운송 묶음 · 현재 비용 아님' 표시(감사 이력 보존)
-//   4) 회귀: 살아 있는 기록이 있으면 입력칸 없음(중복 방지 그대로) · 기록이 없는 일반 발주는 예전처럼 미리 채움·대금 포함
+//   4) 회귀: 살아 있는 기록이 있으면 입력칸 없음(중복 방지 그대로) · 기록이 없는 일반 발주는 예전처럼 미리 채움
 //   5) 운송비 기록을 못 읽었으면 예전 동작(미리 채우지 않음 · 대금은 저장값)
 import { readFileSync } from "fs";
 import vm from "vm";
@@ -43,15 +43,18 @@ const ctx = vm.createContext({
   fmt: v => Number(v).toLocaleString("en-US"), cfv: v => (v === "" ? "" : Number(v).toLocaleString("en-US")),
   esc: v => String(v), prodName: () => "모노플랫", vatTag: () => "", today: () => "2026-09-12", numOf: v => Number(String(v).replace(/,/g, "")) || 0,
   toast: () => {}, closeModal: () => {}, route: () => {}, addDaysStr: () => "2026-10-12", confirmed: [],
+  pad2: n => String(n).padStart(2, "0"), VAT_RATE: .1,
+  isTaxable: p => (p?.tax_type || "과세") === "과세",
   me: { name: "테스트" }, erpSupplierList: [{ name: "리파코 주식회사", pay_terms: "월말" }],
 });
 vm.runInContext(`var confirm = msg => { confirmed.push(msg); return true; };
-  let erpFreight = { records: [], history: [], error: null }; let poCache = []; let poItemCache = {};`, ctx);
+  let erpFreight = { records: [], history: [], error: null }; let poCache = []; let poItemCache = {};
+  let erpProducts = [{id:"p1",tax_type:"과세"}]; let vatCfg = {enabled:true,purchaseCostIncludesVat:false};`, ctx);
 vm.runInContext(grabLine(/const poFreightRecord = [^\n]*\n/), ctx);
 vm.runInContext(grabLine(/const poFreightInactiveOnly = [\s\S]*?;\n/), ctx);
 vm.runInContext(grabLine(/const poCurrentFreightEst = [^\n]*\n/), ctx);
 vm.runInContext(grabLine(/const poFreightInactiveTag = [\s\S]*?;\n/), ctx);
-for (const f of ["openReceiveModal", "saveReceive", "markOrdered"]) vm.runInContext(grabFn(f), ctx);
+for (const f of ["openReceiveModal", "saveReceive", "ripacoEstimatedPayDate", "poEstimatedCashPayment", "markOrdered"]) vm.runInContext(grabFn(f), ctx);
 
 const PO = { id: "po16", po_no: "리버스-발주-2026-016", supplier: "리파코 주식회사", deliver_to: "쿠팡", status: "approved", total: 4080000, freight_est: 187000 };
 const setWorld = (freight, po = PO) => {
@@ -77,21 +80,21 @@ console.log("\n=== 2. 발주 완료 대금 ===");
 setWorld({ records: [], history: HIST, error: null });
 await vm.runInContext(`markOrdered("po16")`, ctx);
 const cash = writes.find(w => w[0] === "cash_plans");
-check([cash && cash[2].amount, ctx.confirmed[0].includes("4,080,000"), ctx.confirmed[0].includes("운송비 포함")], [4080000, true, false],
-      "[핵심] 자금일보 나갈 돈 4,080,000(187,000 제외) · '운송비 포함' 문구 없음");
+check([cash && cash[2].amount, cash && cash[2].date, ctx.confirmed[0].includes("4,488,000"), ctx.confirmed[0].includes("운반비는 별도")], [4488000, "2026-10-20", true, true],
+  "[핵심] 자금일보 나갈 돈 VAT 포함 4,488,000 · 10월 20일 · 운반비 별도");
 
 console.log("\n=== 4. 회귀 ===");
 setWorld({ records: [{ cost: { purchase_order_id: "po16", id: "act" }, gross: 198000, basis: "ESTIMATE" }], history: HIST, error: null });
 vm.runInContext(`openReceiveModal("po16")`, ctx);
 check([modal.innerHTML.includes('id="rc-freight"'), modal.innerHTML.includes("운송 묶음 기록 ₩198,000")], [false, true], "살아 있는 기록이 있으면 입력칸 없음(중복 방지 그대로)");
 await vm.runInContext(`markOrdered("po16")`, ctx);
-check(writes.find(w => w[0] === "cash_plans")[2].amount, 4267000, "살아 있는 기록이 있으면 발주서 예상 운송비는 예전처럼 대금에 포함");
+check(writes.find(w => w[0] === "cash_plans")[2].amount, 4488000, "살아 있는 운송 기록도 상품대금과 별도로 계산");
 const plain = { ...PO, id: "po9", po_no: "리버스-발주-2026-009", freight_est: 99000 };
 setWorld({ records: [], history: [], error: null }, plain);
 vm.runInContext(`openReceiveModal("po9")`, ctx);
 check(modal.innerHTML.includes('value="99,000"'), true, "기록이 없는 일반 발주: 예전처럼 저장값 미리 채움");
 await vm.runInContext(`markOrdered("po9")`, ctx);
-check(writes.find(w => w[0] === "cash_plans")[2].amount, 4179000, "일반 발주: 대금에 운송비 포함(예전 그대로)");
+check(writes.find(w => w[0] === "cash_plans")[2].amount, 4488000, "일반 발주도 운반비를 상품대금에 중복 가산하지 않음");
 
 console.log("\n=== 5. 운송비 기록을 못 읽음 ===");
 setWorld({ records: [], history: [], error: "x" });
