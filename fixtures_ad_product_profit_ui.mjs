@@ -150,5 +150,23 @@ check(ot.includes("(나중에 확인)") && ot.includes("확인 뒤에도 활성 
 check(!/\(나중에 확인\)|확인 뒤에도/.test(text(A.summaryPageHtml({ ...cf, other_files_same_period: [{ ...withOther.other_files_same_period[0], confirmations: 0, extracted_at_verified: false }] }, { filter: "ALL" }))),
   "확인 안 된 보관 파일은 그대로 미확인 표시");
 
+// ── 7. 기본 보고서 선택 - 가져온 순서가 아니라 기간 끝날이 최신인 것 (2026-09-17 회귀) ──────────
+// 맥 자동 수집기가 지난달 재확인을 이번 달 월중보다 나중에 가져오면(예: 09-01~09-14 재확인이 09-01~09-16
+// 월중보다 나중에 임포트) 예전 코드(state.reports.find(x => x.active))는 가져온 순서상 먼저 나오는(더
+// 최근에 가져온) 과거 기간을 기본으로 보여 줬어요 - 화면이 다시 오래된 걸로 보이는 사고.
+const reversedByImportOrder = [
+  { start: "2026-09-01", end: "2026-09-14", active: true, campaigns: 8 },   // 가장 최근에 '가져옴'(과거 기간 재확인)
+  { start: "2026-08-01", end: "2026-08-31", active: true, campaigns: 8 },
+  { start: "2026-09-01", end: "2026-09-16", active: true, campaigns: 8 },   // 실제로는 가장 최신 기간(이번 달)인데 먼저 안 가져옴
+];
+check(A.pickDefaultReport(reversedByImportOrder).end === "2026-09-16",
+  "기본 선택은 가져온 순서 1등(09-14)이 아니라 끝날이 가장 최신(09-16)", A.pickDefaultReport(reversedByImportOrder));
+check(A.pickDefaultReport([{ start: "2026-09-01", end: "2026-09-14", active: false, campaigns: 8 }]) === null,
+  "비활성만 있으면 기본 선택 없음(null)");
+check(A.pickDefaultReport([]) === null, "빈 목록이면 null");
+check(A.pickDefaultReport([{ start: "2026-08-01", end: "2026-08-31", active: false, campaigns: 8 },
+                          { start: "2026-09-01", end: "2026-09-16", active: true, campaigns: 8 }]).end === "2026-09-16",
+  "비활성은 후보에서 빠짐(활성인 것 중에서만 고름)");
+
 console.log(failures ? `\n실패 ${failures}건` : "\n전부 통과");
 process.exit(failures ? 1 : 0);

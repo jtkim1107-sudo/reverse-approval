@@ -318,10 +318,20 @@
     if (el && el.querySelector(".adp-page")) el.innerHTML = pageHtml(state);
   }
 
+  /** 활성 보고서 중 기본으로 보여 줄 것 하나. *** '가져온 순서'가 아니라 기간 끝날이 가장 최신인 걸
+   * 고릅니다 *** - GET .../reports 는 가져온 순서(최근 가져온 게 먼저)로 와서, 지난달 재확인처럼
+   * 과거 기간을 나중에 다시 가져오면(수집 자동화) 화면이 최신 달이 아니라 그 과거 기간을 기본으로
+   * 보여 주는 사고가 있었어요(2026-09-17). 끝날이 같으면(드묾) 먼저 나온 걸 그대로 씀. */
+  function pickDefaultReport(reports) {
+    const active = (reports || []).filter((x) => x.active);
+    if (!active.length) return null;
+    return active.reduce((best, x) => (x.end > best.end ? x : best), active[0]);
+  }
+
   async function view() {
     await loadReports();
     if (!state.start) {
-      const act = state.reports.find((x) => x.active);
+      const act = pickDefaultReport(state.reports);
       if (act) { state.start = act.start; state.end = act.end; }
     }
     await loadSummary();
@@ -429,5 +439,5 @@
 
   global.AdProductProfit = { view, upload, fileChosen, choosePeriod, pickReport, setFilter, toIso, reasonText, pageHtml, summaryPageHtml,
                              productRowHtml, detailHtml, unallocatedHtml, reconciliationHtml, toggleDetail, uploadFields, fileHintText, timeTyped,
-                             unknownToggled, uploadHtml, _state: state };
+                             unknownToggled, uploadHtml, pickDefaultReport, _state: state };
 })(typeof window !== "undefined" ? window : globalThis);
