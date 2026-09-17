@@ -540,6 +540,7 @@
     const m = d.monthly_cost || {};
     const stale = contribStale(c);
     const p = (d.provisional_cm && d.provisional_cm.is_confirmed === false) ? d.provisional_cm : null;
+    const monthlyItems = m.available && Array.isArray(m.items) ? m.items : [];
     return `<div class="cmv2-dcontrib">
       <div class="cmv2-dmain-top">
         <span class="cmv2-dmain-label">${p ? "최신 잠정 공헌이익" : "월 공통비 차감 전 기여액"}
@@ -547,12 +548,15 @@
         <b class="cmv2-dmain-amt${Number(p ? p.amount : d.subtotal_before_monthly) < 0 ? " cmv2-neg" : ""}">${won(p ? p.amount : d.subtotal_before_monthly)}</b>
         <span class="cmv2-prov">${p ? "확정 전" : "잠정"}</span>
       </div>
-      <dl class="cmv2-dcosts">
-        <div><dt>월 공통비</dt><dd>${p ? won(p.monthly_cost) : m.available ? won(m.total) : "자료 없음"}</dd></div>
-        <div><dt>판매분 입고 운반비</dt><dd>${p ? won(p.inbound_freight || 0) : "확인 필요"}</dd></div>
-        <div><dt>기여액 <small>월 공통비 차감 전</small></dt><dd>${won(p ? p.subtotal_before_monthly : d.subtotal_before_monthly)}</dd></div>
-        <div><dt>갱신</dt><dd>${esc(kstTime(c.lastSuccessAt)) || "확인 필요"}</dd></div>
-      </dl>
+      <div class="cmv2-dcosts">
+        <details class="cmv2-dcost-detail"><summary><span>월 공통비 (내역)</span><b>${p ? won(p.monthly_cost) : m.available ? won(m.total) : "자료 없음"}</b></summary>
+          ${monthlyItems.length ? `<div class="cmv2-dcost-parts">${monthlyItems.map(it => `<div><span>${esc(costName(it.label))}</span><b>${won(it.amount)}</b></div>`).join("")}</div>`
+            : `<p class="cmv2-note">${m.available ? "항목별 금액은 다음 계산 결과부터 표시됩니다." : "월 공통비 자료가 아직 없어요."}</p>`}
+        </details>
+        <div><span>판매분 입고 운반비 <small>리파코 → 쿠팡창고</small></span><b>${p ? won(p.inbound_freight || 0) : "확인 필요"}</b></div>
+        <div><span>기여액 <small>월 공통비·입고 운반비 차감 전</small></span><b>${won(p ? p.subtotal_before_monthly : d.subtotal_before_monthly)}</b></div>
+        <div><span>갱신</span><b>${esc(kstTime(c.lastSuccessAt)) || "확인 필요"}</b></div>
+      </div>
       ${!p && !m.available ? `<p class="cmv2-note">${esc(MISSING_TEXT[m.status] || m.status || "")}</p>` : ""}
       ${stale ? `<p class="cmv2-fail" role="alert">${esc(stale)}</p>` : ""}
     </div>`;
@@ -575,7 +579,7 @@
       <small>${esc(p.period_start)}~${esc(p.period_end)} · 확정 전</small></summary>
       <table class="dash-cm dash-provisional-table" aria-label="${title}"><tbody>
         ${d.lines.map(x => row(costName(x.label), x.amount)).join("")}
-        ${row("월 공통비 차감 전 기여액", d.subtotal_before_monthly, "공헌이익 아님", "dash-cm-total")}
+        ${row("월 공통비·입고 운반비 차감 전 기여액", d.subtotal_before_monthly, "공헌이익 아님", "dash-cm-total")}
         ${row("월 공통비", -Number(p.monthly_cost), "입출고비 · 배송비 · 보관비 · 세이버/구독")}
         ${row("판매분 입고 운반비", -Number(p.inbound_freight), "판매된 수량에 배분")}
         ${row(`${month >= 1 && month <= 12 ? `${month}월` : "이번 달"} 잠정 공헌이익`, p.amount, "확정 전", "dash-cm-total")}
