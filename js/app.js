@@ -1586,6 +1586,10 @@ async function viewDashboard() {
   return `<div class="dash" id="dash-root">
     <div id="dash-status-slot">${statusLast ? statusLast.html
       : `<section class="dash-status dash-status--ok" id="dash-status" aria-busy="true">${ErpUi.badge("muted", { text: "운영 상태 불러오는 중…", small: true })}</section>`}</div>
+    <section class="card" id="kakao-report-slot" style="margin:14px 0">
+      <div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
+      <p style="color:var(--text-sub);font-size:13px">오늘 이미지 4장을 확인하는 중입니다.</p>
+    </section>
     <div class="dash-grid">${DASH_SECTIONS.map(([id, t]) => `<div class="dash-slot" id="${id}-slot">${ErpDashboard.loadingHtml(id, t)}</div>`).join("")}</div>
     <nav class="dash-more" aria-label="다른 화면">
       <a href="#/team">우리 팀 목표 ›</a><a href="#/inbox">결재 대기함 ›</a><a href="#/docs">전체 문서함 ›</a>
@@ -1612,9 +1616,65 @@ function dashboardWingGuide() {
     <p class="rg-muted">쿠키 남은 시간만으로는 정상으로 보지 않아요. 약 24시간 기준은 추정이에요.</p>`);
 }
 
+const KAKAO_REPORT_KINDS = [["sales", "매출 현황"], ["profit", "공헌이익"], ["cash", "자금일보"], ["ads", "광고현황"]];
+
+async function loadKakaoReportStatus() {
+  const slot = document.getElementById("kakao-report-slot");
+  if (!slot) return;
+  const reportDate = today();
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session?.access_token) throw new Error("ERP 로그인이 필요합니다");
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/kakao-report/${reportDate}`, {
+      headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store",
+    });
+    if (!document.getElementById("kakao-report-slot")) return;
+    if (resp.status === 404) {
+      slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
+        <p style="font-size:13px;color:var(--text-sub)">${esc(reportDate)} 보고서는 아직 준비되지 않았습니다. 매일 오전 8시 전에 자동 생성됩니다.</p>`;
+      return;
+    }
+    if (!resp.ok) throw new Error(`조회 실패(HTTP ${resp.status})`);
+    const manifest = await resp.json();
+    const buttons = KAKAO_REPORT_KINDS.map(([kind, label]) => {
+      const card = manifest.cards?.[kind];
+      return `<button class="btn sm secondary" onclick="downloadKakaoReport('${kind}')" ${card ? "" : "disabled"}>
+        ${esc(label)} PNG 받기${card?.status === "확인 필요" ? " · 확인 필요" : ""}</button>`;
+    }).join(" ");
+    slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
+      <p style="font-size:13px;color:var(--text-sub);margin:0 0 12px">${esc(reportDate)} · 생성 ${esc(manifest.generated_at || "-")} · 카톡으로 보내기 전 각 이미지의 확인 표시를 봐 주세요.</p>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">${buttons}</div>`;
+  } catch (e) {
+    if (document.getElementById("kakao-report-slot")) slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
+      <p style="font-size:13px;color:var(--red)">이미지 조회 실패: ${esc(String(e?.message || e))}</p>`;
+  }
+}
+
+async function downloadKakaoReport(kind) {
+  if (!KAKAO_REPORT_KINDS.some(([k]) => k === kind)) return;
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session?.access_token) return toast("ERP 로그인이 필요합니다");
+  const reportDate = today();
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/kakao-report/${reportDate}/${kind}`, {
+      headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store",
+    });
+    if (!resp.ok) throw new Error(`다운로드 실패(HTTP ${resp.status})`);
+    const url = URL.createObjectURL(await resp.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `rebirth_${reportDate}_${kind}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch (e) { toast(String(e?.message || e)); }
+}
+
 async function dashboardHydrate() {
   const gen = ++_dashGen;
   const at = new Date();
+  loadKakaoReportStatus();
   const month = today().slice(0, 7), td = today(), yd = yesterday();
   const live = () => gen === _dashGen && document.getElementById("dash-root");
   const put = (id, html, ok = true) => {

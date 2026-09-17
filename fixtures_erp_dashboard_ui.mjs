@@ -176,7 +176,7 @@ check([rgBody.includes("rgCountPlan(counts, p, ctx.loadBlock)"), dashSrc.include
 check(/dashboard: \{ title: "대시보드", render: viewDashboard, after: \(\) => dashboardHydrate\(\) \}/.test(app), true, "대시보드는 틀을 먼저 그리고 영역별로 채움");
 check(dashSrc.includes("_dashLast[id]") && dashSrc.includes("ErpDashboard.errorHtml(id, title"), true, "새로고침 실패 시 마지막 정상값 사용");
 const handlers = [...(dashSrc + modSrc).matchAll(/onclick="([^"(]+)\(/g)].map(x => x[1]);
-check([...new Set(handlers)].sort(), ["dashboardRefresh", "dashboardWingGuide"], "[핵심] 대시보드 버튼은 화면 새로고침 · WING 로그인 갱신 방법 보기뿐");
+check([...new Set(handlers)].sort(), ["dashboardRefresh", "dashboardWingGuide", "downloadKakaoReport"], "[핵심] 대시보드 버튼은 화면 새로고침 · WING 안내 · 보고서 PNG 다운로드뿐");
 hasNot(dashSrc, "SalesRefresh.buttonHtml", "대시보드에 WING 판매데이터 수집 버튼 없음");
 for (const bad of ["team_milestones", "claimMilestones", "teamCardHtml", "loadTeamMonth"]) hasNot(dashSrc, bad, `대시보드 영역에 '${bad}' 없음(팀 목표 기록 쓰기 없음)`);
 const srSrc = read("./js/sales_refresh.js");
