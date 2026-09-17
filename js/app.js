@@ -10094,7 +10094,7 @@ async function renderSyncHealthCard() {
         </div>` : `<div style="font-size:13px;margin-bottom:6px">✅ 매핑 누락으로 빠진 매출 없음</div>`}
       ${unRes.error ? `<div style="font-size:12px;color:var(--text-sub)">※ 누락 내역 테이블을 읽지 못했어요(20260910a 미적용 가능) - 누락이 없다는 뜻은 아닙니다.</div>` : ""}
       ${jobLine("erp_sales_sync", "매출 동기화")}
-      ${jobLine("review_voc_collect", "리뷰 VOC 수집")}
+      ${jobLine("review_sheet_collect", "리뷰 VOC 수집")}
       ${jobLine("erp_review_sheet_sync", "리뷰 ERP 반영")}
       ${stRes.error ? `<div style="font-size:12px;color:var(--text-sub);margin-top:4px">※ 동기화 상태 테이블을 읽지 못했어요(20260910b 미적용 가능).</div>` : ""}
     </div>`;
@@ -10233,7 +10233,7 @@ async function renderVocStatusBanner() {
   let st = null, erp = null, unavailable = false;
   try {
     const [sourceRes, erpRes] = await Promise.all([
-      sb.from("sync_job_status").select("*").eq("job_name", "review_voc_collect").maybeSingle(),
+      sb.from("sync_job_status").select("*").eq("job_name", "review_sheet_collect").maybeSingle(),
       sb.from("sync_job_status").select("*").eq("job_name", "erp_review_sheet_sync").maybeSingle(),
     ]);
     if (sourceRes.error || erpRes.error) unavailable = true;
@@ -10317,7 +10317,7 @@ async function viewVoc(tab) {
       <span style="flex:1"></span>
       <button class="btn sm secondary" onclick="route()">🔄 새로고침</button>
     </div>`;
-  // 2026-09-11 리뷰 수집 상태(review_voc_collect)는 리뷰 탭에만. 고객문의 탭은 고객문의 수집
+  // 리뷰 시트 수집·ERP 반영 상태는 리뷰 탭에만. 고객문의 탭은 고객문의 수집
   // 상태(cs_inquiry_collect)를 따로 보여줘요 - 예전엔 리뷰 수집이 정상이면 문의 0건도 '정상'처럼 보였어요.
   const [banner, body] = await Promise.all([
     tab === "reviews" ? renderVocStatusBanner() : Promise.resolve(""),

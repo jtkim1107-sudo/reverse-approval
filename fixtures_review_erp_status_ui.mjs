@@ -8,7 +8,7 @@ const end = src.indexOf("async function viewVoc(", start);
 assert(start >= 0 && end > start);
 
 async function render(source, erp) {
-  const rows = { review_voc_collect: source, erp_review_sheet_sync: erp };
+  const rows = { review_sheet_collect: source, erp_review_sheet_sync: erp };
   const context = {
     Date,
     sb: { from: () => ({ select: () => ({ eq: (key, name) => ({
