@@ -4187,8 +4187,59 @@ function inventoryOutlookText(d) {
   return "-";
 }
 
+// 2026-09-18 [Codex 실측 지적 - 발판 480(그레이320/블랙160) 신청, 240 입고·240 미입고, 기대일
+// 09-17 경과] wing_direct_review_qty/refs 는 이미 캐시에 있는데(compute_inventory_decision_for_row
+// 참고) 목록 어디에도 안 보여서 - incoming_qty 는 검토 중인 WING 물량을 절대 안 셈(merge_with_po
+// 참고 - 겹침·기대일 경과는 자동 반영 금지가 맞음), 그래서 예전엔 이 상품 목록 줄이 그냥 "-"만
+// 보여서 "왜 입고예정이 안 떠?"가 됐다. 목록에서도(모달을 안 열어도) 최소한 "확인이 필요한 WING
+// 물량이 있다"는 것만은 바로 보이게 한다 - 자동 반영은 여전히 안 함(표시만 추가). 이 판정 로직
+// 자체는 inventoryIncomingText() 안에 inline 돼 있음(fixtures_inventory_decision_ui.mjs 가 그
+// 함수 하나만 정규식으로 추출해 독립 실행하므로, 바깥 헬퍼를 참조하면 추출 실행에서 깨짐).
+
+// data_quality_flags 는 그동안 원시 코드 그대로("WING_DIRECT_PO_OVERLAP_REVIEW" 등)만 나열됐다 -
+// 사람이 읽을 문구로 바꾼다(모르는 코드는 원래 코드를 그대로 보여줘서 정보 손실 없음).
+const DATA_QUALITY_FLAG_LABEL = {
+  WING_DIRECT_PO_OVERLAP_REVIEW: "WING 직접입고가 최근 발주서와 겹칠 수 있어 자동 반영 보류(겹침 검토 필요)",
+  WING_DIRECT_LONG_DELAYED_REVIEW: "WING 직접입고 기대일이 지났는데 아직 미입고 - 실제 출고·취소 여부 확인 필요",
+  WING_DIRECT_STALE_RESUBMIT_REVIEW: "같은 상품에 오래된 WING 건과 새 WING 건이 함께 있어 재신청인지 확인 필요",
+  WING_DIRECT_DUPLICATE_OR_MISSING_KEY: "WING 직접입고 원본 데이터에 중복/누락된 키가 있어 확인 필요",
+  WING_DIRECT_STATUS_UNKNOWN: "WING 직접입고 상태값을 알 수 없어 확인 필요",
+  WING_DIRECT_SOURCE_UNTRUSTED: "WING 직접입고 원본이 오래됐거나 신뢰할 수 없어 확인 필요(재수집 필요)",
+  WING_DIRECT_DATE_MISSING: "WING 직접입고 기대일 정보가 없어 확인 필요",
+};
+function dataQualityFlagLabel(code) {
+  if (DATA_QUALITY_FLAG_LABEL[code]) return DATA_QUALITY_FLAG_LABEL[code];
+  if (String(code || "").startsWith("WING_DIRECT_QUERY_FAILED")) return `WING 직접입고 원본 조회 실패(${code})`;
+  // 2026-09-18 [Codex 지적 - 최신 main 통합 대비] origin/main 은 이미 ErpUi.reasonText(f) 로
+  // data_quality_flags 를 사람이 읽을 문구로 바꾸고 있다(이 로컬 브랜치와는 독립적으로 생김) - 이
+  // 함수는 새로 생긴 WING_DIRECT_* 코드만 책임지고, 그 밖의 코드는(이 함수가 모르는 코드) 있으면
+  // ErpUi.reasonText 로 넘겨서 두 표시 방식이 최신 main 위에서 충돌 없이 공존하게 한다.
+  if (typeof ErpUi !== "undefined" && typeof ErpUi.reasonText === "function") return ErpUi.reasonText(code);
+  return code;
+}
+
 function inventoryIncomingText(d) {
-  if (!d.incoming_qty) return "-";
+  if (!d.incoming_qty) {
+    // 2026-09-18 [Codex 지적 - fixtures_inventory_decision_ui.mjs 는 이 함수 하나만 소스에서 정규식
+    // 추출해 eval 로 독립 실행한다(파일 맨 위 주석 참고 - "미러 아님, 배포 코드와 절대 안 어긋남"이
+    // 목적) - 그래서 바깥의 isWingDirectReviewFlag/WING_DIRECT_REVIEW_FLAG_PREFIXES 를 참조하면 그
+    // 추출 실행에서 ReferenceError 가 난다(실제로 재현됨 - 기존 테스트 케이스들이 이 분기를 안 태워서
+    // 그동안 안 잡혔을 뿐). 이 함수 자신 안에 그대로 inline 해서 어떤 추출 방식으로도 안전하게 만든다.
+    // 2026-09-18 [Codex PM 교차검증 지적, 운영 실측: 그레이 review_qty=1360(과거 신청 여러 건 누적)
+    // + 블랙 240(최신 shipment 요청480/수령240/미입고240)] "⚠️ WING 1,360 확인 필요" 문구가 이
+    // 합계를 실제 입고예정 수량이나 물리적 미입고 수량으로 오해하게 만들 위험이 있었다 - 여러 건이
+    // 누적된 합계일 뿐이고(신청ID별로 중복·재신청이 섞여 있을 수 있음), 이 함수 자체의 주석에도
+    // 이미 "자동 반영은 여전히 안 함(표시만 추가)"라고 적혀 있었지만 정작 눈에 보이는 문구는 그
+    // 구분을 못 전달했다. "미입고 기록"(집계일 뿐 확정 수량 아님) + "중복 확인"(왜 보류됐는지)으로
+    // 바꿔 오해를 줄인다 - 신청ID별 정확한 수량은 이 요약이 아니라 상세 표(loadInvWingDirectSection,
+    // WING 입고ID 단위)에서 그대로 유지되므로 여기서는 손대지 않는다.
+    const reviewQty = Number(d.wing_direct_review_qty || 0);
+    const wingReviewPrefixes = ["WING_DIRECT_PO_OVERLAP_REVIEW", "WING_DIRECT_LONG_DELAYED_REVIEW", "WING_DIRECT_STALE_RESUBMIT_REVIEW"];
+    const hasWingReviewFlag = (d.data_quality_flags || []).some(f => wingReviewPrefixes.some(p => String(f || "").startsWith(p)));
+    if (reviewQty > 0 && hasWingReviewFlag)
+      return `<span style="color:var(--amber)" title="WING 에는 신청돼 있지만 겹침·기대일 경과 등으로 자동 반영을 보류함(신청ID별 여러 건 합계 - 실제 입고예정·미입고 확정 수량 아님) - 상세에서 신청ID별 수량·사유 확인">⚠️ WING 미입고 기록 ${fmt(reviewQty)}개 · 중복 확인</span>`;
+    return "-";
+  }
   const dateShort = d.incoming_date ? d.incoming_date.slice(5).replace("-", "/") : null;
   // 2026-09-08 [DATA_CHECK UX 정확한 원인 구분, 사용자 명시] "입고예정일이 지났는데
   // 아직 미입고"인 이 케이스만 별도 경고 문구("+200EA · 09/01 예정일 경과") - 다른
@@ -4412,6 +4463,7 @@ function openInventoryDecisionDetail(productId, vendorItemId = "") {
         <p style="font-size:13px;margin-top:6px">현재 예상 입고일: <b>${d.incoming_date || "확정 안 됨"}</b> ${d.incoming_source ? `(${esc(inventoryIncomingSourceLabel(d.incoming_source))})` : ""}</p>
         ${d.wing_slot_date ? `<p style="font-size:12.5px;color:var(--text-sub)">WING 예약 슬롯: ${d.wing_slot_date}${d.wing_slot_date !== d.incoming_date ? " (실제 ETA와 다름 — WING 제출 이력으로 그대로 보존)" : ""}</p>` : ""}
         ${!isChild && d.product_id ? `<button class="btn sm secondary" style="margin-top:6px" onclick="openIncomingRegisterModal('${d.product_id}')">📥 실제 발주/입고 정보 등록</button>` : ""}
+        <div id="inv-wing-direct-section"></div>
 
         <h4 style="font-size:13px;margin:14px 0 4px">예측</h4>
         <div class="table-wrap"><table class="items-table"><tbody>
@@ -4432,12 +4484,61 @@ function openInventoryDecisionDetail(productId, vendorItemId = "") {
         ${d.reference_shortage_ea != null && !d.recommended_order_qty_ea ? `<p style="font-size:12px;color:var(--text-sub);margin-top:4px">${esc(d.reference_shortage_note || "")}</p>` : ""}
 
         ${d.recommended_order_qty_ea && invVatOf(d) && ProcurementInput.vatNeedsAck(invVatOf(d).status) ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ 참고용 추천 - ${esc(invVatOf(d).reason)}. 자동 발주안에는 들어가지 않아요. 경고를 확인한 뒤 직접 넣고 결재를 올려야 해요.</p>` : ""}
-        ${d.data_quality_flags && d.data_quality_flags.length ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ ${d.data_quality_flags.map(f => esc(globalThis.ErpUi?.reasonText ? ErpUi.reasonText(f) : f)).join(" · ")}</p>` : ""}
+        ${d.data_quality_flags && d.data_quality_flags.length ? `<p style="font-size:12px;color:var(--amber);margin-top:8px">⚠️ ${d.data_quality_flags.map(dataQualityFlagLabel).map(esc).join(" · ")}</p>` : ""}
         <p style="font-size:11px;color:var(--text-sub);margin-top:8px">계산시각: ${d.calculated_at || "-"}</p>
 
         <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">닫기</button></div>
       </div>
     </div>`;
+  // 2026-09-18 [Codex 지적 - 프론트 fixture 호환] fixtures_inventory_decision_ui.mjs 처럼
+  // openInventoryDecisionDetail() 만 따로 추출해서 도는 테스트 하네스에는 이 헬퍼가 없을 수 있다 -
+  // typeof 가드로 그런 환경에서도 ReferenceError 없이 조용히 건너뛴다(운영 화면은 app.js 전체가
+  // 로드되니 항상 정의돼 있어 평소엔 그냥 호출됨).
+  if (!isChild && d.product_id && typeof loadInvWingDirectSection === "function") loadInvWingDirectSection(d.product_id);
+}
+
+// 2026-09-18 [Codex 교차검증 지적 - 배포 차단, 재교차검증에서 표 성격 정정] wing_direct_inbounds 는
+// product_id 로 매핑되는 WING 입고 shipment 전수 미러다(백엔드 wing_direct_inbound_collect.py 가
+// WING inbound/search 를 필터 없이 전부 읽어 저장) - *** "ERP 발주서 없이 WING 에서 바로 신청된
+// 것"만 걸러낸 표가 아니다 *** - ERP 에서 정상적으로 발주→WING 제출한 shipment 도 똑같이 이 표에
+// 들어간다. 그래서 이 행이 실제 ERP 발주서 없는 직접입고인지, 이미 어떤 PO 에 연결된 정상 제출인지는
+// 이 표만 보고는 알 수 없다(위 '기존 발주 / 입고' 섹션의 PO 목록과 사람이 직접 대조해야 함) - 지금까지
+// 이 화면 어디에도 안 보였어서 "발판 240개 입고중" 같은 걸 사람이 볼 방법이 없었던 것 자체는 맞아서
+// 보여주되, 제목·설명에서 "ERP 발주서 없이"라는 확정적 표현은 쓰지 않는다. *** 참고용 원본만 보여줌 ***
+// - 재고·발주 겹침 계산 자체는 이미 서버 엔진(위 '현재 예상 입고일'/'기존 발주' 섹션)이
+// get_open_po_and_inbound()→merge_with_po() 로 반영을 끝낸 값이라, 이 표는 그 계산에 관여하지 않고
+// 오직 "WING 쪽에 실제로 뭐라고 찍혀 있나"를 사람이 눈으로 확인하는 용도.
+async function loadInvWingDirectSection(productId) {
+  const box = document.getElementById("inv-wing-direct-section");
+  if (!box) return;
+  const { data, error } = await sb.from("wing_direct_inbounds")
+    .select("wing_inbound_id,vendor_item_id,requested_qty,received_qty,expected_date,wing_status")
+    .eq("product_id", productId).order("expected_date", { ascending: true });
+  if (error) {
+    if (!/does not exist|schema cache/i.test(error.message || "")) {
+      box.innerHTML = `<p style="font-size:12px;color:var(--text-sub)">WING 직접 입고 조회 실패: ${esc(error.message || error.code)}</p>`;
+    }
+    return;   // 표가 아직 없으면(기능 미적용) 조용히 아무것도 안 보여줌
+  }
+  if (!data || !data.length) return;   // 없으면 조용히 - 억지로 빈 섹션 안 보여줌
+  const DEAD = new Set(["CANCELLED", "FAILED"]);
+  const rows = data.map(r => {
+    const dead = DEAD.has(r.wing_status);
+    const pending = Math.max(0, Number(r.requested_qty || 0) - Number(r.received_qty || 0));
+    return `<tr>
+      <td><code style="font-size:11.5px">${esc(r.wing_inbound_id)}</code></td>
+      <td>${esc(r.wing_status || "-")}</td>
+      <td class="num">${fmt(r.requested_qty)}</td>
+      <td class="num" style="color:var(--green)">${fmt(r.received_qty)}</td>
+      <td class="num" style="color:${dead ? "var(--text-sub)" : pending > 0 ? "var(--amber)" : "var(--text-sub)"}">${dead ? "—" : fmt(pending)}</td>
+      <td>${esc(r.expected_date || "-")}</td>
+    </tr>`;
+  }).join("");
+  box.innerHTML = `<h4 style="font-size:13px;margin:14px 0 4px">WING 입고 원본(ERP 연결 여부 확인 필요)</h4>
+    <div class="table-wrap"><table class="items-table">
+      <thead><tr><th>WING 입고ID</th><th>상태</th><th class="num">신청</th><th class="num">입고</th><th class="num">미입고</th><th>기대일</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p style="font-size:11.5px;color:var(--text-sub);margin-top:4px">WING 에 실제로 신청된 입고 전체(ERP 발주 경유 여부와 무관)를 그대로 보여줘요 - 위 '기존 발주 / 입고' 목록과 대조해서 ERP 발주서 없이 들어온 건지 사람이 직접 확인해야 해요. 재고·발주 겹침 판단에는 위 '현재 예상 입고일'에 이미 반영돼 있고, 이 표 자체는 그 계산에 쓰이지 않아요.</p>`;
 }
 
 const INCOMING_SOURCE_LABEL = {
@@ -6540,6 +6641,11 @@ const PO_STATUS = {
   partial:  { label: "부분 입고", chip: "progress" },
   done:     { label: "입고 완료", chip: "approved" },
   canceled: { label: "취소", chip: "waiting" },
+  // 2026-09-18 [Codex 교차검증 지적 - 배포 차단] 이 항목이 없으면 poChip() 이 기본값(progress)으로
+  // 빠져서 "결재 대기"로 잘못 보였다 - WING 직접입고 검토 초안은 결재선이 비어 있어 결재 대기와
+  // 전혀 다른 상태(아직 아무도 결재 절차를 시작하지 않음, promoteWingDirectDraft() 로 사람이 직접
+  // 전환해야만 결재 대기로 넘어감).
+  wing_direct_review: { label: "WING 직접입고 검토", chip: "wing-review" },
 };
 const poChip = s => { const t = PO_STATUS[s] || PO_STATUS.progress;
   return `<span class="chip ${t.chip}">${t.label}</span>`; };
@@ -6567,6 +6673,9 @@ async function viewPurchaseOrders() {
   const waiting = poCache.filter(p => p.status === "progress" &&
     p.approval_line?.[p.current_step]?.userId === me.id).length;
   const open = poCache.filter(p => ["ordered", "partial"].includes(p.status));
+  // 2026-09-18 [Codex 교차검증 지적] 검토 초안은 목록엔 보여도(전체 발주 내역) 눈에 띄는 안내가
+  // 없으면 아무도 처리 안 하고 방치될 수 있어요 - waiting 배너와 같은 자리에 승인 권한자에게만.
+  const wingReviewCount = poCache.filter(p => p.status === "wing_direct_review").length;
 
   return `
     <div class="card">
@@ -6576,6 +6685,8 @@ async function viewPurchaseOrders() {
         발주 = 주문. <b>[입고 처리]</b>를 눌러야 재고에 반영됩니다.</p>
       ${waiting ? `<div style="background:var(--amber-bg);border:1px solid var(--amber);border-radius:9px;padding:10px 12px;margin-top:12px;font-size:13.5px">
         ⏳ 내 결재를 기다리는 발주서가 <b>${waiting}건</b> 있습니다.</div>` : ""}
+      ${wingReviewCount && me?.approver ? `<div style="background:var(--purple-bg);border:1px solid var(--purple);border-radius:9px;padding:10px 12px;margin-top:12px;font-size:13.5px">
+        🔎 WING 직접입고에서 자동 생성된 검토 초안이 <b>${wingReviewCount}건</b> 있습니다 - 겹침·공급처·원가를 확인하고 정식 발주로 전환하거나 취소해 주세요.</div>` : ""}
     </div>
     ${InboundApproval.reinboundCardHtml(reinbound.rows, { me, error: reinbound.error, refreshOnclick: "route()" })}
 
@@ -6907,6 +7018,7 @@ function openPODetail(id) {
   const canDecide = p.status === "progress" && step?.userId === me.id;
   const canOrder = p.status === "approved";
   const canReceive = ["ordered", "partial"].includes(p.status);
+  const isWingReview = p.status === "wing_direct_review";   // 2026-09-18 WING 직접입고 검토 초안
   const sup = erpSupplierList.find(s => s.name === p.supplier);
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
@@ -6928,15 +7040,23 @@ function openPODetail(id) {
         <h3 style="font-size:15px;margin:16px 0 8px">품목</h3>
         <div class="table-wrap"><table>
           <thead><tr><th>품목</th><th class="num">발주</th><th class="num">입고</th><th class="num">미입고</th><th class="num">단가</th><th class="num">금액</th></tr></thead>
-          <tbody>${items.map(it => `
+          <tbody>${items.map(it => {
+            // 2026-09-18 [Codex 교차검증 지적 - 배포 차단] wing_observed_received_qty 는 WING 이
+            // 관측한 수량일 뿐 ERP 매입 확정이 아니에요(received_qty 는 실제 매입 확정 때만 올라감 -
+            // openReceiveModal/saveReceive 참고) - 그래서 입고(received_qty) 칸과 분리해서 참고용
+            // 작은 글씨로만 보여주고, 미입고/합계 계산엔 전혀 영향을 안 줘요.
+            const wingObs = Number(it.wing_observed_received_qty || 0);
+            return `
             <tr>
               <td><b>${esc(prodName(it.product_id))}</b></td>
               <td class="num">${fmt(it.qty)}</td>
-              <td class="num" style="color:var(--green)">${fmt(it.received_qty)}</td>
+              <td class="num" style="color:var(--green)">${fmt(it.received_qty)}${wingObs > 0
+                ? `<br><small style="color:var(--text-sub);font-weight:400" title="WING 이 관측한 입고량(참고용) - ERP 매입 확정 아님, 재고·매입원장 계산에 안 들어감">WING 관측 ${fmt(wingObs)}(미확정)</small>` : ""}</td>
               <td class="num" style="color:${it.qty - it.received_qty > 0 ? "var(--amber)" : "var(--text-sub)"}">${fmt(it.qty - it.received_qty)}</td>
               <td class="num">₩${fmt(it.unit_cost)}</td>
               <td class="num"><b>₩${fmt(it.amount)}</b></td>
-            </tr>`).join("")}
+            </tr>`;
+          }).join("")}
           </tbody>
           <tfoot><tr><td colspan="5"><b>합계</b></td><td class="num"><b>₩${fmt(p.total)}</b></td></tr></tfoot>
         </table></div>
@@ -6955,7 +7075,10 @@ function openPODetail(id) {
                   : s.status === "rejected" ? '<span class="chip rejected">반려</span>'
                   : i === p.current_step ? '<span class="chip progress">차례</span>' : '<span class="chip waiting">대기</span>'}</td>
               <td>${esc(s.date) || "—"}</td></tr>`).join("")}
-          </tbody></table></div>` : `
+          </tbody></table></div>` : isWingReview ? `
+          <p style="font-size:13px;color:var(--amber);background:var(--amber-bg);border-radius:8px;padding:8px 10px;margin-top:12px">
+            ⚠️ WING 직접입고에서 자동 생성된 검토 초안이에요 - 아직 결재 절차를 시작하지 않았어요.
+            겹침·공급처·원가를 확인한 뒤 아래에서 정식 발주로 전환하거나 취소하세요.</p>` : `
           <p style="font-size:13px;color:var(--text-sub);margin-top:12px">전결 처리된 발주서입니다.</p>`}
 
         <div id="po-vat-approve-warn"></div>
@@ -6967,10 +7090,15 @@ function openPODetail(id) {
           ${canDecide ? `
             <button class="btn danger" onclick="decidePO('${p.id}','rejected')">반려</button>
             <button class="btn green" id="btn-po-approve" onclick="decidePO('${p.id}','approved')">승인</button>` : ""}
-          ${canOrder ? `<button class="btn" onclick="markOrdered('${p.id}')">거래처에 발주 완료</button>` : ""}
+          ${canOrder && p.wing_direct_shipment_id
+            ? `<button class="btn" onclick="markOrderedFromWingDirect('${p.id}')">매입 기록 확정(이미 WING 으로 입고됨 - 재주문 아님)</button>`
+            : canOrder ? `<button class="btn" onclick="markOrdered('${p.id}')">거래처에 발주 완료</button>` : ""}
           ${canReceive ? `<button class="btn" onclick="openReceiveModal('${p.id}')">입고 처리</button>` : ""}
           ${["progress", "approved"].includes(p.status) && p.drafter_id === me.id
             ? `<button class="btn danger" onclick="cancelPO('${p.id}')">발주 취소</button>` : ""}
+          ${isWingReview && me?.approver ? `
+            <button class="btn" onclick="promoteWingDirectDraft('${p.id}')">검토 초안 승인 (정식 발주로 전환)</button>
+            <button class="btn danger" onclick="rejectWingDirectDraft('${p.id}')">이 초안 취소</button>` : ""}
         </div>
       </div>
     </div>`;
@@ -8176,6 +8304,121 @@ async function markOrdered(id) {
   route();
 }
 
+// 2026-09-18 [Codex 지적 - WING 직접입고 검토 초안을 승인해 만든 발주서 전용]
+// 이 발주서는 WING 에서 *** ERP 발주서 없이 이미 신청됐고(전량 입고완료든, 발판처럼 일부만 입고돼
+// 나머지가 아직 입고중이든 상관없이) 그 사실을 사후에 ERP 매입 기록으로 남기는 것 *** (promoteWing
+// DirectDraft() 참고 - 결재만 하고 공급처 발송·WING 재신청은 절대 안 함. "이미 물리적으로 입고가
+// 끝난 건"이라고 쓰면 발판처럼 일부만 도착하고 나머지가 아직 입고중인 경우를 놓친 표현이라 정정).
+// 그런데 일반
+// markOrdered() 를 그대로 쓰면 두 가지가 실제로 안 한 일을 한 것처럼 보이게 한다:
+//   1) 버튼·토스트 문구 "거래처에 발주 완료" - 방금 공급처에 새로 주문을 넣은 것처럼 읽혀서, 사람이
+//      실제로 리파코에 다시 주문을 넣어야 하나 착각할 위험(재주문 절대 금지).
+//   2) markOrdered() 의 지급예정 등록은 날짜를 항상 today()+30 로 고정한다(공급처별 실제 결제조건
+//      은 confirm 창에 참고 문구로만 보여주고 실제 계산엔 안 씀) - 리파코 실제 결제조건(대표가 정함:
+//      익월 20일)과 다르고, 이 발주서는 "오늘 주문"이 아니라 "이미 지난 입고"라 today() 기준 자체가
+//      틀렸다. 게다가 이미 다른 경로로 지급예정이 등록돼 있을 수도 있어(사후 기록이라 회계가 먼저
+//      처리했을 가능성) 중복 등록 위험도 일반 발주보다 크다.
+// 그래서 이 함수는 날짜를 추정하지 않는다(사람이 직접 입력해야만 등록) + 같은 po_no 로 이미 등록된
+// 지급예정이 있으면 그 중복을 새로 만들지 않는다(정보만 보여줌) + 문구 전체를 "매입 기록 확정"으로
+// 바꿔 재주문이 아님을 분명히 한다. status 전이 자체(approved -> ordered)는 markOrdered() 와 같은
+// 값을 쓴다(새 status 를 안 만듦 - 기존 PO 수명주기 재사용, 이 필드 자체는 "매입 확정"이라는 뜻으로
+// 이미 맞게 쓰이고 있어서).
+async function markOrderedFromWingDirect(id) {
+  let fresh = null, total = 0;
+  return ErpUi.run({
+    key: `po-wing-order-${id}`,
+    allowed: !!me?.approver,
+    deniedText: "승인 권한자만 WING 사후기록 발주서의 매입을 확정할 수 있어요",
+    precheck: async () => {
+      const { data, error } = await sb.from("purchase_orders").select("*").eq("id", id).maybeSingle();
+      if (error) return { ok: false, message: `발주서를 확인하지 못했어요: ${error.message || error.code}` };
+      if (!data || data.status !== "approved" || !data.wing_direct_shipment_id)
+        return { ok: false, title: "처리하지 않았어요 - 대상이 아니에요", message: "승인 완료 상태의 WING 직접입고 발주서만 여기서 처리해요. 화면을 새로 읽었어요." };
+      fresh = data;
+      const curFreight = poCurrentFreightEst(fresh);
+      total = Number(fresh.total) + curFreight;
+      // 이미 이 po_no 로 등록된 지급예정이 있는지(사후 기록이라 회계가 먼저 처리했을 수 있음) - 중복
+      // 등록을 막기 위해 반드시 확인한다(제목에 po_no 를 그대로 찍어 넣는 건 markOrdered() 도 같은
+      // 관례라 - "%po_no%" 로 찾으면 그쪽이 이미 등록한 것도 같이 잡힘).
+      const { data: existingPlans, error: cpe } = await sb.from("cash_plans")
+        .select("id,date,amount,title").ilike("title", `%${fresh.po_no}%`);
+      if (cpe) return { ok: false, message: `기존 지급예정을 확인하지 못했어요: ${cpe.message || cpe.code} - 중복 확인 전엔 진행하지 않아요.` };
+      return { ok: true, total, curFreight, existingPlans: existingPlans || [] };
+    },
+    confirm: pre => {
+      const sup = erpSupplierList.find(s => s.name === fresh.supplier);
+      const dup = pre?.existingPlans || [];
+      return {
+        title: "매입 기록 확정(WING 사후기록 - 거래처에 새로 주문 안 함)",
+        actionLabel: "매입 기록 확정",
+        rows: [
+          ["발주번호", `<b>${esc(fresh.po_no)}</b>`],
+          ["거래처", esc(fresh.supplier)],
+          ["금액", `₩${fmt(pre?.total)}${pre?.curFreight ? " (운송비 포함)" : ""}`],
+          ["결제조건(참고용 - 자동 반영 안 됨)", esc(sup?.pay_terms || "등록된 결제조건 없음")],
+          ...(dup.length ? [["⚠️ 이미 등록된 지급예정", dup.map(d => `${esc(d.date)} · ₩${fmt(d.amount)} · ${esc(d.title)}`).join("<br>")]]
+            : [["지급예정일(선택 - 비우면 지금 등록 안 함)", `<input type="date" id="wing-order-due-date">`]]),
+        ],
+        notes: [
+          "*** 이 버튼은 거래처에 새로 주문을 넣지 않아요 *** - 이미 WING 으로 입고된 건을 매입 기록으로만 확정해요.",
+          dup.length
+            ? "이미 같은 발주번호로 등록된 지급예정이 있어서, 이번엔 지급예정을 새로 등록하지 않아요(중복 방지) - 필요하면 자금일보에서 직접 확인·조정하세요."
+            : "지급예정일은 today()+30 같은 추정값을 안 씁니다 - 정확한 실제 지급일을 알 때만 입력하세요(모르면 비워두고, 나중에 자금일보에서 직접 등록하세요).",
+        ],
+      };
+    },
+    exec: async () => {
+      const patch = { status: "ordered", ordered_at: new Date().toISOString() };
+      const { data, error } = await sb.from("purchase_orders").update(patch).eq("id", id).eq("status", "approved").select("id");
+      if (error) return { ok: false, message: error.message || error.code };
+      if (!data?.length) return { ok: false, message: "이미 다른 곳에서 처리됐어요" };
+
+      // 2026-09-18 [Codex 재현 검토 지적 - 배포 차단, 자금일보 누락 위험] 발주 상태는 이미 바뀐
+      // 뒤라(위에서 update 성공) 여기서부터는 exec() 을 실패로 되돌릴 수 없다(트랜잭션이 아님 -
+      // status 변경과 cash_plans 등록은 별개의 REST 호출 두 번) - 그래서 cash_plans 쪽 결과는
+      // ok:true 인 채로 data 에 정확한 상태만 담아 보고한다("발주 상태만 바뀜" vs "지급예정까지 등록"
+      // 을 성공 메시지에서 분명히 구분 - 절대 뭉뚱그려서 "다 됐다"고 말하지 않음).
+      //
+      // *** 중복 확인 자체가 실패하면(에러) fail-closed - 모르는 채로 insert 하면 안 됨(중복이었을
+      // 수도 있는데 확인을 못 했으니, 확인 못 했다고 정직하게 알리고 등록은 하지 않는다). ***
+      let cashPlanRegistered = false;
+      let cashPlanWarning = null;
+      const dueInput = document.getElementById("wing-order-due-date");
+      const due = dueInput?.value;
+      if (due) {
+        const { data: dupCheck, error: dupErr } = await sb.from("cash_plans").select("id").ilike("title", `%${fresh.po_no}%`);
+        if (dupErr) {
+          cashPlanWarning = `지급예정 중복 확인을 하지 못해서 등록하지 않았어요(${dupErr.message || dupErr.code}) - 발주 상태만 바뀌었어요. 자금일보에서 직접 확인·등록해 주세요.`;
+        } else if (dupCheck?.length) {
+          cashPlanWarning = "확인해 보니 이미 같은 발주번호로 등록된 지급예정이 있어서 새로 등록하지 않았어요(중복 방지) - 발주 상태만 바뀌었어요.";
+        } else {
+          // *** insert 응답(error/data)을 반드시 확인 *** - 예전엔 이 결과를 안 보고 "등록됨"으로
+          // 보고해서, 실패해도(RLS·네트워크 등) 성공 메시지가 뜨고 자금일보엔 실제로 안 들어가는
+          // 경우가 있었다.
+          const { data: insData, error: insErr } = await sb.from("cash_plans").insert({
+            date: due, kind: "출금", title: `${fresh.supplier} 매입대금(WING 사후기록, ${fresh.po_no})`,
+            amount: total, repeat: "없음", created_by: me.name }).select("id");
+          if (insErr) {
+            cashPlanWarning = `지급예정 등록에 실패했어요(${insErr.message || insErr.code}) - 발주 상태만 바뀌었어요. 자금일보에서 직접 등록해 주세요.`;
+          } else if (!insData?.length) {
+            cashPlanWarning = "지급예정 등록 응답이 비어 있어서 실제로 등록됐는지 확실하지 않아요 - 자금일보에서 직접 확인해 주세요.";
+          } else {
+            cashPlanRegistered = true;
+          }
+        }
+      }
+      return { ok: true, data: { cashPlanRegistered, cashPlanWarning } };
+    },
+    successText: res => {
+      if (res.data?.cashPlanWarning) return `매입 기록은 확정했어요. ${res.data.cashPlanWarning}`;
+      return res.data?.cashPlanRegistered
+        ? "매입 기록을 확정하고 지급예정을 등록했어요"
+        : "매입 기록을 확정했어요(지급예정은 등록하지 않음 - 필요하면 자금일보에서 직접 등록하세요)";
+    },
+    refresh: async () => { await loadPOs(); route(); },
+  });
+}
+
 async function cancelPO(id) {
   if (!confirm("이 발주서를 취소할까요?\n(이미 입고된 매입 기록은 남습니다)")) return;
   const { data, error } = await sb.from("purchase_orders").update({ status: "canceled" }).eq("id", id).select("id");
@@ -8183,6 +8426,229 @@ async function cancelPO(id) {
   toast("취소되었습니다");
   closeModal();
   route();
+}
+
+// 2026-09-18 [wing_direct_inbound.py 의 DEAD_STATUSES/MAX_SOURCE_AGE 와 정확히 같은 값 - 프론트에서도
+// "죽은 상태"·"36시간 넘게 안 갱신됨"을 같은 기준으로 판단해야 함(백엔드가 판정에 쓰는 신선도 기준을
+// 프론트가 다르게 알면, 백엔드는 이미 못 믿는다고 본 원본을 프론트는 아직 믿을 만하다고 잘못 보여줄 수 있음).
+const WING_DIRECT_DEAD_STATUSES = new Set(["CANCELLED", "FAILED"]);
+const WING_DIRECT_MAX_SOURCE_AGE_MS = 36 * 60 * 60 * 1000;
+
+// 2026-09-18 [Codex 교차검증 지적 - 배포 차단, WING 직접입고 검토 초안 승인 경로 신설]
+// wing_direct_review 초안은 approval_line=[] 라서 기존 decidePO() 결재 흐름(status==='progress'만
+// 다룸)을 전혀 못 탄다 - 이 함수가 그 빠진 전환 경로. 하는 일은 정확히 openPOModal()의 결재자
+// 선택/전결 로직 그대로 결재선을 채우고 status 만 바꾸는 것뿐 - 공급처 발송·WING 재신청·자금 확정은
+// 여기서 절대 안 함(전환 뒤에는 방금 사람이 직접 작성한 일반 발주서와 완전히 같은 절차 - 결재 →
+// markOrdered() → openReceiveModal() 을 그대로 따름). 승인 권한자만(me?.approver) 가능.
+async function promoteWingDirectDraft(id) {
+  const approvers = USERS.filter(u => u.id !== me.id && (Number(u.rank) || 0) > (Number(me.rank) || 0));
+  const isJeongyeol = approvers.length === 0;
+  let fresh = null, items = [];
+  return ErpUi.run({
+    key: `po-wing-promote-${id}`,
+    allowed: !!me?.approver,
+    deniedText: "승인 권한자만 WING 직접입고 검토 초안을 정식 발주로 전환할 수 있어요",
+    precheck: async () => {
+      const { data, error } = await sb.from("purchase_orders").select("*").eq("id", id).maybeSingle();
+      if (error) return { ok: false, message: `발주서를 확인하지 못했어요: ${error.message || error.code}` };
+      if (!data || data.status !== "wing_direct_review")
+        return { ok: false, title: "처리하지 않았어요 - 이미 처리됐거나 검토 초안이 아니에요", message: "화면을 새로 읽었어요." };
+      fresh = data;
+      const { data: its, error: ie } = await sb.from("purchase_order_items").select("*").eq("po_id", id);
+      if (ie) return { ok: false, message: `품목을 확인하지 못했어요: ${ie.message || ie.code}` };
+      items = its || [];
+      // 2026-09-18 [Codex 재교차검증 지적 - fail-open 버그] 품목 조회가 에러 없이 빈 배열로 성공할
+      // 수도 있다(예: 헤더는 있는데 품목 insert 가 어떤 이유로든 비었던 경우) - 그대로 두면 빈 초안을
+      // 승인해버릴 수 있어서 명시적으로 막는다.
+      if (!items.length)
+        return { ok: false, title: "처리하지 않았어요 - 품목이 없는 초안이에요", message: "품목 없이 전환하면 안 돼서 막았어요. 데이터를 직접 확인해 주세요." };
+
+      // 2026-09-18 [Codex 재교차검증 지적 - fail-open 버그] 전환 직전 WING 원본(wing_direct_inbounds)의
+      // 현재 상태를 다시 확인한다 - 검토 초안은 수집 당시 스냅샷일 뿐이라, 그 뒤 WING 쪽에서 취소되거나
+      // (그 새 shipment 가 CANCELLED/FAILED 로 바뀜) 수집기가 한동안 안 돌아 원본이 오래됐을 수 있다.
+      // wing_direct_inbound.py 의 DEAD_STATUSES/MAX_SOURCE_AGE 와 같은 기준으로: 조회 실패·행 없음·
+      // 죽은 상태·36시간 넘게 안 갱신 중 하나라도면 fail-closed 로 막는다(모르면 막는다 - 추정 금지).
+      const shipmentId = fresh.wing_direct_shipment_id;
+      if (shipmentId) {
+        const { data: mirrorRows, error: me2 } = await sb.from("wing_direct_inbounds")
+          .select("vendor_item_id,requested_qty,received_qty,wing_status,source_checked_at").eq("wing_inbound_id", shipmentId);
+        if (me2) return { ok: false, message: `WING 원본 상태를 다시 확인하지 못했어요: ${me2.message || me2.code} - 전환하지 않았어요.` };
+        if (!mirrorRows || !mirrorRows.length)
+          return { ok: false, title: "처리하지 않았어요 - WING 원본을 못 찾았어요", message: "wing_direct_inbounds 에 이 shipment 가 없어요(삭제됐거나 수집 전) - 재수집 후 다시 확인해 주세요." };
+        const dead = mirrorRows.filter(r => WING_DIRECT_DEAD_STATUSES.has(r.wing_status));
+        if (dead.length)
+          return { ok: false, title: "처리하지 않았어요 - WING 쪽에서 취소/실패로 바뀌었어요", message: `WING 상태: ${[...new Set(dead.map(r => r.wing_status))].join(", ")} - 이 초안은 더 이상 유효하지 않을 수 있어요. 취소하거나 재수집 결과를 확인해 주세요.` };
+        // 2026-09-18 [Codex 재재검토 지적 - 배포 차단 허점] Math.max() 로 "가장 최근 행 하나"만
+        // 보면, 품목 하나는 방금 수집돼 신선하고 나머지는 36시간 넘게 방치된 "혼합 shipment"도
+        // 통과해버린다(가장 신선한 값이 전체를 대표한 것처럼 오판). *** 모든 행이 각각 유효하고
+        // 각각 36시간 이내여야 한다 *** - 행 하나라도 파싱 실패·미래 비정상 시각(시계 오차/오염된
+        // 데이터 - 백엔드 wing_direct_inbound.py 의 now+5분 유예와 같은 기준)·36시간 초과면 막는다.
+        const badChecked = mirrorRows.filter(r => {
+          const t = new Date(r.source_checked_at).getTime();
+          return Number.isNaN(t) || t > Date.now() + 5 * 60 * 1000 || Date.now() - t > WING_DIRECT_MAX_SOURCE_AGE_MS;
+        });
+        if (badChecked.length)
+          return { ok: false, title: "처리하지 않았어요 - WING 원본이 오래됐거나 시각이 이상해요", message: "품목 전부가 36시간 이내에 갱신됐어야 해요(일부만 최근이어도 안 됨) - 수집기(run_wing_direct_inbound_collect.py)가 최근에 돌았는지 확인하고 재수집한 뒤 다시 시도해 주세요." };
+        // 2026-09-18 [Codex 지적 - 승인 직전 WING 수량 비교도 점검] 상태·신선도만으로는 부족하다 -
+        // 죽지 않은 상태로 계속 STOWING 이면서 수량만 바뀌는 경우(부분 취소·재조정)는 위 검사를
+        // 다 통과한다. 초안 작성 당시 저장해 둔 qty(=requested_qty)/wing_observed_received_qty
+        // (=received_qty) 를 vendor_item_id 로 맞춰 지금 원본과 정확히 같은지 비교한다 - 하나라도
+        // 다르면 이 초안은 이미 낡은 숫자라 그대로 승인하면 안 된다(override 불가 - 겹침 경고와
+        // 달리 이건 "숫자가 틀렸다"는 사실이라 사람이 확인해서 넘길 성질이 아님, 재수집 후 이 초안을
+        // 취소하고 사람이 직접 새 수치로 다시 검토해야 함).
+        // *** 2026-09-18 [Codex 재재검토 지적 - 배포 차단 허점] *** 예전엔 items(초안 품목) 기준으로만
+        // mirror 를 찾아봤다 - WING shipment 쪽에 그 뒤로 "새 vendor_item_id 행이 추가"돼도(예: 같은
+        // shipment 에 품목이 하나 더 실림) items 쪽엔 없으니 검사 대상 자체가 안 돼서 그냥 통과했다.
+        // *** 양쪽 vendor_item_id 집합이 완전히 같아야 한다(부분집합 불가) + 어느 쪽이든 중복 있으면
+        // 막는다 *** - 이래야 "초안에 없던 품목이 새로 생김"·"초안에 있던 품목이 원본에서 사라짐"·
+        // "원본에 같은 vendor_item_id 행이 중복으로 들어와 신뢰 못 함" 세 경우 다 잡힌다.
+        // *** 알려진 한계(아직 안 고침) *** - purchase_orders.wing_direct_shipment_id 는 UNIQUE 라서
+        // 이 초안을 취소(canceled)해도 그 shipmentId 는 계속 점유된 채라, 수집기가 같은 shipment 로
+        // "새로 바뀐 수량"의 초안을 다시 만들어주지 않는다. 지금은 사람이 취소 후 직접 확인해서
+        // 처리해야 함 - 부분 UNIQUE 인덱스(취소/반려 상태 제외)로 재생성을 허용하려면 별도 마이그레이션
+        // 논의가 필요해서 이번 라운드 범위 밖으로 남겨둠.
+        // 2026-09-18 [Codex 재재검토 지적] 주석은 "어느 쪽이든 중복 있으면 막는다"고 해놓고 실제로는
+        // mirror 쪽 중복만 셌다(items 쪽은 Set 으로 바로 모아서 중복이 조용히 사라짐) - 초안 자신의
+        // items 에 같은 vendor_item_id 가 중복으로 들어있는 경우(데이터 정합성 문제)도 똑같이 막는다.
+        const itemVidCounts = new Map();
+        for (const it of items) itemVidCounts.set(it.vendor_item_id, (itemVidCounts.get(it.vendor_item_id) || 0) + 1);
+        const itemDupVids = [...itemVidCounts.entries()].filter(([, n]) => n > 1).map(([v]) => v);
+        const itemVids = new Set(itemVidCounts.keys());
+        const mirrorVidCounts = new Map();
+        for (const r of mirrorRows) mirrorVidCounts.set(r.vendor_item_id, (mirrorVidCounts.get(r.vendor_item_id) || 0) + 1);
+        const mirrorDupVids = [...mirrorVidCounts.entries()].filter(([, n]) => n > 1).map(([v]) => v);
+        const missingInMirror = items.filter(it => !mirrorVidCounts.has(it.vendor_item_id)).map(it => it.vendor_item_id);
+        const extraInMirror = [...mirrorVidCounts.keys()].filter(v => !itemVids.has(v));
+        const mirrorByVid = new Map(mirrorRows.map(r => [r.vendor_item_id, r]));
+        const qtyChanged = items.filter(it => {
+          const m = mirrorByVid.get(it.vendor_item_id);
+          if (!m) return false;   // missingInMirror 에서 이미 잡힘(중복 사유 방지)
+          return Number(m.requested_qty) !== Number(it.qty) || Number(m.received_qty || 0) !== Number(it.wing_observed_received_qty || 0);
+        });
+        if (itemDupVids.length || mirrorDupVids.length || missingInMirror.length || extraInMirror.length || qtyChanged.length) {
+          const reasons = [];
+          if (itemDupVids.length) reasons.push(`초안 품목에 중복 vendor_item_id(${itemDupVids.join(", ")})`);
+          if (mirrorDupVids.length) reasons.push(`WING 원본에 중복 vendor_item_id(${mirrorDupVids.join(", ")})`);
+          if (missingInMirror.length) reasons.push(`초안 품목이 원본에서 사라짐(${missingInMirror.join(", ")})`);
+          if (extraInMirror.length) reasons.push(`WING 원본에 초안에 없던 새 품목 추가됨(${extraInMirror.join(", ")})`);
+          if (qtyChanged.length) reasons.push(`수량 변경(${qtyChanged.map(it => prodName(it.product_id)).join(", ")})`);
+          return { ok: false, title: "처리하지 않았어요 - WING 수량/품목이 바뀌었어요", message: `초안 작성 뒤 WING 쪽이 바뀌었어요 - ${reasons.join(" · ")}. 이 초안은 오래된 기준이라 승인하면 안 돼요. 이 초안을 취소하고 재수집 결과를 사람이 직접 확인해 주세요.` };
+        }
+      }
+
+      // 참고용 - 이 상품들에 다른 활성 발주서가 새로 생겼는지 미리 확인해서 확인창에 보여줌
+      // (evaluate_shipment() 가 초안 생성 때 이미 겹침을 걸렀지만, 그 뒤 시간이 지나 새 발주가
+      // 또 생겼을 수 있어서 - 자동 차단은 안 하고 정보만 보여줌, 최종 판단은 승인 권한자가 함).
+      // *** ErpUi.run() 은 confirm() 을 await 하지 않으므로(동기 객체만 받음) 이 비동기 조회는
+      // 반드시 여기 precheck 안에서 끝내야 함 - confirm() 에서 fetch 를 다시 하면 Promise 가
+      // 그대로 confirmModal() 에 넘어가 확인창이 깨진다. ***
+      // 2026-09-18 [Codex 화면 코드 독립 검토 지적] 겹침이 남아 있을 수도 있는데 정보 문구 한 줄로만
+      // 넘어가면 사실상 경고가 없는 것과 같다 - VAT 미확인 승인 경고(poVatWarnHtml, decidePO)가
+      // 체크박스 확인을 요구하는 것과 같은 원칙으로, 겹침이 있으면 확인창의 사유란을 "필수"로
+      // 바꿔서 승인 권한자가 직접 이유를 적어야만 진행되게 한다(빈 확인 한 번으로 못 넘어감).
+      let overlapNote = "같은 상품의 다른 활성 발주서를 다시 확인했고, 겹치는 게 없어요.";
+      let overlapFound = false;
+      const pids = [...new Set(items.map(it => it.product_id))];
+      if (pids.length) {
+        // 2026-09-18 [Codex 재교차검증 지적 - fail-open 버그] error 를 버리고 data 만 보면, 조회가
+        // 실패해도 "겹치는 게 없다"고 잘못 보여주고 그대로 전환까지 됐다 - 조회 실패는 반드시 막는다.
+        const { data: otherItems, error: oe } = await sb.from("purchase_order_items")
+          .select("po_id,product_id,purchase_orders(po_no,status)").in("product_id", pids);
+        if (oe) return { ok: false, message: `다른 발주서와 겹치는지 확인하지 못했어요: ${oe.message || oe.code} - 확인 전엔 전환하지 않아요.` };
+        const others = (otherItems || []).filter(it => it.po_id !== id
+          && it.purchase_orders && !["rejected", "canceled"].includes(it.purchase_orders.status));
+        if (others.length) {
+          overlapFound = true;
+          overlapNote = `⚠️ 같은 상품에 다른 활성 발주서 있음: ${[...new Set(others.map(it => it.purchase_orders.po_no))].join(", ")} - 중복 매입인지 직접 확인 후 진행하세요.`;
+        }
+      }
+      return { ok: true, overlapNote, overlapFound };
+    },
+    confirm: pre => ({
+      title: "WING 직접입고 검토 초안 → 정식 발주 전환",
+      actionLabel: isJeongyeol ? "전결 승인(공급처 발주·지급예정 등록은 다음 단계에서 따로)" : "결재선 지정하고 전환",
+      danger: !!pre?.overlapFound,
+      rows: [
+        ["발주번호", `<b>${esc(fresh?.po_no || "")}</b>`],
+        ["거래처", esc(fresh?.supplier || "-")],
+        ["품목", items.map(it => `${esc(prodName(it.product_id))} ${fmt(it.qty)}개`).join("<br>") || "-"],
+        ["합계", `₩${fmt(fresh?.total)}`],
+        ["WING 입고ID", `<code>${esc(fresh?.wing_direct_shipment_id || "-")}</code>`],
+        ...(isJeongyeol ? [] : [["결재자 *", `<select id="wing-promote-appr">${approvers.map(u =>
+          `<option value="${u.id}">${esc(u.name)} ${esc(u.role)}</option>`).join("")}</select>`]]),
+      ],
+      notes: [
+        "이 전환은 발주서 상태만 바꿔요 - 공급처에 발주를 넣거나 WING 에 다시 제출하지 않고, 지급예정도 등록하지 않아요.",
+        isJeongyeol
+          ? "전결이라도 '발주 완료'가 아니라 '승인 완료'로만 바뀌어요 - 실제 거래처 발주·지급예정 등록은 전환 뒤 [거래처에 발주 완료] 버튼(markOrdered)에서 사람이 직접 눌러야 해요(공급처 전송·지급예정 없이 자동으로 '발주 완료'로 표시하면 실제로 안 한 일이 된 것처럼 보여요)."
+          : "전환 뒤에는 일반 발주서와 완전히 같은 절차(결재 → 거래처에 발주 완료 → 입고 처리)를 그대로 따라요.",
+        pre?.overlapNote,
+      ],
+      reason: pre?.overlapFound
+        ? { label: "겹침 확인 사유 (필수)", required: true, minLength: 5,
+            placeholder: "예) PO#016 과 상품·시점 겹치지만 확인 결과 수량이 달라 별개 매입임" }
+        : { label: "메모(선택)", required: false },
+    }),
+    exec: async reason => {
+      const apprSel = document.getElementById("wing-promote-appr");
+      if (!isJeongyeol && !apprSel?.value) return { ok: false, message: "결재자를 선택해 주세요" };
+      const line = isJeongyeol ? [] : [{ userId: apprSel.value, status: "pending", date: "" }];
+      const patch = {
+        approval_line: line, current_step: 0, drafter_id: me.id,
+        // 2026-09-18 [Codex 화면 코드 독립 검토 지적] 전결이어도 'ordered'로 바로 안 감 - markOrdered()
+        // 만이 실제 거래처 발주 완료 + cash_plans 지급예정 등록을 같이 한다(이 함수는 그걸 절대 안 함).
+        // 여기서 'ordered'로 건너뛰면 지급예정 없이 '발주 완료'로 표시되는 거짓 상태가 된다 - 그래서
+        // 전결이면 'approved'까지만(결재 없이 승인 완료 상태) 두고, [거래처에 발주 완료] 버튼
+        // (canOrder→markOrdered)을 그대로 타게 한다. 결재자가 있으면(전결 아님) 기존 decidePO() 결재
+        // 흐름을 그대로 태우도록 'progress'로 둔다(그 흐름도 최종적으로 'approved'까지만 가고
+        // 'ordered'는 안 감 - markOrdered() 만의 몫이라 여기서도 똑같이 지켜짐).
+        status: isJeongyeol ? "approved" : "progress",
+        ordered_at: null,
+        memo: reason ? `${fresh?.memo || ""}\n[전환 시 겹침 확인 사유] ${reason}` : fresh?.memo,
+      };
+      const { data, error } = await sb.from("purchase_orders").update(patch)
+        .eq("id", id).eq("status", "wing_direct_review").select("id");
+      if (error) return { ok: false, message: error.message || error.code };
+      if (!data?.length) return { ok: false, message: "이미 다른 곳에서 처리됐어요" };
+      return { ok: true };
+    },
+    successText: isJeongyeol ? "전결로 승인 완료 상태의 정식 발주로 전환했어요 - [거래처에 발주 완료]를 눌러야 지급예정도 등록돼요" : "결재 대기 상태의 정식 발주로 전환했어요",
+    refresh: async () => { await loadPOs(); route(); },   // 2026-09-18 closeModal() 은 여기서 안 부름 - run() 이 성공 시에만 이미 닫아주고(정보 모달을 정상 응답으로 즉시 지워버리면 안 되니까), precheck 실패 때는 infoModal() 이 보여준 안내문을 사람이 읽을 시간을 줘야 함(releasePoHold() 와 같은 패턴)
+  });
+}
+
+// 2026-09-18 검토 초안이 틀렸다고 판단되면(예: 실제로 중복 매입이었음) 취소만 - 검토 상태에서는
+// 재고·매입원장·자금 어디에도 아직 아무것도 반영되지 않았으니 되돌릴 것도 없다. 같은 WING 입고ID 는
+// purchase_orders.wing_direct_shipment_id UNIQUE 때문에 취소 뒤에도 자동으로 새 초안이 다시
+// 만들어지지 않는다(재검토가 필요하면 운영팀이 직접 확인).
+async function rejectWingDirectDraft(id) {
+  return ErpUi.run({
+    key: `po-wing-reject-${id}`,
+    allowed: !!me?.approver,
+    deniedText: "승인 권한자만 WING 직접입고 검토 초안을 취소할 수 있어요",
+    precheck: async () => {
+      const { data, error } = await sb.from("purchase_orders").select("po_no,status").eq("id", id).maybeSingle();
+      if (error) return { ok: false, message: `발주서를 확인하지 못했어요: ${error.message || error.code}` };
+      if (!data || data.status !== "wing_direct_review")
+        return { ok: false, title: "처리하지 않았어요 - 이미 처리됐거나 검토 초안이 아니에요", message: "화면을 새로 읽었어요." };
+      return { ok: true, poNo: data.po_no };
+    },
+    confirm: pre => ({
+      title: "WING 직접입고 검토 초안 취소", actionLabel: "이 초안 취소", danger: true,
+      rows: [["발주번호", `<b>${esc(pre?.poNo || "")}</b>`]],
+      notes: ["이 초안은 아직 재고·매입원장·자금 어디에도 반영되지 않았어요 - 취소해도 되돌릴 게 없어요.",
+              "같은 WING 입고ID 로는 이후에도 자동으로 새 초안이 다시 만들어지지 않아요(운영팀이 직접 확인 필요)."],
+    }),
+    exec: async () => {
+      const { data, error } = await sb.from("purchase_orders").update({ status: "canceled" })
+        .eq("id", id).eq("status", "wing_direct_review").select("id");
+      if (error) return { ok: false, message: error.message || error.code };
+      if (!data?.length) return { ok: false, message: "이미 다른 곳에서 처리됐어요" };
+      return { ok: true };
+    },
+    successText: "검토 초안을 취소했어요",
+    refresh: async () => { await loadPOs(); route(); },   // 2026-09-18 closeModal() 은 여기서 안 부름 - run() 이 성공 시에만 이미 닫아주고(정보 모달을 정상 응답으로 즉시 지워버리면 안 되니까), precheck 실패 때는 infoModal() 이 보여준 안내문을 사람이 읽을 시간을 줘야 함(releasePoHold() 와 같은 패턴)
+  });
 }
 
 /* 입고 처리 — 실제로 들어온 수량만 매입으로 만든다 (부분 입고 지원) */
