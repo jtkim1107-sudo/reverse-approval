@@ -1303,6 +1303,13 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
 .cmv2-dmain-kv dd { margin: 2px 0 0; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .cmv2-dmain-kv dd small { display: block; font-size: 11px; font-weight: 400; color: var(--text-sub); }
 .cmv2-dmain-meta { color: var(--text-sub); font-size: 11.5px; overflow-wrap: anywhere; }
+.cmv2-dcosts { margin: 8px 0 0; font-size: 12.5px; }
+.cmv2-dcosts > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: baseline;
+  border-bottom: 1px solid var(--line); padding: 5px 0; }
+.cmv2-dcosts > div:last-child { border-bottom: 0; }
+.cmv2-dcosts dt { color: var(--text-sub); min-width: 0; }
+.cmv2-dcosts dt small { display: block; font-size: 11px; }
+.cmv2-dcosts dd { margin: 0; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .dash-provisional { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 6px; font-size: 13px; }
 .dash-provisional summary { cursor: pointer; font-weight: 600; }
 .dash-provisional summary small { font-weight: 400; color: var(--text-sub); margin-left: 4px; }

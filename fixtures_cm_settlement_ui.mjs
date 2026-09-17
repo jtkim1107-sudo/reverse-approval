@@ -210,5 +210,6 @@ check("[핵심] 대시보드 켜짐: 잠정 내역을 보여 주고 기존 계�
       [true, true, true, false, false]);
 const onErr = Dsh.profitHtml(legacyModel, { fmt: fmtK, at: new Date(), settlement: { mode: "ERROR", mainHtml: C.dashboardNoticeHtml("ERROR", "timeout"), compareHtml: "", meta: "정산자료 계산 조회 실패", tone: "error" } });
 check("[핵심] 대시보드 조회 실패: 실패 안내만 표시", [onErr.includes("정산자료 계산 조회 실패"), onErr.includes("₩3,077,548")], [true, false]);
+check("대시보드 실패 안내에 존재하지 않는 아래 비교표를 안내하지 않음", onErr.includes("아래 기존 운영 계산"), false);
 console.log(`\n${n - fail}/${n} 통과`);
 process.exit(fail ? 1 : 0);

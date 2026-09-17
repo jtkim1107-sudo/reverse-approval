@@ -395,8 +395,8 @@
     const b = (k, t) => (UI && UI.badge ? UI.badge(k, { text: t, small: true }) : `<span class="erp-badge erp-badge--sm">${esc(t)}</span>`);
     return kind === "ERROR"
       ? `<p class="cmv2-fail" role="alert">${b("error", "정산자료 계산 조회 실패")} 정산자료 기준 공헌이익을 불러오지 못했어요${error ? ` (${esc(error)})` : ""}.
-          아래 기존 운영 계산은 참고값이에요(주 결과 아님).</p>`
-      : `<p class="cmv2-note">${b("info", "결과 없음")} 이 달 정산자료 기준 계산 결과가 아직 없어요. 아래 기존 운영 계산은 참고값이에요.</p>`;
+          잠정 공헌이익을 확인하려면 다시 새로고침해 주세요.</p>`
+      : `<p class="cmv2-note">${b("info", "결과 없음")} 이 달 잠정 공헌이익 계산 결과가 아직 없어요.</p>`;
   }
 
   /** 대시보드 '기존 계산과 비교' 안의 같은 기간 한 줄 */
@@ -532,7 +532,7 @@
     </section>`;
   }
 
-  /** 대시보드 공헌이익 칸 - 확정값 아래 한 줄로 '기여액 기준일'을 같이 보여 줘요(두 기준일이 한눈에) */
+  /** 대시보드 공헌이익 칸 - 최신 잠정 결과와 차감 항목을 같은 기준일로 표시 */
   function dashboardContributionHtml(c) {
     if (!c) return "";
     if (c.error) return `<p class="cmv2-note">${chip("COST_UNREGISTERED", { text: "기여액 조회 실패" })} 최신 자료 기여액을 불러오지 못했어요.</p>`;
@@ -547,9 +547,14 @@
         <b class="cmv2-dmain-amt${Number(p ? p.amount : d.subtotal_before_monthly) < 0 ? " cmv2-neg" : ""}">${won(p ? p.amount : d.subtotal_before_monthly)}</b>
         <span class="cmv2-prov">${p ? "확정 전" : "잠정"}</span>
       </div>
-      <p class="cmv2-note">${p ? `월 공통비 ${won(p.monthly_cost)} · 판매분 입고 운반비 ${won(p.inbound_freight || 0)} 반영 · 기여액 ${won(p.subtotal_before_monthly)}`
-        : (m.available ? `월 공통비 ${won(m.total)} 반영 가능` : `월 공통비 자료 없음 - ${esc(MISSING_TEXT[m.status] || m.status || "")}`)}
-        · 갱신 ${esc(kstTime(c.lastSuccessAt))}${stale ? ` · <b>${esc(stale)}</b>` : ""}</p>
+      <dl class="cmv2-dcosts">
+        <div><dt>월 공통비</dt><dd>${p ? won(p.monthly_cost) : m.available ? won(m.total) : "자료 없음"}</dd></div>
+        <div><dt>판매분 입고 운반비</dt><dd>${p ? won(p.inbound_freight || 0) : "확인 필요"}</dd></div>
+        <div><dt>기여액 <small>월 공통비 차감 전</small></dt><dd>${won(p ? p.subtotal_before_monthly : d.subtotal_before_monthly)}</dd></div>
+        <div><dt>갱신</dt><dd>${esc(kstTime(c.lastSuccessAt)) || "확인 필요"}</dd></div>
+      </dl>
+      ${!p && !m.available ? `<p class="cmv2-note">${esc(MISSING_TEXT[m.status] || m.status || "")}</p>` : ""}
+      ${stale ? `<p class="cmv2-fail" role="alert">${esc(stale)}</p>` : ""}
     </div>`;
   }
 

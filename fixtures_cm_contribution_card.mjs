@@ -102,7 +102,7 @@ const dash = CM.dashboardContributionHtml(good);
 check("기여액 한 줄", dash.includes("₩2,722,604"), true);
 check("최신 자료 기준일", dash.includes("최신 자료 2026-09-15 까지"), true);
 check("'공헌이익 아님' 표시", dash.includes("공헌이익 아님"), true);
-check("월 공통비 자료 없음 표시", dash.includes("월 공통비 자료 없음"), true);
+check("월 공통비 자료 없음 표시", dash.includes("<dt>월 공통비</dt><dd>자료 없음</dd>"), true);
 check("결과 없으면 아무것도 안 그림", CM.dashboardContributionHtml(null), "");
 
 console.log("\n[7] 최신 잠정 공헌이익 - 확정과 명확히 구분");
@@ -140,7 +140,9 @@ const freightProv = { ...pg, detail: { ...PROV, provisional_cm: {
 const freightHtml = CM.contributionHtml(freightProv, { confirmed: CONFIRMED_MAIN });
 check("판매분 입고 운반비를 별도 차감", freightHtml.includes("판매된 수량에 배분") && freightHtml.includes("−₩345,004"), true);
 check("운반비를 뺀 잠정 공헌이익 표시", freightHtml.includes("−₩75,557"), true);
-check("대시보드에도 운반비 설명", CM.dashboardContributionHtml(freightProv).includes("판매분 입고 운반비 ₩345,004"), true);
+const dashFreight = CM.dashboardContributionHtml(freightProv);
+check("대시보드 비용·기여액·갱신을 정렬된 네 행으로 표시", ["월 공통비", "판매분 입고 운반비", "기여액", "갱신"].map(t => dashFreight.includes(`<dt>${t}`)), [true, true, true, true]);
+check("같은 잠정 결과의 월 공통비·운반비·기여액", ["₩2,453,157", "₩345,004", "₩2,722,604"].map(t => dashFreight.includes(t)), [true, true, true]);
 const breakdown = CM.dashboardProvisionalBreakdownHtml(freightProv);
 check("잠정 내역에 같은 기간·금액·원천 항목 표시", [breakdown.includes("9월 잠정 공헌이익 내역"), breakdown.includes("2026-09-01~2026-09-15"), breakdown.includes("−₩75,557"), breakdown.includes("로켓그로스 판매"), breakdown.includes("−₩345,004")], [true, true, true, true, true]);
 check("월 공통비·운반비를 각각 한 번 표시", [(breakdown.match(/<th scope="row">월 공통비<small>/g) || []).length, (breakdown.match(/<th scope="row">판매분 입고 운반비<small>/g) || []).length], [1, 1]);

@@ -1791,24 +1791,22 @@ async function dashboardHydrate() {
     const fixed = fx.v.filter(f => f.active !== false);
     const cm = computeCmOfMonth(month, base.v.sales, adRowsAll(ad.v), fixed);
     const model = ErpDashboard.profitModel(cm, adMonthState(ad.v, month), { month });
-    // 2026-09-15 정산자료 계산이 켜져 있으면 주 공헌이익 = 최신 MAIN(공헌이익 화면 맨 위 카드와 같은 값·기간·상태).
-    // 대시보드 펼침 칸은 같은 최신 잠정 계산 스냅샷의 항목별 내역을 보여 줘요.
+    // 대시보드에는 최신 기여액/잠정 공헌이익만 보여 주고, 과거 저장 스냅샷은 공헌이익 상세 화면에 남겨요.
     const st = await cmSettlementState(month, base.v.sales, adRowsAll(ad.v), fixed);
-    const newestFirst = st.mode === "PRIMARY" && st.contribution && st.contribution.detail
-      && st.contribution.detail.provisional_cm && st.contribution.detail.provisional_cm.is_confirmed === false
-      && String(st.contribution.detail.period_end) > String(st.cur.MAIN.period_end);
-    const savedHtml = st.mode === "PRIMARY" ? CmSettlement.dashboardMainHtml(st.cur) : CmSettlement.dashboardNoticeHtml(st.mode, st.error);
     const latestHtml = st.mode === "PRIMARY" && CmSettlement.dashboardContributionHtml
       ? CmSettlement.dashboardContributionHtml(st.contribution) : "";
+    const p = st.contribution && st.contribution.detail && st.contribution.detail.provisional_cm;
+    const latestAvailable = st.mode === "PRIMARY" && st.contribution && st.contribution.detail;
     const settlement = st.mode === "OFF" ? null : {
       mode: st.mode,
-      mainHtml: newestFirst ? latestHtml + savedHtml : savedHtml + latestHtml,
-      breakdownHtml: st.mode === "PRIMARY" ? CmSettlement.dashboardProvisionalBreakdownHtml(st.contribution) : "",
+      mainHtml: st.mode === "PRIMARY" ? (latestHtml || `<p class="dash-empty">최신 잠정 공헌이익 자료가 아직 없어요. 상세 계산을 확인해 주세요.</p>`)
+        : CmSettlement.dashboardNoticeHtml(st.mode, st.error),
+      breakdownHtml: latestAvailable ? CmSettlement.dashboardProvisionalBreakdownHtml(st.contribution) : "",
       meta: st.mode === "PRIMARY"
         ? CmSettlement.dashboardMeta(st.cur) + (st.contribution && st.contribution.detail
             ? ` · 기여액 기준 ${st.contribution.detail.latest_data_date}` : "")
         : st.mode === "ERROR" ? "정산자료 계산 조회 실패" : "정산자료 계산 결과 없음",
-      tone: st.mode === "ERROR" ? "error" : st.mode === "PRIMARY" && Number(st.cur.MAIN.cm) < 0 ? "error" : null,
+      tone: st.mode === "ERROR" ? "error" : p && p.is_confirmed === false && Number(p.amount) < 0 ? "error" : null,
     };
     put("dash-profit", ErpDashboard.profitHtml(model, { fmt, at, settlement }));
   }).catch(e => fail("dash-profit", "공헌이익 · 광고비", e));
