@@ -44,6 +44,26 @@ check(inventoryIncomingText({ incoming_qty: 0 }), "-", "입고예정 없음 -> -
 check(inventoryIncomingText({ incoming_qty: 320, incoming_date: "2026-09-07" }), "+320 · 09/07", "[핵심] 09-11 등 임의 날짜 아니라 시스템 incoming_date 그대로 표시");
 check(inventoryIncomingText({ incoming_qty: 80, incoming_date: null }), "+80 · 날짜 확인필요", "PO는 있지만 확정일 없음 -> 날짜 확인필요(추정 안 함)");
 
+// 2026-09-18 [Codex 지적 - 배포 차단, 이 fixture 가 이 함수 하나만 정규식으로 추출해 독립 실행하는데
+// WING 직접입고 검토 분기가 바깥 헬퍼(isWingDirectReviewFlag 등)를 참조해서 여기서만 ReferenceError
+// 가 났었다(실제 화면에선 app.js 전체가 로드되니 안 터짐 - 이 fixture 라서 잡힌 것). 그 분기를 함수
+// 안에 inline 해서 고쳤다 - 이 케이스들로 회귀를 잠근다.
+check(
+  inventoryIncomingText({ incoming_qty: 0, wing_direct_review_qty: 240, data_quality_flags: ["WING_DIRECT_LONG_DELAYED_REVIEW"] }),
+  '<span style="color:var(--amber)" title="WING 에는 신청돼 있지만 겹침·기대일 경과 등으로 자동 반영을 보류함 - 상세에서 사유 확인">⚠️ WING 240 확인 필요</span>',
+  "[핵심] WING 겹침/기대일 경과 검토 물량이 있으면 목록에서도 바로 보임(모달 안 열어도)"
+);
+check(
+  inventoryIncomingText({ incoming_qty: 0, wing_direct_review_qty: 240, data_quality_flags: [] }),
+  "-",
+  "검토 수량은 있어도 관련 플래그가 없으면 표시 안 함(오탐 방지)"
+);
+check(
+  inventoryIncomingText({ incoming_qty: 0, wing_direct_review_qty: 0, data_quality_flags: ["WING_DIRECT_PO_OVERLAP_REVIEW"] }),
+  "-",
+  "플래그는 있어도 검토 수량이 0 이면 표시 안 함"
+);
+
 console.log("\n=== inventoryIncomingSourceLabel ===");
 check(inventoryIncomingSourceLabel("PO_DUE_DATE"), "발주서 예상입고일", "[핵심] PO_DUE_DATE - 사람이 확인한 예상입고일 표시");
 check(inventoryIncomingSourceLabel("INBOUND_PLAN"), "WING 예약 슬롯", "INBOUND_PLAN - WING 슬롯만 있을 때");
