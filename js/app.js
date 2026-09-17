@@ -6093,10 +6093,10 @@ function inboundFreightCardHtml(month) {
   const sum = f => recs.reduce((a, r) => a + f(r), 0);
   const STAGE_KIND = { BEFORE_RECEIPT: "awaiting", PARTIAL_RECEIPT: "awaiting", RECEIVED: "ok" };
   const summary = ErpUi.summaryHtml([
-    { label: "운송 기록", value: `${recs.length}건`, kind: "info", sub: "운송 묶음(트럭 1대)당 1건" },
+    { label: "신규 운송 기록", value: `${recs.length}건`, kind: "info", sub: "이 카드의 운송 묶음 기록만" },
     { label: "실제 청구", value: `${recs.filter(r => r.basis === "ACTUAL").length}건`, kind: "ok" },
     { label: "예상", value: `${recs.filter(r => r.basis !== "ACTUAL").length}건`, kind: "pending", sub: "청구금액 등록 전" },
-    { label: `${month} 판매분 차감`, value: won(sum(r => InboundFreight.soldInMonth(r, month))), kind: "info", sub: "공헌이익 반영(공급가액)" },
+    { label: `${month} 신규 기록 판매분`, value: won(sum(r => InboundFreight.soldInMonth(r, month))), kind: "info", sub: "과거 청구서 배분은 위 최신 공헌이익 카드에 별도 표시" },
     { label: "재고원가로 남음", value: won(sum(r => r.inventorySupply)), kind: "muted" },
     { label: "입고 전(예상)", value: won(sum(r => r.pendingSupply)), kind: "awaiting", sub: "공헌이익 차감 없음" },
     { label: "이력(합산 안 함)", value: `${hist.length}건`, kind: "muted", hidden: !hist.length },
@@ -6151,6 +6151,7 @@ function inboundFreightCardHtml(month) {
   return `
     <div class="card">
       <div class="card-head"><h2>입고 트럭 운송비</h2></div>
+      <p class="cmv2-note">이 카드는 신규 운송 묶음 기록만 집계해요. 8월 리파코→쿠팡 운반비 6건 중 ${esc(month)} 판매분은 위 최신 잠정 공헌이익 카드의 ‘판매분 입고 운반비’에 반영돼요.</p>
       ${summary}
       <details class="erp-help"><summary>운송비는 언제 공헌이익에서 빠지나요?</summary>
         운송 묶음(트럭 1대)마다 한 번만 기록해요. 입고 전에는 예상 원가로만 보이고 공헌이익에서 빼지 않아요.
