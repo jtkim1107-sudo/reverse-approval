@@ -356,8 +356,8 @@
     const b = (k, t) => (UI && UI.badge ? UI.badge(k, { text: t, small: true }) : `<span class="erp-badge erp-badge--sm">${esc(t)}</span>`);
     const body = kind === "ERROR"
       ? `<p class="cmv2-fail" role="alert">${b("error", "정산자료 계산 조회 실패")} 정산자료 기준 공헌이익을 불러오지 못했어요${error ? ` (${esc(error)})` : ""}.
-          기존 운영 계산을 대신 주 결과로 보여 주지 않아요 - 기존 계산은 아래 '기존 계산과 비교'에 참고값으로만 있어요. 잠시 뒤 새로고침해 주세요.</p>`
-      : `<p class="cmv2-note">${b("info", "결과 없음")} ${esc(month || "")} 정산자료 기준 계산 결과가 아직 없어요. 기존 운영 계산은 아래 '기존 계산과 비교'에 참고값으로만 있어요.</p>`;
+          잠시 뒤 새로고침해 주세요.</p>`
+      : `<p class="cmv2-note">${b("info", "결과 없음")} ${esc(month || "")} 정산자료 기준 계산 결과가 아직 없어요.</p>`;
     return `
     <section class="card cmv2 cmv2-primary${kind === "ERROR" ? " cmv2-failed" : ""}" id="cmv2" aria-labelledby="cmv2-h">
       <div class="card-head"><h2 id="cmv2-h">${esc(month || "")} 공헌이익 <span class="cmv2-tag">정산자료 기준</span></h2>

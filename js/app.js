@@ -5750,10 +5750,9 @@ function computeCmOfMonth(month, sales, ads, fixed) {
 }
 
 /* 2026-09-14 정산자료 기준 새 공헌이익(js/cm_settlement.js) - settings 'cm_settlement_v2' 가 {"enabled": true} 일 때만.
-   2026-09-15 켜져 있으면 주 결과 = 최신 성공 MAIN(정산자료 계산). 기존 운영 계산은 '기존 계산과 비교' 안 참고값으로만.
+   켜져 있으면 주 결과 = 최신 성공 MAIN(정산자료 계산).
    반환 mode: "OFF"(꺼짐 - 운영 화면 그대로) · "PRIMARY"(주 결과 있음) · "EMPTY"(이 달 결과 없음) · "ERROR"(스위치·결과 조회 실패).
-   ERROR·EMPTY 에서도 기존 계산을 주 결과로 대신 쓰지 않아요. 예외는 여기서 받아 ERROR 로 돌려요(꺼짐으로 바꾸지 않음).
-   비교용 운영 값은 같은 기간(새 계산의 끝날까지)으로 computeCmOfMonth 를 다시 불러 계산해요(읽기만). */
+   ERROR·EMPTY 에서도 기존 계산을 주 결과로 대신 쓰지 않아요. 예외는 여기서 받아 ERROR 로 돌려요(꺼짐으로 바꾸지 않음). */
 async function cmSettlementState(month, sales, ads, fixed, { withRecovery = false } = {}) {
   if (!globalThis.CmSettlement) return { mode: "OFF" };
   try {
@@ -5763,14 +5762,9 @@ async function cmSettlementState(month, sales, ads, fixed, { withRecovery = fals
     const cur = await CmSettlement.loadCurrent(sb, month);
     if (cur && cur.error) return { mode: "ERROR", error: cur.error };
     if (!cur || !cur.MAIN) return { mode: "EMPTY" };
-    const pe = String(cur.MAIN.period_end).slice(0, 10);
-    const m = computeCmOfMonth(month, sales.filter(r => (r.date || "") <= pe), ads.filter(a => String(a.date) <= pe), fixed);
-    const byCh = {};
-    m.rows.forEach(r => { const k = r.channel || "기타"; (byCh[k] = byCh[k] || { revenue: 0 }).revenue += cmOfSale(r, m.shipCharged).revenue; });
-    const prod = CmSettlement.prodParts(m, byCh);
     // 2026-09-16 최신 자료 기여액(월 공통비 차감 전) - 확정 공헌이익과 *다른 숫자*라 따로 싣고, 확정값을 덮지 않아요.
     const contribution = CmSettlement.loadContribution ? await CmSettlement.loadContribution(sb) : null;
-    return { mode: "PRIMARY", cur, prod, contribution, recovery: withRecovery ? await cmRecoveryState(month, cur) : null };
+    return { mode: "PRIMARY", cur, contribution, recovery: withRecovery ? await cmRecoveryState(month, cur) : null };
   } catch (e) {
     return { mode: "ERROR", error: String(e && e.message || e) };
   }
@@ -6061,15 +6055,6 @@ async function viewProfit() {
     && String(cms.contribution.detail.period_end) > String(cms.cur.MAIN.period_end);
   return `${newestFirst ? contribHtml : mainHtml}
     ${newestFirst ? mainHtml : contribHtml}
-    <details class="cm-legacy" id="cm-legacy">
-      <summary class="cm-legacy-sum"><span class="cm-legacy-title">기존 계산과 비교</span>
-        <span class="cm-legacy-val">기존 운영 계산(참고) <b>${cmShown(cmNet)}</b> <small>${erpMonth} · 이번 달 1일~오늘 · 주문 기준 · 최종값 아님</small></span></summary>
-      <div class="cm-legacy-body">
-        ${cms.mode === "PRIMARY" ? CmSettlement.compareHtml(cms.cur, cms.prod) : ""}
-        ${legacyTop}
-        ${legacyRest}
-      </div>
-    </details>
     ${tail}`;
 }
 

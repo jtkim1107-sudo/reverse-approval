@@ -53,8 +53,8 @@ check("코호트는 기본 접힌 details", /<details class="cmv2-cohort">/.test
 check("옛(v2.5) 결과: 자동 환입 전 계산 안내 · '승인 수량만 반영' 문구 없음 · 재판매분은 판매 원가로 다시 비용",
       [h.includes("자동 원가환입 전(v2.5) 계산이에요"), h.includes("승인 수량만"), h.includes("판매 원가로 다시 비용")], [true, false, true]);
 check("결과 없음 안내", C.noticeHtml("EMPTY", { month: "2026-09" }).includes("아직 없어요"), true);
-check("조회 실패 안내 · 기존 계산을 주 결과로 대신 쓰지 않음", [C.noticeHtml("ERROR", { error: "boom" }).includes("정산자료 계산 조회 실패"),
-      C.noticeHtml("ERROR", { error: "boom" }).includes("기존 운영 계산을 대신 주 결과로 보여 주지 않아요"), /₩/.test(C.noticeHtml("ERROR", { error: "boom" }))], [true, true, false]);
+check("조회 실패 안내 · 이전 계산 비교 안내와 금액 없음", [C.noticeHtml("ERROR", { error: "boom" }).includes("정산자료 계산 조회 실패"),
+      C.noticeHtml("ERROR", { error: "boom" }).includes("기존 계산과 비교"), /₩/.test(C.noticeHtml("ERROR", { error: "boom" }))], [true, false, false]);
 check("대시보드: 비교 한 줄은 결과 없으면 빈 문자열 · 실패 안내", [C.dashboardCompareHtml(null, prod), C.dashboardNoticeHtml("ERROR", "x").includes("정산자료 계산 조회 실패")], ["", true]);
 check("대시보드: 주 결과 새 값 · 비교 한 줄 운영·차이", [C.dashboardMainHtml(cur).includes("₩12,350"), ...["₩20,500", "−8,150"].map(t => C.dashboardCompareHtml(cur, prod).includes(t))], [true, true, true]);
 check("스크립트 안에 쓰기 호출 없음(insert/update/upsert/delete/rpc)", /\.(insert|update|upsert|delete|rpc)\(/.test(fs.readFileSync(new URL("./js/cm_settlement.js", import.meta.url), "utf8")), false);
@@ -184,9 +184,9 @@ check("주 결과 카드 맨 위에 월 선택·버튼(controls) · 기존 운�
 const c8 = C.compareHtml(cur8, { ...prod, cmNet: 2805650 });
 check("[핵심] 비교 칸: '기존 운영 계산(참고)' · 초록(cmv2-pos) 없음 · 차이 구성은 접힘(open 없음)",
       [c8.includes("기존 운영 계산(참고)"), c8.includes("cmv2-pos"), /<details class="cmv2-diff">/.test(c8), c8.includes("₩2,805,650"), c8.includes("−2,599,987")], [true, false, true, true, true]);
-check("[핵심] 조회 실패 카드: '정산자료 계산 조회 실패' · 금액 없음 · 기존 계산은 참고라고 명시",
+check("[핵심] 조회 실패 카드: '정산자료 계산 조회 실패' · 금액 및 이전 계산 안내 없음",
       [C.noticeHtml("ERROR", { month: "2026-09", error: "timeout" }).includes("정산자료 계산 조회 실패"), /₩/.test(C.noticeHtml("ERROR", { month: "2026-09" })),
-       C.noticeHtml("ERROR", { month: "2026-09" }).includes("참고값으로만")], [true, false, true]);
+       C.noticeHtml("ERROR", { month: "2026-09" }).includes("참고값으로만")], [true, false, false]);
 const dm8 = C.dashboardMainHtml(cur8);
 check("[핵심] 대시보드 주 결과 = 상세와 같은 값·기간·상태(₩205,663 · 2026-09-01~09-13 · 잠정 · 2.39%)",
       ["₩205,663", "2026-09-01~09-13", "잠정", "2.39%", "₩600,200"].map(t => dm8.includes(t)), [true, true, true, true, true]);
