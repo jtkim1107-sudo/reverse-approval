@@ -1588,7 +1588,7 @@ async function viewDashboard() {
       : `<section class="dash-status dash-status--ok" id="dash-status" aria-busy="true">${ErpUi.badge("muted", { text: "운영 상태 불러오는 중…", small: true })}</section>`}</div>
     <section class="card" id="kakao-report-slot" style="margin:14px 0">
       <div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
-      <p style="color:var(--text-sub);font-size:13px">오늘 이미지 4장을 확인하는 중입니다.</p>
+      <p style="color:var(--text-sub);font-size:13px">오늘 아침 보고 이미지 한 장을 확인하는 중입니다.</p>
     </section>
     <div class="dash-grid">${DASH_SECTIONS.map(([id, t]) => `<div class="dash-slot" id="${id}-slot">${ErpDashboard.loadingHtml(id, t)}</div>`).join("")}</div>
     <nav class="dash-more" aria-label="다른 화면">
@@ -1616,8 +1616,6 @@ function dashboardWingGuide() {
     <p class="rg-muted">쿠키 남은 시간만으로는 정상으로 보지 않아요. 약 24시간 기준은 추정이에요.</p>`);
 }
 
-const KAKAO_REPORT_KINDS = [["sales", "매출 현황"], ["profit", "공헌이익"], ["cash", "자금일보"], ["ads", "광고현황"]];
-
 async function loadKakaoReportStatus() {
   const slot = document.getElementById("kakao-report-slot");
   if (!slot) return;
@@ -1636,14 +1634,11 @@ async function loadKakaoReportStatus() {
     }
     if (!resp.ok) throw new Error(`조회 실패(HTTP ${resp.status})`);
     const manifest = await resp.json();
-    const buttons = KAKAO_REPORT_KINDS.map(([kind, label]) => {
-      const card = manifest.cards?.[kind];
-      return `<button class="btn sm secondary" onclick="downloadKakaoReport('${kind}')" ${card ? "" : "disabled"}>
-        ${esc(label)} PNG 받기${card?.status === "확인 필요" ? " · 확인 필요" : ""}</button>`;
-    }).join(" ");
+    const button = `<button class="btn sm secondary" onclick="downloadKakaoReport('combined')" ${manifest.combined ? "" : "disabled"}>
+      아침 보고서 한 장 받기${manifest.combined?.status === "확인 필요" ? " · 확인 필요" : ""}</button>`;
     slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
-      <p style="font-size:13px;color:var(--text-sub);margin:0 0 12px">${esc(reportDate)} · 생성 ${esc(manifest.generated_at || "-")} · 카톡으로 보내기 전 각 이미지의 확인 표시를 봐 주세요.</p>
-      <div style="display:flex;flex-wrap:wrap;gap:8px">${buttons}</div>`;
+      <p style="font-size:13px;color:var(--text-sub);margin:0 0 12px">${esc(reportDate)} · 생성 ${esc(manifest.generated_at || "-")} · 매출·공헌이익·자금일보·광고현황을 한 장에 담았습니다. 보내기 전 확인 표시를 봐 주세요.</p>
+      <div>${button}</div>`;
   } catch (e) {
     if (document.getElementById("kakao-report-slot")) slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
       <p style="font-size:13px;color:var(--red)">이미지 조회 실패: ${esc(String(e?.message || e))}</p>`;
@@ -1651,7 +1646,7 @@ async function loadKakaoReportStatus() {
 }
 
 async function downloadKakaoReport(kind) {
-  if (!KAKAO_REPORT_KINDS.some(([k]) => k === kind)) return;
+  if (kind !== "combined") return;
   const { data: { session } } = await sb.auth.getSession();
   if (!session?.access_token) return toast("ERP 로그인이 필요합니다");
   const reportDate = today();
@@ -11335,13 +11330,13 @@ async function viewCash() {
     .sort((x, y) => (y.created_at || "").localeCompare(x.created_at || ""));
   const accName = id => { const a = cashAccounts.find(x => x.id === id); return a ? a.name : "?"; };
 
-  // ===== 향후 30일 자금 예측 =====
+  // ===== 향후 45일 자금 예측 (다음 달 20일 매입대금까지 포함) =====
   // 실제 잔액에는 '오늘까지 실제로 오간 돈'만 포함 (미래 날짜 거래는 아직 통장에 없음)
   const futureTxns = cashTxns.filter(t => t.date > today());
   const curBal = cashAccounts.reduce((s, a) =>
     s + Number(a.initial_balance) + cashTxns.filter(t => t.account_id === a.id && t.date <= today())
       .reduce((ss, t) => ss + (t.kind === "입금" ? 1 : -1) * Number(t.amount), 0), 0);
-  const occ = planOccurrences(cashPlans, today(), 30);
+  const occ = planOccurrences(cashPlans, today(), 45);
   let runBal = curBal;
   const projRows = occ.map(o => {
     runBal += (o.kind === "입금" ? 1 : -1) * Number(o.amount);
@@ -11417,22 +11412,22 @@ async function viewCash() {
     </div>
 
     <div class="card" ${minRow && minRow.bal < 0 ? 'style="border:2px solid var(--red)"' : ""}>
-      <div class="card-head"><h2>📅 들어올 돈 · 나갈 돈 (향후 30일)</h2>
+      <div class="card-head"><h2>📅 들어올 돈 · 나갈 돈 (향후 45일)</h2>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn sm" onclick="openPlanModal('입금')">＋ 들어올 돈</button>
           <button class="btn sm secondary" onclick="openPlanModal('출금')">＋ 나갈 돈</button>
           ${minRow && minRow.bal < 0
             ? `<span class="chip rejected">⚠️ ${esc(minRow.occDate.slice(5))} 자금 부족 예상</span>`
-            : '<span class="chip approved">30일 내 이상 없음</span>'}
+            : '<span class="chip approved">45일 내 이상 없음</span>'}
         </div></div>
       <p style="font-size:13px;color:var(--text-sub);margin:-4px 0 12px">
         들어올 돈·나갈 돈의 <b>예정</b>을 등록하면, 자금이 언제 부족해질지 미리 보여줍니다.</p>
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">현재 잔액</div>
           <div class="stat-value blue">₩${fmt(curBal)}</div></div>
-        <div class="stat"><div class="stat-label">30일 내 예정 입금</div>
+        <div class="stat"><div class="stat-label">45일 내 예정 입금</div>
           <div class="stat-value green">+₩${fmt(planIn)}</div></div>
-        <div class="stat"><div class="stat-label">30일 내 예정 출금</div>
+        <div class="stat"><div class="stat-label">45일 내 예정 출금</div>
           <div class="stat-value red">−₩${fmt(planOut)}</div></div>
         <div class="stat"><div class="stat-label">30일 후 예상 잔액</div>
           <div class="stat-value ${curBal + planIn - planOut < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut)}</div></div>
@@ -11449,7 +11444,7 @@ async function viewCash() {
             <td class="num" style="color:${r.kind === "입금" ? "var(--green)" : "var(--red)"}">${r.kind === "입금" ? "+" : "−"}₩${fmt(r.amount)}</td>
             <td class="num" style="font-weight:800;color:${r.bal < 0 ? "var(--red)" : "var(--text)"}">₩${fmt(r.bal)}</td>
             <td><button class="btn sm danger" onclick="deleteErpRow('cash_plans','${r.id}')">삭제</button></td>
-          </tr>`).join("") : `<tr><td colspan="5" class="empty">향후 30일 예정된 입출금이 없습니다 — 결제 예정·정산 예정을 등록해 두세요</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="5" class="empty">향후 45일 예정된 입출금이 없습니다 — 결제 예정·정산 예정을 등록해 두세요</td></tr>`}
         </tbody>
       </table></div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
