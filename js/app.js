@@ -1794,10 +1794,15 @@ async function dashboardHydrate() {
     // 2026-09-15 정산자료 계산이 켜져 있으면 주 공헌이익 = 최신 MAIN(공헌이익 화면 맨 위 카드와 같은 값·기간·상태).
     // 기존 운영 계산은 '기존 계산과 비교'(기본 접힘) 참고값. 결과를 받은 뒤 한 번만 그려요(기존 계산이 주 결과로 먼저 보이지 않게).
     const st = await cmSettlementState(month, base.v.sales, adRowsAll(ad.v), fixed);
+    const newestFirst = st.mode === "PRIMARY" && st.contribution && st.contribution.detail
+      && st.contribution.detail.provisional_cm && st.contribution.detail.provisional_cm.is_confirmed === false
+      && String(st.contribution.detail.period_end) > String(st.cur.MAIN.period_end);
+    const savedHtml = st.mode === "PRIMARY" ? CmSettlement.dashboardMainHtml(st.cur) : CmSettlement.dashboardNoticeHtml(st.mode, st.error);
+    const latestHtml = st.mode === "PRIMARY" && CmSettlement.dashboardContributionHtml
+      ? CmSettlement.dashboardContributionHtml(st.contribution) : "";
     const settlement = st.mode === "OFF" ? null : {
       mode: st.mode,
-      mainHtml: (st.mode === "PRIMARY" ? CmSettlement.dashboardMainHtml(st.cur) : CmSettlement.dashboardNoticeHtml(st.mode, st.error))
-        + (st.mode === "PRIMARY" && CmSettlement.dashboardContributionHtml ? CmSettlement.dashboardContributionHtml(st.contribution) : ""),
+      mainHtml: newestFirst ? latestHtml + savedHtml : savedHtml + latestHtml,
       compareHtml: st.mode === "PRIMARY" ? CmSettlement.dashboardCompareHtml(st.cur, st.prod) : "",
       meta: st.mode === "PRIMARY"
         ? CmSettlement.dashboardMeta(st.cur) + (st.contribution && st.contribution.detail
@@ -6053,8 +6058,11 @@ async function viewProfit() {
   // 2026-09-16 최신 자료 기여액(월 공통비 차감 전) - 확정 공헌이익 카드 아래 별도 카드. 이름·표를 섞지 않아요.
   const contribHtml = cms.mode === "PRIMARY" && CmSettlement.contributionHtml
     ? CmSettlement.contributionHtml(cms.contribution, { confirmed: cms.cur.MAIN }) : "";
-  return `${mainHtml}
-    ${contribHtml}
+  const newestFirst = cms.mode === "PRIMARY" && cms.contribution && cms.contribution.detail
+    && cms.contribution.detail.provisional_cm && cms.contribution.detail.provisional_cm.is_confirmed === false
+    && String(cms.contribution.detail.period_end) > String(cms.cur.MAIN.period_end);
+  return `${newestFirst ? contribHtml : mainHtml}
+    ${newestFirst ? mainHtml : contribHtml}
     <details class="cm-legacy" id="cm-legacy">
       <summary class="cm-legacy-sum"><span class="cm-legacy-title">기존 계산과 비교</span>
         <span class="cm-legacy-val">기존 운영 계산(참고) <b>${cmShown(cmNet)}</b> <small>${erpMonth} · 이번 달 1일~오늘 · 주문 기준 · 최종값 아님</small></span></summary>

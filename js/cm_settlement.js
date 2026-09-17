@@ -447,6 +447,7 @@
   }
 
   function contribLinesHtml(d) {
+    const p = d.provisional_cm && d.provisional_cm.is_confirmed === false ? d.provisional_cm : null;
     const row = ln => `<tr>
         <th scope="row">${esc(costName(ln.label))}</th>
         <td class="num">${won(ln.amount)}</td>
@@ -467,6 +468,13 @@
           <td class="num">${m.available ? won(-Number(m.total || 0)) : `<span class="cmv2-none">금액 없음</span>`}</td>
           <td class="cmv2-srccol">${m.available ? `<span class="cmv2-src">정산파일</span>` : `<span class="cmv2-none">—</span>`}</td>
           <td class="cmv2-st">${m.available ? lineStatusHtml("CYCLE_OPEN") : chip("COST_UNREGISTERED", { text: "자료 없음", title: esc(m.reason || "") })}</td></tr>
+        ${p && Number(p.inbound_freight || 0) ? `<tr><th scope="row">− 입고 운반비 <small>판매된 수량에 배분</small></th>
+          <td class="num">${won(-Number(p.inbound_freight))}</td>
+          <td class="cmv2-srccol"><span class="cmv2-src">운송비 명세서</span></td>
+          <td class="cmv2-st">${lineStatusHtml("CYCLE_OPEN")}</td></tr>` : ""}
+        ${p ? `<tr class="cmv2-total"><th scope="row">= 최신 잠정 공헌이익 <small>확정 아님</small></th>
+          <td class="num"><b class="${Number(p.amount) < 0 ? "cmv2-neg" : ""}">${won(p.amount)}</b></td>
+          <td></td><td class="cmv2-st"><span class="cmv2-prov">잠정</span></td></tr>` : ""}
       </tbody></table></div>`;
   }
 
@@ -508,7 +516,7 @@
           <div class="cmv2-stat-sub">${esc(m.range || "")}${m.available ? "" : ` · ${esc(MISSING_TEXT[m.status] || m.status || "")}`}</div></div>
       </div>
       ${p ? `
-      <p class="cmv2-note"><b>위 금액은 아직 확정이 아닙니다.</b> ${esc(p.period_start)}~${esc(p.period_end)} 자료로 월 공통비(${won(p.monthly_cost)})까지 뺀
+      <p class="cmv2-note"><b>위 금액은 아직 확정이 아닙니다.</b> ${esc(p.period_start)}~${esc(p.period_end)} 자료로 월 공통비(${won(p.monthly_cost)})와 판매분 입고 운반비(${won(p.inbound_freight || 0)})를 뺀
         <b>잠정</b> 공헌이익이에요. 월 마감 승인(월 확정)을 거치지 않았고, 저장된 공헌이익 스냅샷을 덮지도 않아요.
         ${p.settlement_closed ? "" : `아직 정산이 끝나지 않은 날(${(p.open_cycle_days || []).map(esc).join(", ")})이 있어 수수료가 더 바뀔 수 있어요.`}</p>
       <p class="cmv2-note">확정으로 쓰려면 남은 확인이 필요해요: ${(p.confirm_blocked_reasons || []).map(esc).join(" · ") || "-"}</p>` : `
@@ -539,7 +547,7 @@
         <b class="cmv2-dmain-amt${Number(p ? p.amount : d.subtotal_before_monthly) < 0 ? " cmv2-neg" : ""}">${won(p ? p.amount : d.subtotal_before_monthly)}</b>
         <span class="cmv2-prov">${p ? "확정 전" : "잠정"}</span>
       </div>
-      <p class="cmv2-note">${p ? `월 공통비 ${won(p.monthly_cost)} 반영 · 기여액 ${won(p.subtotal_before_monthly)}`
+      <p class="cmv2-note">${p ? `월 공통비 ${won(p.monthly_cost)} · 판매분 입고 운반비 ${won(p.inbound_freight || 0)} 반영 · 기여액 ${won(p.subtotal_before_monthly)}`
         : (m.available ? `월 공통비 ${won(m.total)} 반영 가능` : `월 공통비 자료 없음 - ${esc(MISSING_TEXT[m.status] || m.status || "")}`)}
         · 갱신 ${esc(kstTime(c.lastSuccessAt))}${stale ? ` · <b>${esc(stale)}</b>` : ""}</p>
     </div>`;
