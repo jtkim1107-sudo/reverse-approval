@@ -4538,7 +4538,8 @@ async function loadInvWingDirectSection(productId) {
     <div class="table-wrap"><table class="items-table">
       <thead><tr><th>WING 입고ID</th><th>상태</th><th class="num">신청</th><th class="num">입고</th><th class="num">미입고</th><th>기대일</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
-    <p style="font-size:11.5px;color:var(--text-sub);margin-top:4px">WING 에 실제로 신청된 입고 전체(ERP 발주 경유 여부와 무관)를 그대로 보여줘요 - 위 '기존 발주 / 입고' 목록과 대조해서 ERP 발주서 없이 들어온 건지 사람이 직접 확인해야 해요. 재고·발주 겹침 판단에는 위 '현재 예상 입고일'에 이미 반영돼 있고, 이 표 자체는 그 계산에 쓰이지 않아요.</p>`;
+    <p style="font-size:11.5px;color:var(--text-sub);margin-top:4px">WING 에 실제로 신청된 입고 전체(ERP 발주 경유 여부와 무관)를 그대로 보여줘요 - 위 '기존 발주 / 입고' 목록과 대조해서 ERP 발주서 없이 들어온 건지 사람이 직접 확인해야 해요.
+    이 표는 WING 원본 기록을 보여주는 참고 자료이며, 표의 미입고 수량을 재고·입고예정에 자동으로 더하지 않습니다. 실제 반영 여부는 위 재고판단 결과에서 확인하세요.</p>`;
 }
 
 const INCOMING_SOURCE_LABEL = {
