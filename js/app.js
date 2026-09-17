@@ -4508,6 +4508,26 @@ function openInventoryDecisionDetail(productId, vendorItemId = "") {
 // - 재고·발주 겹침 계산 자체는 이미 서버 엔진(위 '현재 예상 입고일'/'기존 발주' 섹션)이
 // get_open_po_and_inbound()→merge_with_po() 로 반영을 끝낸 값이라, 이 표는 그 계산에 관여하지 않고
 // 오직 "WING 쪽에 실제로 뭐라고 찍혀 있나"를 사람이 눈으로 확인하는 용도.
+// 2026-09-18 [PM 실측 확인 - WING shipment 1101728071683166209 ↔ 리버스-발주-2026-016(PO#016)
+// purchase_orders.wing_direct_shipment_id 로 이미 연결 완료] 이 연결을 화면에서 아무도 못 보고
+// 있었다 - PO#016 은 ERP 매입 원장에 received_qty=480(전량)으로 이미 완료 기록돼 있어(이 값은
+// 이 작업에서 절대 건드리지 않음) 위 '기존 발주 / 입고' 표의 미입고 칸은 0으로 보인다. 그런데
+// WING 자체 추적으로는 그 중 240개(그레이160/블랙80)가 아직 실제로 안 왔다(판매개시/입고확인은
+// 240 뿐) - 매입 원장의 확정 수량과 WING 의 물리적 관측이 서로 다른 값이라, 그 차이 자체를
+// 감추지 않고 "WING 기준 미입고 합계"로 별도 표시한다(발주 잔량·현재고 숫자에 더하거나 바꾸지
+// 않음 - 참고용 표시만 추가). 연결된 발주서가 있으면 WING 입고ID 옆에 그 po_no 도 같이 보여줘서
+// "이 WING 건이 어느 발주서와 연결됐는지"를 처음으로 화면에서 바로 확인할 수 있게 한다.
+//
+// 2026-09-18 [PM 교차검증 지적 - 1차 구현 버그] 처음엔 이 상품의 "죽지 않은 모든 WING 신청"의
+// 미입고를 다 더해서 합계로 보여줬다 - 그런데 이 상품에 발주서로 연결 안 된 오래된(레거시) WING
+// 신청이 여러 건 남아 있으면(실측: 그레이 1,360개) 그 전부가 "입고중"인 것처럼 보여 버린다 -
+// 실제로 "입고중"이라고 확신할 수 있는 건 발주서와 이미 연결 확인된 shipment 뿐이다(예: #016 의
+// 1101728071683166209 만 - 그레이160/블랙80). *** 그래서 합계는 연결된 shipment 만 더한다 ***.
+// 미연결(레거시) 건은 합산에서 빼고 그 행 자체에 "검토 필요" 표시만 남겨 사람이 개별 확인하게
+// 한다(자동으로 사라지거나 뭉개지지 않음). 그리고 연결 조회(purchase_orders) 자체가 실패하면
+// "연결 없음"(집계 0)으로 조용히 넘기면 안 된다 - 그건 "진짜로 연결이 없다"와 "확인을 아예 못
+// 했다"를 구분 못 해 위험하다(이 세션 전체의 fail-closed 원칙과 동일) - 그 경우 합계 배너 자체를
+// "조회 실패"로 명확히 표시하고 숫자를 내지 않는다.
 async function loadInvWingDirectSection(productId) {
   const box = document.getElementById("inv-wing-direct-section");
   if (!box) return;
@@ -4522,19 +4542,45 @@ async function loadInvWingDirectSection(productId) {
   }
   if (!data || !data.length) return;   // 없으면 조용히 - 억지로 빈 섹션 안 보여줌
   const DEAD = new Set(["CANCELLED", "FAILED"]);
+  // purchase_orders.wing_direct_shipment_id 는 ERP_WING_DIRECT_INBOUND_ENABLED 스위치와 무관한
+  // 평범한 컬럼 읽기 - 이 조회는 그 스위치를 켜지 않고도(꺼진 채로) 안전하게 할 수 있다.
+  const shipmentIds = [...new Set(data.map(r => r.wing_inbound_id).filter(Boolean))];
+  let linkedPoByShipment = {};
+  let linkLookupFailed = false;
+  if (shipmentIds.length) {
+    const { data: linkedPos, error: linkErr } = await sb.from("purchase_orders")
+      .select("po_no,wing_direct_shipment_id").in("wing_direct_shipment_id", shipmentIds);
+    if (linkErr) linkLookupFailed = true;
+    else if (linkedPos) linkedPoByShipment = Object.fromEntries(linkedPos.map(p => [p.wing_direct_shipment_id, p.po_no]));
+  }
+  let linkedPendingTotal = 0;
   const rows = data.map(r => {
     const dead = DEAD.has(r.wing_status);
     const pending = Math.max(0, Number(r.requested_qty || 0) - Number(r.received_qty || 0));
+    const linkedPoNo = linkedPoByShipment[r.wing_inbound_id];
+    if (!dead && linkedPoNo) linkedPendingTotal += pending;   // *** 연결 확인된 shipment 만 합산 ***
+    const needsReview = !dead && pending > 0 && !linkedPoNo && !linkLookupFailed;
     return `<tr>
-      <td><code style="font-size:11.5px">${esc(r.wing_inbound_id)}</code></td>
+      <td><code style="font-size:11.5px">${esc(r.wing_inbound_id)}</code>${linkedPoNo
+        ? `<br><span class="chip approved" style="font-size:10.5px;margin-top:2px;display:inline-block">🔗 ${esc(linkedPoNo)} 연결</span>` : ""}</td>
       <td>${esc(r.wing_status || "-")}</td>
       <td class="num">${fmt(r.requested_qty)}</td>
       <td class="num" style="color:var(--green)">${fmt(r.received_qty)}</td>
-      <td class="num" style="color:${dead ? "var(--text-sub)" : pending > 0 ? "var(--amber)" : "var(--text-sub)"}">${dead ? "—" : fmt(pending)}</td>
+      <td class="num" style="color:${dead ? "var(--text-sub)" : pending > 0 ? "var(--amber)" : "var(--text-sub)"}">${dead ? "—" : fmt(pending)}${needsReview
+        ? `<br><span class="chip waiting" style="font-size:10px;margin-top:2px;display:inline-block">검토 필요</span>` : ""}</td>
       <td>${esc(r.expected_date || "-")}</td>
     </tr>`;
   }).join("");
+  const summaryHtml = linkLookupFailed
+    ? `<p style="font-size:12.5px;font-weight:600;color:var(--red);margin:2px 0 6px">⚠️ 연결된 발주서 조회 실패 - 입고중 합계를 안전하게 계산할 수 없어요<br>
+        <span style="font-weight:400;color:var(--text-sub)">발주서 연결 여부를 확인 못 해서 숫자를 안 냅니다(연결 없음과 다름) - 아래 표의 개별 미입고 수량을 직접 확인하세요.</span></p>`
+    : linkedPendingTotal > 0
+      ? `<p style="font-size:12.5px;font-weight:600;color:var(--amber);margin:2px 0 6px">⏳ WING 기준 미입고(입고중) 합계: ${fmt(linkedPendingTotal)}개
+          <span style="font-weight:400">(발주서 연결이 확인된 건만 - 아래 🔗 표시된 행)</span><br>
+          <span style="font-weight:400;color:var(--text-sub)">발주 잔량·매입 원장·현재고와는 별개의 숫자예요(자동으로 더해지지 않음) - 연결된 발주서가 이미 완료로 기록돼 있어도 WING 자체 추적으로는 아직 도착 확인 전일 수 있어요. 연결 안 된 행은 합산하지 않고 '검토 필요'로만 표시해요(레거시 신청일 수 있음).</span></p>`
+      : "";
   box.innerHTML = `<h4 style="font-size:13px;margin:14px 0 4px">WING 입고 원본(ERP 연결 여부 확인 필요)</h4>
+    ${summaryHtml}
     <div class="table-wrap"><table class="items-table">
       <thead><tr><th>WING 입고ID</th><th>상태</th><th class="num">신청</th><th class="num">입고</th><th class="num">미입고</th><th>기대일</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
