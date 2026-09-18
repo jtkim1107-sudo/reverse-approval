@@ -609,6 +609,60 @@ async function main() {
          [res.status !== "DONE", updateCalls.length], [true, 0]);
   }
 
+  // [16a]/[16b] [PM 지적 - XSS] ErpUi.confirmModal() 은 notes 를 이스케이프 없이 그대로 <li>${n}</li>
+  // 로 삽입한다(js/erp_ui.js:171) - overlapNote/completedHistoryNote 에 들어가는 po_no·상품명·
+  // 납품희망일·매입날짜는 전부 DB 값이라, HTML 태그가 섞여 있으면 승인 권한자 브라우저에서 그대로
+  // 실행될 위험이 있었다. esc() 로 감쌌는지 실제 렌더된 HTML 문자열로 직접 확인한다(동작만이 아니라
+  // 표시 문구 자체를 검증 - [15a]/[15b] 와 같은 방식).
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true, rank: 5 });
+    ctx.__test.setUsers([{ id: "me-1", rank: 5, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    const XSS_PO_NO = '<img src=x onerror=alert(1)>';
+    ctx.__sbScript = scriptFor({
+      overlapRows: [{ po_id: "other-po-xss", product_id: "prod-a",
+                     purchase_orders: { po_no: XSS_PO_NO, status: "progress" } }],
+      updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    check("[16a] [핵심] 활성 발주서 겹침 po_no 의 HTML 태그가 이스케이프됨(원본 그대로 안 들어감)",
+         (ready.html || "").includes(XSS_PO_NO), false);
+    check("[16a] [핵심] 이스케이프된 형태(&lt;img)로는 들어감(내용 자체는 여전히 보임)",
+         (ready.html || "").includes("&lt;img"), true);
+    ctx.document.getElementById("erp-confirm-reason").value = "XSS 이스케이프 확인용";
+    ctx.ErpUi._answer(true);
+    await p;
+  }
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true, rank: 5 });
+    ctx.__test.setUsers([{ id: "me-1", rank: 5, name: "대표", role: "대표" }]);
+    const XSS_NAME = '<script>alert(1)</script>';
+    const XSS_PO_NO = '<b>PO-XSS</b>';
+    const XSS_DUE_DATE = '<i>2026-08-26</i>';
+    ctx.__test.setProducts([{ id: "prod-a", name: XSS_NAME }]);
+    const updateCalls = [];
+    ctx.__sbScript = scriptFor({
+      doneItems: [{ qty: 1, received_qty: 1, product_id: "prod-a",
+                   purchase_orders: { po_no: XSS_PO_NO, status: "done", due_date: XSS_DUE_DATE } }],
+      purchaseRows: [], updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    check("[16b] [핵심] 완료매입 이력의 상품명 HTML 태그가 이스케이프됨", (ready.html || "").includes(XSS_NAME), false);
+    check("[16b] [핵심] 완료매입 이력의 po_no HTML 태그가 이스케이프됨", (ready.html || "").includes(XSS_PO_NO), false);
+    check("[16b] [핵심] 완료매입 이력의 납품희망일 HTML 태그가 이스케이프됨", (ready.html || "").includes(XSS_DUE_DATE), false);
+    check("[16b] 이스케이프된 형태(&lt;script)로는 들어감(내용 자체는 여전히 보임)",
+         (ready.html || "").includes("&lt;script"), true);
+    ctx.document.getElementById("erp-confirm-reason").value = "XSS 이스케이프 확인용";
+    ctx.ErpUi._answer(true);
+    await p;
+  }
+
   // [15c]/[15d] [PM 교차검토 지적 3] PostgREST 기본 1,000행 캡에 걸릴 수 있는 상황 -> "이력 없음"
   // 으로 조용히 통과시키지 않고 fail-closed 로 막아야 함
   {

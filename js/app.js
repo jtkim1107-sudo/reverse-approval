@@ -8691,7 +8691,11 @@ async function promoteWingDirectDraft(id) {
           && it.purchase_orders && !["rejected", "canceled"].includes(it.purchase_orders.status));
         if (others.length) {
           overlapFound = true;
-          overlapNote = `⚠️ 같은 상품에 다른 활성 발주서 있음: ${[...new Set(others.map(it => it.purchase_orders.po_no))].join(", ")} - 중복 매입인지 직접 확인 후 진행하세요.`;
+          // 2026-09-18 [PM 지적 - XSS] ErpUi.confirmModal() 은 notes 를 이스케이프 없이 그대로
+          // <li>${n}</li> 로 삽입한다(js/erp_ui.js) - po_no 는 DB 값이라 HTML 태그가 들어있으면
+          // 승인 권한자 브라우저에서 그대로 실행될 위험이 있다. 위 "품목" 행이 이미 prodName 에
+          // esc() 를 쓰는 것과 같은 원칙으로 동적 텍스트는 전부 esc() 를 거친다.
+          overlapNote = `⚠️ 같은 상품에 다른 활성 발주서 있음: ${[...new Set(others.map(it => esc(it.purchase_orders.po_no)))].join(", ")} - 중복 매입인지 직접 확인 후 진행하세요.`;
         }
       }
 
@@ -8737,10 +8741,13 @@ async function promoteWingDirectDraft(id) {
         if ((doneItems || []).length >= WING_PROMOTE_HISTORY_QUERY_CAP || (purchaseRows || []).length >= WING_PROMOTE_HISTORY_QUERY_CAP)
           return { ok: false, title: "처리하지 않았어요 - 과거 이력이 너무 많아 전부 확인 못 했어요",
             message: `조회 결과가 ${WING_PROMOTE_HISTORY_QUERY_CAP}행에 딱 걸려 잘렸을 수 있어요(더 있는데 못 봤을 위험) - "이력 없음"으로 조용히 넘기지 않고 막았어요. 상품별로 나눠 직접 확인해 주세요.` };
+        // 2026-09-18 [PM 지적 - XSS] 위 overlapNote 와 같은 이유로 prodName/po_no/납품희망일/매입
+        // 날짜 전부 esc() 를 거친다 - 전부 DB 값(상품명·PO 번호·날짜 문자열)이라 이스케이프 없이
+        // notes 에 그대로 들어가면 confirmModal() 이 raw HTML 로 삽입해 버린다(js/erp_ui.js).
         const doneParts = (doneItems || [])
           .filter(it => it.purchase_orders && it.purchase_orders.status === "done")
-          .map(it => `${prodName(it.product_id)} - PO ${it.purchase_orders.po_no}(납품희망일 ${it.purchase_orders.due_date || "미상"}, ${fmt(it.qty)}개${it.received_qty != null ? `, 입고 ${fmt(it.received_qty)}` : ""})`);
-        const purchaseParts = (purchaseRows || []).map(p => `${prodName(p.product_id)} - 매입 ${p.date || "날짜 미상"} ${fmt(p.qty)}개`);
+          .map(it => `${esc(prodName(it.product_id))} - PO ${esc(it.purchase_orders.po_no)}(납품희망일 ${esc(it.purchase_orders.due_date || "미상")}, ${fmt(it.qty)}개${it.received_qty != null ? `, 입고 ${fmt(it.received_qty)}` : ""})`);
+        const purchaseParts = (purchaseRows || []).map(p => `${esc(prodName(p.product_id))} - 매입 ${esc(p.date || "날짜 미상")} ${fmt(p.qty)}개`);
         const allParts = [...doneParts, ...purchaseParts];
         if (allParts.length) {
           completedHistoryFound = true;
