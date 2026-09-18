@@ -8682,12 +8682,45 @@ async function promoteWingDirectDraft(id) {
           overlapNote = `⚠️ 같은 상품에 다른 활성 발주서 있음: ${[...new Set(others.map(it => it.purchase_orders.po_no))].join(", ")} - 중복 매입인지 직접 확인 후 진행하세요.`;
         }
       }
-      return { ok: true, overlapNote, overlapFound };
+
+      // 2026-09-18 [PM 요청 - 완료매입 이력 표시, 14일 창 밖 놓침 방지] 위 활성 발주서 겹침 확인과
+      // 백엔드 evaluate_shipment() 의 COMPLETED_PURCHASE_OVERLAP 은 각각 "아직 안 끝난 발주"만
+      // 보거나 "가까운 날짜 창(PO_RECENCY_WINDOW_DAYS=14일)" 안에서만 완료 PO·매입을 겹침으로
+      // 본다 - 실측(휴지통 shipment 1103886464850071552, 720EA, 과거 완료 PO 리버스-발주-2026-001
+      // 720EA 2026-08-27 매입, 이번 기대일 2026-09-23 라 28일 차이로 그 14일 창 밖)으로 확인된
+      // 바로 그 구멍이 이 승인 화면까지 그대로 뚫려 있었다. *** 자동으로 막지는 않는다 - 정상적인
+      // 반복 발주(같은 상품을 주기적으로 다시 사입하는 경우)까지 막으면 안 되기 때문 ***. 대신
+      // 날짜 창 제한 없이 같은 상품의 완료 PO·매입 이력이 하나라도 있으면 전부 확인창에 그대로
+      // 보여줘서, 자동 차단 여부와 무관하게 사람이 직접 보고 판단하게 한다(같은 상품·수량이 우연히
+      // 겹치는 건지, 그냥 반복 발주인지는 이 화면이 판단하지 않음 - 위 활성 발주서 겹침과 같은
+      // 원칙으로 "사유 필수" 확인만 강제). *** 조회 자체가 실패하면(위와 같은 원칙) 승인 진행을
+      // 막는다(fail-closed) - "이력 없음"과 "확인 못 함"을 절대 같게 취급하지 않는다 ***.
+      let completedHistoryNote = "같은 상품의 과거 완료 매입 이력을 확인했고, 없어요.";
+      let completedHistoryFound = false;
+      if (pids.length) {
+        const { data: doneItems, error: dpe } = await sb.from("purchase_order_items")
+          .select("qty,received_qty,product_id,purchase_orders(po_no,status,due_date)").in("product_id", pids);
+        if (dpe) return { ok: false, message: `과거 완료 발주 이력을 확인하지 못했어요: ${dpe.message || dpe.code} - 확인 전엔 전환하지 않아요.` };
+        const { data: purchaseRows, error: ppe } = await sb.from("purchases")
+          .select("date,qty,product_id").in("product_id", pids);
+        if (ppe) return { ok: false, message: `매입 원장을 확인하지 못했어요: ${ppe.message || ppe.code} - 확인 전엔 전환하지 않아요.` };
+        const doneParts = (doneItems || [])
+          .filter(it => it.purchase_orders && it.purchase_orders.status === "done")
+          .map(it => `PO ${it.purchase_orders.po_no}(완료일 ${it.purchase_orders.due_date || "미상"}, ${fmt(it.qty)}개${it.received_qty != null ? `, 입고 ${fmt(it.received_qty)}` : ""})`);
+        const purchaseParts = (purchaseRows || []).map(p => `매입 ${p.date || "날짜 미상"} ${fmt(p.qty)}개`);
+        const allParts = [...doneParts, ...purchaseParts];
+        if (allParts.length) {
+          completedHistoryFound = true;
+          completedHistoryNote = `📋 같은 상품의 과거 완료 발주·매입 이력(날짜 무관, 자동 중복 차단 대상 아닐 수 있음): ${allParts.join(" · ")} - 이번 신청과 같은 건인지 직접 확인 후 진행하세요.`;
+        }
+      }
+
+      return { ok: true, overlapNote, overlapFound, completedHistoryNote, completedHistoryFound };
     },
     confirm: pre => ({
       title: "WING 직접입고 검토 초안 → 정식 발주 전환",
       actionLabel: isJeongyeol ? "전결 승인(공급처 발주·지급예정 등록은 다음 단계에서 따로)" : "결재선 지정하고 전환",
-      danger: !!pre?.overlapFound,
+      danger: !!pre?.overlapFound || !!pre?.completedHistoryFound,
       rows: [
         ["발주번호", `<b>${esc(fresh?.po_no || "")}</b>`],
         ["거래처", esc(fresh?.supplier || "-")],
@@ -8703,10 +8736,11 @@ async function promoteWingDirectDraft(id) {
           ? "전결이라도 '발주 완료'가 아니라 '승인 완료'로만 바뀌어요 - 실제 거래처 발주·지급예정 등록은 전환 뒤 [거래처에 발주 완료] 버튼(markOrdered)에서 사람이 직접 눌러야 해요(공급처 전송·지급예정 없이 자동으로 '발주 완료'로 표시하면 실제로 안 한 일이 된 것처럼 보여요)."
           : "전환 뒤에는 일반 발주서와 완전히 같은 절차(결재 → 거래처에 발주 완료 → 입고 처리)를 그대로 따라요.",
         pre?.overlapNote,
+        pre?.completedHistoryNote,
       ],
-      reason: pre?.overlapFound
-        ? { label: "겹침 확인 사유 (필수)", required: true, minLength: 5,
-            placeholder: "예) PO#016 과 상품·시점 겹치지만 확인 결과 수량이 달라 별개 매입임" }
+      reason: (pre?.overlapFound || pre?.completedHistoryFound)
+        ? { label: "겹침/이력 확인 사유 (필수)", required: true, minLength: 5,
+            placeholder: "예) 과거 완료 매입과 상품·수량은 같지만 시점이 달라 별개 주문으로 확인함" }
         : { label: "메모(선택)", required: false },
     }),
     exec: async reason => {
@@ -8724,7 +8758,7 @@ async function promoteWingDirectDraft(id) {
         // 'ordered'는 안 감 - markOrdered() 만의 몫이라 여기서도 똑같이 지켜짐).
         status: isJeongyeol ? "approved" : "progress",
         ordered_at: null,
-        memo: reason ? `${fresh?.memo || ""}\n[전환 시 겹침 확인 사유] ${reason}` : fresh?.memo,
+        memo: reason ? `${fresh?.memo || ""}\n[전환 시 겹침/이력 확인 사유] ${reason}` : fresh?.memo,
       };
       const { data, error } = await sb.from("purchase_orders").update(patch)
         .eq("id", id).eq("status", "wing_direct_review").select("id");

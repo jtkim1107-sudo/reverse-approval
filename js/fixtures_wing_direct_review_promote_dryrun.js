@@ -166,7 +166,12 @@ const DEFAULT_MANIFEST_ROW = { collected_at: FRESH_CHECKED_AT, shipment_sku_map:
 function scriptFor({ poRow = BASE_PO, items = BASE_ITEMS, itemsError = null,
   mirrorRows = [MATCHING_MIRROR_ROW], mirrorError = null,
   manifestRows = [DEFAULT_MANIFEST_ROW], manifestError = null,
-  overlapRows = [], overlapError = null, updateOk = true, updateCalls = [] } = {}) {
+  overlapRows = [], overlapError = null,
+  // 2026-09-18 [PM 요청 - 완료매입 이력 표시] promoteWingDirectDraft() 가 이제 purchase_order_items
+  // 를 "in" 필터로 *두 번* 다른 목적으로 조회한다(기존: 활성 발주서 겹침 / 신규: 완료 PO 이력) -
+  // 둘 다 같은 테이블·같은 in() 호출이라 select 문자열(due_date 포함 여부)로 구분해야 한다.
+  doneItems = [], doneItemsError = null, purchaseRows = [], purchasesError = null,
+  updateOk = true, updateCalls = [] } = {}) {
   return (table, calls) => {
     if (table === "purchase_orders" && calls.some(c => c[0] === "update")) {
       updateCalls.push(calls.find(c => c[0] === "update")[1]);
@@ -174,8 +179,15 @@ function scriptFor({ poRow = BASE_PO, items = BASE_ITEMS, itemsError = null,
       return { data: [{ id: poRow.id }], error: null };
     }
     if (table === "purchase_orders") return { data: poRow, error: null };
-    if (table === "purchase_order_items" && calls.some(c => c[0] === "in")) return { data: overlapRows, error: overlapError };
-    if (table === "purchase_order_items") return { data: items, error: itemsError };
+    if (table === "purchase_order_items") {
+      const selectCall = calls.find(c => c[0] === "select");
+      const selectStr = selectCall ? String(selectCall[1] || "") : "";
+      const isInQuery = calls.some(c => c[0] === "in");
+      if (isInQuery && selectStr.includes("due_date")) return { data: doneItems, error: doneItemsError };
+      if (isInQuery) return { data: overlapRows, error: overlapError };
+      return { data: items, error: itemsError };
+    }
+    if (table === "purchases") return { data: purchaseRows, error: purchasesError };
     if (table === "wing_direct_inbounds") return { data: mirrorRows, error: mirrorError };
     if (table === "wing_direct_inbound_collection_manifest") return { data: manifestRows, error: manifestError };
     throw new Error(`시나리오에 없는 테이블 조회: ${table}`);
@@ -259,6 +271,12 @@ async function main() {
     // 방어적 이중 확인 - SKU 집합 비교는 우연히 통과했다고 가정해도(가상 시나리오) qty_review_keys 가 별도로 막음.
     ["[13i] [방어적 이중 확인] SKU 집합이 manifest 와 일치해도 qty_review_keys 에 이 shipment 가 있으면 막힘",
       { manifestRows: [{ collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "ship-1": ["vid-a"] }, qty_review_keys: [["ship-1", "vid-a"]] }] }],
+
+    // ── [14] [PM 요청] 완료매입 이력 표시(14일 창 밖 놓침 방지) - 조회 실패는 fail-closed ─────────
+    ["[14a] 과거 완료 발주 이력 조회 자체가 실패 -> 막힘(조용히 통과 안 함)",
+      { doneItemsError: { message: "network down" } }],
+    ["[14b] 매입 원장 조회 자체가 실패 -> 막힘(조용히 통과 안 함)",
+      { purchasesError: { message: "network down" } }],
   ];
   for (const [name, overrides] of blockCases) {
     const ctx = buildContext();
@@ -430,6 +448,86 @@ async function main() {
     ctx.ErpUi._answer(true);
     const res = await p;
     check("[13j] [핵심] 문자열 표기만 다르고 실제로는 같은 순간 -> 오탐 없이 DONE 까지 도달", res.status, "DONE");
+  }
+
+  // [14c] 완료 발주·매입 이력이 둘 다 없음(정상적인 신규 상품) -> 불필요하게 안 막힘, 사유 없이도 DONE
+  // (PM 지시: "정상적인 다른 주문은 불필요하게 막지 않으며" - 이 케이스가 그 요구를 직접 검증)
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    ctx.__sbScript = scriptFor({ doneItems: [], purchaseRows: [], updateCalls });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    ctx.ErpUi._answer(true);   // 사유란이 필수가 아니므로 빈 채로 확인해도 통과해야 함
+    const res = await p;
+    check("[14c] [핵심] 완료 이력 없음 -> 불필요하게 안 막힘, 사유 없이도 DONE", res.status, "DONE");
+    check("[14c] 메모에 '확인 사유' 텍스트가 안 남음(강제된 적 없으므로)",
+         (updateCalls[0]?.memo || "").includes("확인 사유"), false);
+  }
+
+  // [14d] [PM 요청 - 핵심 재현] 휴지통 shipment 1103886464850071552 실례 그대로: 신규 검토 초안
+  // 720EA·₩3,960,000 대 과거 완료 PO 리버스-발주-2026-001(720EA, 2026-08-26 완료) + 매입원장
+  // (2026-08-27, 720EA) - 기대일과 28일 차이라 백엔드 COMPLETED_PURCHASE_OVERLAP 의 14일 창 밖
+  // (evaluate_shipment 단계에서 이미 못 잡음) - 이 승인 화면이 날짜 창과 무관하게 표시하고 사유를
+  // 강제하는지 확인한다.
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    const realDoneItems = [{
+      qty: 720, received_qty: 720, product_id: "prod-a",
+      purchase_orders: { po_no: "리버스-발주-2026-001", status: "done", due_date: "2026-08-26" },
+    }];
+    const realPurchaseRows = [{ date: "2026-08-27", qty: 720, product_id: "prod-a" }];
+    ctx.__sbScript = scriptFor({ doneItems: realDoneItems, purchaseRows: realPurchaseRows, updateCalls });
+
+    // 사유 없이 확인 -> 아직 처리 안 됨(필수 검증에 막힘, run() 안 끝남)
+    let ready = armConfirmSignal(ctx);
+    let p = ctx.__test.getPromote()("po-1");
+    await ready;
+    ctx.document.getElementById("erp-confirm-reason").value = "";
+    ctx.ErpUi._answer(true);
+    await Promise.resolve(); await Promise.resolve();
+    check("[14d-a] [핵심] 완료 PO·매입 이력 있음(28일 차이, 14일 창 밖) + 사유 없음 -> 아직 처리 안 됨(update 없음)",
+         updateCalls.length, 0);
+
+    // 사유를 적으면 통과 + 메모에 남음
+    ctx.document.getElementById("erp-confirm-reason").value = "완료 매입과 상품은 같지만 8월분 재고 소진 확인 후 재입고로 승인함";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[14d-b] [핵심] 사유를 적으면 통과(자동 차단 아님 - 사람 판단으로 진행 가능)", res.status, "DONE");
+    check("[14d-b] 메모에 완료 매입 확인 사유가 남음",
+         (updateCalls[0]?.memo || "").includes("8월분 재고 소진 확인 후 재입고로 승인함"), true);
+    check("[14d-b] 메모 라벨이 '겹침/이력 확인 사유'로 남음(어떤 검사가 걸렸는지 감사기록에 구분됨)",
+         (updateCalls[0]?.memo || "").includes("[전환 시 겹침/이력 확인 사유]"), true);
+  }
+
+  // [14e] 완료 PO 는 없고 매입 원장에만 이력이 있는 경우도 똑같이 표시·사유 강제(두 소스 중 하나만
+  // 있어도 놓치지 않아야 함 - 백엔드 _check_completed_purchase_overlap 이 두 소스를 독립적으로 보는
+  // 것과 같은 원칙, 프론트는 자동 판단 없이 둘 다 그대로 보여줌).
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    ctx.__sbScript = scriptFor({
+      doneItems: [], purchaseRows: [{ date: "2026-07-01", qty: 200, product_id: "prod-a" }], updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    ctx.document.getElementById("erp-confirm-reason").value = "";
+    ctx.ErpUi._answer(true);
+    await Promise.resolve(); await Promise.resolve();
+    check("[14e] 매입 원장에만 이력 있어도 사유 없이는 아직 처리 안 됨", updateCalls.length, 0);
+    ctx.document.getElementById("erp-confirm-reason").value = "7월 매입과 무관한 별개 재입고로 확인함";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[14e] 사유 적으면 통과", res.status, "DONE");
   }
 
   console.log("\n" + "=".repeat(70));
