@@ -8321,9 +8321,35 @@ function poEstimatedCashPayment(po, items, products, vat) {
 function wingDirectPaymentBasis(po, items, products, vat) {
   if (!items.length || items.some(it => !products.some(p => p.id === it.product_id)))
     throw new Error("발주 품목의 과세 구분을 모두 확인하지 못했어요");
+  if (products.some(p => !["과세", "면세"].includes(p.tax_type)))
+    throw new Error("상품 과세 구분이 미확정이에요 - 지급예정액을 계산하지 않아요");
   const supply = items.reduce((sum, it) => sum + Number(it.amount || Number(it.qty) * Number(it.unit_cost) || 0), 0);
   if (supply !== Number(po.total)) throw new Error("발주서와 품목 합계가 달라요 - 지급예정액을 계산하지 않아요");
-  return poEstimatedCashPayment(po, items, products, vat);
+  // ERP 손익의 VAT 표시 스위치와 실제 과세 매입대금은 다르다. 면세사업자라도
+  // 과세 상품을 매입하면 공급처에 VAT를 지급하므로 현금 계획에는 더한다.
+  return poEstimatedCashPayment(po, items, products, { ...vat, enabled: true });
+}
+
+async function loadWingDirectPaymentBasis(po) {
+  const { data: setting, error: ve } = await sb.from("settings").select("value").eq("key", "vat").maybeSingle();
+  if (ve || typeof setting?.value?.purchaseCostIncludesVat !== "boolean")
+    throw new Error("매입 부가세 설정을 확인하지 못해 지급예정액을 계산하지 않아요");
+  const purchaseVat = setting.value;
+  const { data: items, error: ie } = await sb.from("purchase_order_items")
+    .select("product_id,qty,unit_cost,amount").eq("po_id", po.id);
+  if (ie || !items?.length) throw new Error("발주 품목을 확인하지 못해 진행하지 않아요");
+  const ids = [...new Set(items.map(it => it.product_id))];
+  const { data: products, error: pe } = await sb.from("products")
+    .select("id,tax_type").in("id", ids);
+  if (pe) throw new Error("상품 과세 구분을 확인하지 못해 진행하지 않아요");
+  const total = wingDirectPaymentBasis(po, items, products || [], purchaseVat);
+  const snapshot = JSON.stringify({
+    supply: po.total, supplier: po.supplier, poNo: po.po_no, shipment: po.wing_direct_shipment_id,
+    vatIncluded: purchaseVat.purchaseCostIncludesVat,
+    items: items.map(it => [it.product_id, it.qty, it.unit_cost, it.amount]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    products: (products || []).map(p => [p.id, p.tax_type]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  });
+  return { total, snapshot };
 }
 
 // 승인된 발주서를 실제로 거래처에 보냈을 때 → 결제 예정도 함께 등록
@@ -8368,9 +8394,8 @@ async function markOrdered(id) {
 // markOrdered() 를 그대로 쓰면 두 가지가 실제로 안 한 일을 한 것처럼 보이게 한다:
 //   1) 버튼·토스트 문구 "거래처에 발주 완료" - 방금 공급처에 새로 주문을 넣은 것처럼 읽혀서, 사람이
 //      실제로 리파코에 다시 주문을 넣어야 하나 착각할 위험(재주문 절대 금지).
-//   2) markOrdered() 의 지급예정 등록은 날짜를 항상 today()+30 로 고정한다(공급처별 실제 결제조건
-//      은 confirm 창에 참고 문구로만 보여주고 실제 계산엔 안 씀) - 리파코 실제 결제조건(대표가 정함:
-//      익월 20일)과 다르고, 이 발주서는 "오늘 주문"이 아니라 "이미 지난 입고"라 today() 기준 자체가
+//   2) 일반 markOrdered() 는 오늘 새로 발주한 날짜를 기준으로 리파코 익월 20일(그 외 today()+30)을
+//      추정한다. 이 발주서는 "오늘 주문"이 아니라 "이미 지난 입고"라 today() 기준 자체가
 //      틀렸다. 게다가 이미 다른 경로로 지급예정이 등록돼 있을 수도 있어(사후 기록이라 회계가 먼저
 //      처리했을 가능성) 중복 등록 위험도 일반 발주보다 크다.
 // 그래서 이 함수는 날짜를 추정하지 않는다(사람이 직접 입력해야만 등록) + 같은 po_no 로 이미 등록된
@@ -8379,7 +8404,7 @@ async function markOrdered(id) {
 // 값을 쓴다(새 status 를 안 만듦 - 기존 PO 수명주기 재사용, 이 필드 자체는 "매입 확정"이라는 뜻으로
 // 이미 맞게 쓰이고 있어서).
 async function markOrderedFromWingDirect(id) {
-  let fresh = null, total = 0;
+  let fresh = null, total = 0, basisSnapshot = null;
   return ErpUi.run({
     key: `po-wing-order-${id}`,
     allowed: !!me?.approver,
@@ -8392,16 +8417,7 @@ async function markOrderedFromWingDirect(id) {
       fresh = data;
       // 사후 매입도 일반 리파코 발주와 같은 과세 기준으로 현금 지급액을 계산한다.
       // 운반비는 별도 청구서로 관리하므로 여기서는 더하지 않는다.
-      await loadVatCfg();
-      if (!vatCfgLoaded) return { ok: false, message: "부가세 설정을 확인하지 못해 지급예정액을 계산하지 않아요" };
-      const { data: items, error: ie } = await sb.from("purchase_order_items")
-        .select("product_id,qty,unit_cost,amount").eq("po_id", id);
-      if (ie || !items?.length) return { ok: false, message: "발주 품목을 확인하지 못해 진행하지 않아요" };
-      const ids = [...new Set(items.map(it => it.product_id))];
-      const { data: products, error: pe } = await sb.from("products")
-        .select("id,tax_type").in("id", ids);
-      if (pe) return { ok: false, message: "상품 과세 구분을 확인하지 못해 진행하지 않아요" };
-      try { total = wingDirectPaymentBasis(fresh, items, products || [], vatCfg); }
+      try { ({ total, snapshot: basisSnapshot } = await loadWingDirectPaymentBasis(fresh)); }
       catch (e) { return { ok: false, message: e.message }; }
       // 이미 이 po_no 로 등록된 지급예정이 있는지(사후 기록이라 회계가 먼저 처리했을 수 있음) - 중복
       // 등록을 막기 위해 반드시 확인한다(제목에 po_no 를 그대로 찍어 넣는 건 markOrdered() 도 같은
@@ -8434,6 +8450,16 @@ async function markOrderedFromWingDirect(id) {
       };
     },
     exec: async () => {
+      // 확인창이 열려 있는 동안 발주 품목·과세 구분·VAT 설정이 바뀌면 예전
+      // 금액으로 지급예정을 등록하지 않는다. DB 다중 호출의 원자성은 별개다.
+      const { data: current, error: ce } = await sb.from("purchase_orders").select("*").eq("id", id).maybeSingle();
+      if (ce || !current || current.status !== "approved")
+        return { ok: false, message: "발주서 상태를 다시 확인할 수 없거나 변경됐어요 - 새로고침 후 다시 확인해 주세요" };
+      let latest;
+      try { latest = await loadWingDirectPaymentBasis(current); }
+      catch (e) { return { ok: false, message: e.message }; }
+      if (latest.snapshot !== basisSnapshot || latest.total !== total)
+        return { ok: false, message: "발주 품목 또는 과세 설정이 변경됐어요 - 새로고침 후 다시 확인해 주세요" };
       const patch = { status: "ordered", ordered_at: new Date().toISOString() };
       const { data, error } = await sb.from("purchase_orders").update(patch).eq("id", id).eq("status", "approved").select("id");
       if (error) return { ok: false, message: error.message || error.code };

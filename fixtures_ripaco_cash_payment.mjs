@@ -29,8 +29,13 @@ assert.equal(wingDirectPaymentBasis({ total: 25000 }, items, products,
   { enabled: true, purchaseCostIncludesVat: false }), 27000);
 assert.equal(wingDirectPaymentBasis({ total: 25000 }, items, products,
   { enabled: true, purchaseCostIncludesVat: true }), 25000);
+assert.equal(wingDirectPaymentBasis({ total: 25000 }, items, products,
+  { enabled: false, purchaseCostIncludesVat: false }), 27000);
 assert.throws(() => wingDirectPaymentBasis({ total: 25000 }, items, products.slice(0, 1),
   { enabled: true, purchaseCostIncludesVat: false }), /과세 구분/);
+assert.throws(() => wingDirectPaymentBasis({ total: 25000 }, items,
+  [{ id: 'taxed', tax_type: '미확인' }, products[1]],
+  { enabled: true, purchaseCostIncludesVat: false }), /미확정/);
 assert.throws(() => wingDirectPaymentBasis({ total: 25001 }, items, products,
   { enabled: true, purchaseCostIncludesVat: false }), /품목 합계/);
 assert.equal(lastBankStatementAt([
