@@ -4553,22 +4553,43 @@ async function loadInvWingDirectSection(productId) {
     if (linkErr) linkLookupFailed = true;
     else if (linkedPos) linkedPoByShipment = Object.fromEntries(linkedPos.map(p => [p.wing_direct_shipment_id, p.po_no]));
   }
+  // 2026-09-18 [WING 신청 취소 확인] WING 이 CANCELLED/FAILED 를 안 보내는(INIT_COMPLETED 로 남는)
+  // 실제 취소 신청을 권한자가 신청 ID별로 확인·기록한 것 - linkLookupFailed 와 같은 원칙으로 조회
+  // 실패는 "취소 확인 없음"으로 조용히 넘기지 않고 별도 경고로 표시한다(배지가 실제보다 적어 보일 수
+  // 있다는 걸 사람이 알아야 함).
+  let overridesByShipment = {};
+  let overrideLookupFailed = false;
+  if (shipmentIds.length) {
+    const { data: overrides, error: overrideErr } = await sb.from("wing_direct_inbound_overrides")
+      .select("wing_inbound_id,reason,confirmed_at").in("wing_inbound_id", shipmentIds).eq("status", "ACTIVE");
+    if (overrideErr) overrideLookupFailed = true;
+    else if (overrides) overridesByShipment = Object.fromEntries(overrides.map(o => [o.wing_inbound_id, o]));
+  }
   let linkedPendingTotal = 0;
   const rows = data.map(r => {
     const dead = DEAD.has(r.wing_status);
     const pending = Math.max(0, Number(r.requested_qty || 0) - Number(r.received_qty || 0));
     const linkedPoNo = linkedPoByShipment[r.wing_inbound_id];
-    if (!dead && linkedPoNo) linkedPendingTotal += pending;   // *** 연결 확인된 shipment 만 합산 ***
-    const needsReview = !dead && pending > 0 && !linkedPoNo && !linkLookupFailed;
+    const override = overridesByShipment[r.wing_inbound_id];
+    const overrideConflict = !!override && Number(r.received_qty || 0) > 0;
+    const cancelled = !!override && !overrideConflict;   // 취소 확인됐고 실입고와 안 겹침
+    if (!dead && linkedPoNo && !cancelled) linkedPendingTotal += pending;   // *** 연결 확인 + 취소 확인 안 된 shipment 만 합산 ***
+    const needsReview = !dead && pending > 0 && !linkedPoNo && !linkLookupFailed && !cancelled;
+    const statusBadge = override
+      ? `<br><span class="chip ${overrideConflict ? "waiting" : "approved"}" style="font-size:10px;margin-top:2px;display:inline-block">${overrideConflict ? "⚠️ 취소 확인·실입고 충돌" : "✓ 취소 확인"}</span>`
+      : "";
+    const cancelButton = me?.approver
+      ? `<br><button class="btn sm secondary" style="font-size:10px;margin-top:2px" onclick="decideWingDirectCancellation('${esc(r.wing_inbound_id)}','${override ? "REVOKE" : "CONFIRM_CANCELLED"}','${esc(productId)}')">${override ? "취소 확인 철회" : "취소 확인"}</button>`
+      : "";
     return `<tr>
       <td><code style="font-size:11.5px">${esc(r.wing_inbound_id)}</code>${linkedPoNo
         ? `<br><span class="chip approved" style="font-size:10.5px;margin-top:2px;display:inline-block">🔗 ${esc(linkedPoNo)} 연결</span>` : ""}</td>
-      <td>${esc(r.wing_status || "-")}</td>
+      <td>${esc(r.wing_status || "-")}${statusBadge}</td>
       <td class="num">${fmt(r.requested_qty)}</td>
       <td class="num" style="color:var(--green)">${fmt(r.received_qty)}</td>
-      <td class="num" style="color:${dead ? "var(--text-sub)" : pending > 0 ? "var(--amber)" : "var(--text-sub)"}">${dead ? "—" : fmt(pending)}${needsReview
+      <td class="num" style="color:${dead || cancelled ? "var(--text-sub)" : pending > 0 ? "var(--amber)" : "var(--text-sub)"}">${dead ? "—" : cancelled ? "취소 확인(제외)" : fmt(pending)}${needsReview
         ? `<br><span class="chip waiting" style="font-size:10px;margin-top:2px;display:inline-block">검토 필요</span>` : ""}</td>
-      <td>${esc(r.expected_date || "-")}</td>
+      <td>${esc(r.expected_date || "-")}${cancelButton}</td>
     </tr>`;
   }).join("");
   const summaryHtml = linkLookupFailed
@@ -4579,13 +4600,35 @@ async function loadInvWingDirectSection(productId) {
           <span style="font-weight:400">(발주서 연결이 확인된 건만 - 아래 🔗 표시된 행)</span><br>
           <span style="font-weight:400;color:var(--text-sub)">발주 잔량·매입 원장·현재고와는 별개의 숫자예요(자동으로 더해지지 않음) - 연결된 발주서가 이미 완료로 기록돼 있어도 WING 자체 추적으로는 아직 도착 확인 전일 수 있어요. 연결 안 된 행은 합산하지 않고 '검토 필요'로만 표시해요(레거시 신청일 수 있음).</span></p>`
       : "";
+  const overrideWarningHtml = overrideLookupFailed
+    ? `<p style="font-size:12.5px;font-weight:600;color:var(--red);margin:2px 0 6px">⚠️ 취소 확인 이력 조회 실패 - 취소 여부를 확정할 수 없어요<br>
+        <span style="font-weight:400;color:var(--text-sub)">아래 표의 "✓ 취소 확인" 배지가 실제보다 적게 보일 수 있어요 - 개별 행을 직접 확인하세요.</span></p>`
+    : "";
   box.innerHTML = `<h4 style="font-size:13px;margin:14px 0 4px">WING 입고 원본(ERP 연결 여부 확인 필요)</h4>
-    ${summaryHtml}
+    ${summaryHtml}${overrideWarningHtml}
     <div class="table-wrap"><table class="items-table">
       <thead><tr><th>WING 입고ID</th><th>상태</th><th class="num">신청</th><th class="num">입고</th><th class="num">미입고</th><th>기대일</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     <p style="font-size:11.5px;color:var(--text-sub);margin-top:4px">WING 에 실제로 신청된 입고 전체(ERP 발주 경유 여부와 무관)를 그대로 보여줘요 - 위 '기존 발주 / 입고' 목록과 대조해서 ERP 발주서 없이 들어온 건지 사람이 직접 확인해야 해요.
-    이 표는 WING 원본 기록을 보여주는 참고 자료이며, 표의 미입고 수량을 재고·입고예정에 자동으로 더하지 않습니다. 실제 반영 여부는 위 재고판단 결과에서 확인하세요.</p>`;
+    이 표는 WING 원본 기록을 보여주는 참고 자료이며, 표의 미입고 수량을 재고·입고예정에 자동으로 더하지 않습니다. 실제 반영 여부는 위 재고판단 결과에서 확인하세요. WING이 취소 상태를 보내면 자동 제외되고, 상태가 남은 예약은 승인 권한자가 신청 ID별로 취소 확인할 수 있어요.</p>`;
+}
+
+async function decideWingDirectCancellation(shipmentId, action, productId) {
+  if (!me?.approver) return toast("승인 권한이 필요합니다");
+  const reason = window.prompt(action === "REVOKE"
+    ? `WING 신청 ${shipmentId} 취소 확인을 철회하는 이유를 입력해 주세요.`
+    : `WING 신청 ${shipmentId}가 실제로 취소됐는지 확인한 근거를 입력해 주세요.`);
+  if (reason === null) return;
+  if (reason.trim().length < 5) return toast("사유를 5자 이상 입력해 주세요");
+  const { error } = await sb.rpc("fn_decide_wing_direct_cancel", {
+    p_shipment_id: shipmentId, p_action: action, p_reason: reason.trim()
+  });
+  if (error) return toast(`처리하지 않았어요: ${error.message || error.code}`);
+  toast(action === "REVOKE" ? "취소 확인을 철회했습니다" : "취소 확인을 기록했습니다");
+  inventoryDecisionsCache = null;
+  _inventoryDecisionsForceRefreshNext = true;
+  await loadInvWingDirectSection(productId);
+  route();
 }
 
 const INCOMING_SOURCE_LABEL = {
