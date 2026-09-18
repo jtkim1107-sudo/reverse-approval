@@ -8525,6 +8525,79 @@ async function promoteWingDirectDraft(id) {
         const dead = mirrorRows.filter(r => WING_DIRECT_DEAD_STATUSES.has(r.wing_status));
         if (dead.length)
           return { ok: false, title: "처리하지 않았어요 - WING 쪽에서 취소/실패로 바뀌었어요", message: `WING 상태: ${[...new Set(dead.map(r => r.wing_status))].join(", ")} - 이 초안은 더 이상 유효하지 않을 수 있어요. 취소하거나 재수집 결과를 확인해 주세요.` };
+
+        // 2026-09-18 [PM 지적 - manifest 기반 원본 완전성 재확인, TOCTOU 방어] 위 검사들은 지금 존재
+        // 하는 mirror 행끼리만 서로 비교한다 - 초안 평가(evaluate_shipment)~이 승인 사이(TOCTOU)에
+        // 수집기가 한 번 더 돌아서 이 shipment 의 SKU 하나가 WING 원본에서 사라지면, 그 SKU 의 옛
+        // mirror 행은 수집기가 안 지워서 그대로 남고 여전히 "그럴듯하게 최근"(36시간 안쪽)으로
+        // 보일 수 있다(아래 badChecked 로는 안 잡힘) - 백엔드 evaluate_shipment() 의 SOURCE_
+        // INCOMPLETE(migrations/20260918d) 와 같은 근거(매 수집 회차가 "실제로 본 전체 SKU 집합"을
+        // 남기는 wing_direct_inbound_collection_manifest)로 이 화면도 승인 직전에 다시 대조한다.
+        // *** manifest 없음/조회 실패/이 shipment 없음/SKU 집합 불일치/시각 불일치 중 하나라도면
+        // fail-closed(정식 PO 전환 불가) *** - 추정으로 통과시키지 않음.
+        const { data: manifestRows, error: mfe } = await sb.from("wing_direct_inbound_collection_manifest")
+          .select("collected_at,shipment_sku_map,qty_review_keys").order("collected_at", { ascending: false }).limit(1);
+        if (mfe) return { ok: false, message: `최신 수집 완전성 정보를 확인하지 못했어요: ${mfe.message || mfe.code} - 전환하지 않았어요.` };
+        if (!manifestRows || !manifestRows.length)
+          return { ok: false, title: "처리하지 않았어요 - 최신 수집 완전성 정보가 없어요",
+            message: "wing_direct_inbound_collection_manifest 에 기록이 없어요(수집기가 manifest 를 남기기 전 버전이었거나 한 번도 안 돔) - 원본 완전성 증거 없이는 정식 발주로 전환하지 않아요." };
+        const manifest = manifestRows[0];
+        // 2026-09-18 [PM 코드 리뷰 지적] new Date("2026-09-18T02:00:00")(타임존 표기 없음)는 JS 명세상
+        // "로컬 시간대"로 해석된다(UTC 아님) - 서버가 KST 든 UTC 든 뭘로 돌든 그 로컬 해석이 실제
+        // 순간과 몇 시간씩 어긋날 수 있어서, 문자열 끝에 "Z" 나 "+HH:MM"/"-HH:MM" 오프셋이 명시적으로
+        // 있는지부터 확인한다(백엔드 wing_direct_inbound_po_draft.py 가 naive datetime 을 거부하는
+        // 것과 같은 원칙) - 없으면 추정하지 않고 fail-closed.
+        const parseTzAwareMs = raw => {
+          if (typeof raw !== "string" || !/(Z|[+-]\d{2}:?\d{2})$/.test(raw.trim())) return NaN;
+          return new Date(raw).getTime();
+        };
+        const manifestCollectedAtMs = parseTzAwareMs(manifest.collected_at);
+        if (Number.isNaN(manifestCollectedAtMs))
+          return { ok: false, title: "처리하지 않았어요 - 수집 완전성 정보 형식이 이상해요",
+            message: `manifest.collected_at 형식 이상 또는 타임존 없음(${manifest.collected_at}) - 전환하지 않았어요.` };
+        const manifestSkus = (manifest.shipment_sku_map && typeof manifest.shipment_sku_map === "object")
+          ? manifest.shipment_sku_map[shipmentId] : undefined;
+        if (manifestSkus === undefined || manifestSkus === null)
+          return { ok: false, title: "처리하지 않았어요 - 최신 수집 회차에 이 shipment 가 없어요",
+            message: "최신 수집 완전성 기록에 이 shipment 자체가 없어서 원본이 전부 확인됐는지 알 수 없어요 - 재수집 후 다시 확인해 주세요." };
+        // 2026-09-18 [PM 코드 리뷰 지적] manifest 는 별도 표에서 그대로 읽어온 값이라 형식을 보장할
+        // 수 없다 - shipment_sku_map[shipmentId] 가 배열이 아니거나(문자열/객체 등 오염된 데이터)
+        // qty_review_keys 가 배열이 아니면 .map/.filter 가 그대로 throw 해서 정체불명의 예외로
+        // 화면이 깨진다 - 배열이 아니면 명시적으로 "형식 이상"을 안내하고 fail-closed 로 막는다.
+        if (!Array.isArray(manifestSkus))
+          return { ok: false, title: "처리하지 않았어요 - 수집 완전성 정보 형식이 이상해요",
+            message: `manifest.shipment_sku_map[${shipmentId}] 이 배열이 아니에요 - 전환하지 않았어요.` };
+        const qtyReviewKeysRaw = manifest.qty_review_keys;
+        if (qtyReviewKeysRaw !== undefined && qtyReviewKeysRaw !== null && !Array.isArray(qtyReviewKeysRaw))
+          return { ok: false, title: "처리하지 않았어요 - 수집 완전성 정보 형식이 이상해요",
+            message: "manifest.qty_review_keys 가 배열이 아니에요 - 전환하지 않았어요." };
+        const manifestVidSet = new Set(manifestSkus.map(String));
+        const mirrorVidSetForManifest = new Set(mirrorRows.map(r => String(r.vendor_item_id)));
+        const missingFromMirrorVsManifest = [...manifestVidSet].filter(v => !mirrorVidSetForManifest.has(v));
+        const extraInMirrorVsManifest = [...mirrorVidSetForManifest].filter(v => !manifestVidSet.has(v));
+        if (missingFromMirrorVsManifest.length || extraInMirrorVsManifest.length) {
+          return { ok: false, title: "처리하지 않았어요 - 최신 수집 회차와 SKU 구성이 달라요",
+            message: `최신 수집이 실제로 본 SKU 와 지금 WING 원본 행이 안 맞아요`
+              + (missingFromMirrorVsManifest.length ? ` - 빠짐(원본엔 있었는데 행이 없거나 옛 행만 남음): ${missingFromMirrorVsManifest.join(", ")}` : "")
+              + (extraInMirrorVsManifest.length ? ` - 원본 행에만 있음(최신 회차 조회 대상 밖): ${extraInMirrorVsManifest.join(", ")}` : "")
+              + " - 전환하지 않았어요." };
+        }
+        const badMirrorChecked = mirrorRows.filter(r => Number.isNaN(parseTzAwareMs(r.source_checked_at)));
+        if (badMirrorChecked.length)
+          return { ok: false, title: "처리하지 않았어요 - WING 원본 행의 시각 형식이 이상해요",
+            message: `vendor_item_id ${badMirrorChecked.map(r => r.vendor_item_id).join(", ")} 의 source_checked_at 형식 이상 또는 타임존 없음 - 전환하지 않았어요.` };
+        const staleVsManifest = mirrorRows.filter(r => parseTzAwareMs(r.source_checked_at) !== manifestCollectedAtMs);
+        if (staleVsManifest.length)
+          return { ok: false, title: "처리하지 않았어요 - 일부 행이 최신 수집 회차 것이 아니에요",
+            message: `vendor_item_id ${staleVsManifest.map(r => r.vendor_item_id).join(", ")} 의 source_checked_at 이 최신 수집 회차(manifest.collected_at)와 정확히 안 같아요 - 전환하지 않았어요.` };
+        // 방어적 이중 확인(백엔드 qty_review_keys 검사와 같은 원칙) - 위 SKU 집합 비교가 이미 이
+        // 경우를 잡아내지만, 혹시 모를 계산 실수를 대비해 이 shipmentId 가 최신 회차의 검토 격리
+        // 목록에 하나라도 있으면 한 번 더 명시적으로 막는다.
+        const qtyReviewForShipment = (qtyReviewKeysRaw || []).filter(k => Array.isArray(k) && String(k[0]) === String(shipmentId));
+        if (qtyReviewForShipment.length)
+          return { ok: false, title: "처리하지 않았어요 - 최신 수집에서 이 shipment 의 SKU 일부가 검토 격리됐어요",
+            message: "완전성을 확인할 수 없어요(방어적 이중 확인) - 전환하지 않았어요." };
+
         // 2026-09-18 [Codex 재재검토 지적 - 배포 차단 허점] Math.max() 로 "가장 최근 행 하나"만
         // 보면, 품목 하나는 방금 수집돼 신선하고 나머지는 36시간 넘게 방치된 "혼합 shipment"도
         // 통과해버린다(가장 신선한 값이 전체를 대표한 것처럼 오판). *** 모든 행이 각각 유효하고
