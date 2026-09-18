@@ -8480,6 +8480,11 @@ async function cancelPO(id) {
 // 프론트가 다르게 알면, 백엔드는 이미 못 믿는다고 본 원본을 프론트는 아직 믿을 만하다고 잘못 보여줄 수 있음).
 const WING_DIRECT_DEAD_STATUSES = new Set(["CANCELLED", "FAILED"]);
 const WING_DIRECT_MAX_SOURCE_AGE_MS = 36 * 60 * 60 * 1000;
+// 2026-09-18 [PM 지적 - PostgREST 기본 1,000행 캡] promoteWingDirectDraft() 의 in("product_id",...)
+// 조회는(활성 발주서 겹침·완료 매입 이력 둘 다) limit 을 안 주면 PostgREST 기본 상한에서 조용히
+// 잘릴 수 있다 - 상한을 우리가 아는 값으로 명시 고정하고, 정확히 그 값만큼 돌아오면(캡에 걸렸을
+// 가능성) "겹침/이력 없음"으로 조용히 통과시키지 않고 fail-closed 로 막는다(아래 두 조회 모두).
+const WING_PROMOTE_HISTORY_QUERY_CAP = 1000;
 
 // 2026-09-18 [Codex 교차검증 지적 - 배포 차단, WING 직접입고 검토 초안 승인 경로 신설]
 // wing_direct_review 초안은 approval_line=[] 라서 기존 decidePO() 결재 흐름(status==='progress'만
@@ -8673,21 +8678,89 @@ async function promoteWingDirectDraft(id) {
         // 2026-09-18 [Codex 재교차검증 지적 - fail-open 버그] error 를 버리고 data 만 보면, 조회가
         // 실패해도 "겹치는 게 없다"고 잘못 보여주고 그대로 전환까지 됐다 - 조회 실패는 반드시 막는다.
         const { data: otherItems, error: oe } = await sb.from("purchase_order_items")
-          .select("po_id,product_id,purchase_orders(po_no,status)").in("product_id", pids);
+          .select("po_id,product_id,purchase_orders(po_no,status)").in("product_id", pids)
+          .limit(WING_PROMOTE_HISTORY_QUERY_CAP);
         if (oe) return { ok: false, message: `다른 발주서와 겹치는지 확인하지 못했어요: ${oe.message || oe.code} - 확인 전엔 전환하지 않아요.` };
+        // 2026-09-18 [PM 추가 지적 - 같은 캡 위험이 이 조회에도 있음] 정확히 캡만큼 돌아오면
+        // "겹치는 게 없다"고 오판할 위험이 있다(진짜 겹침 행이 캡 뒤에 밀려 안 보였을 수 있음) -
+        // 사람이 보는 승인 화면에서 중복을 놓치는 건 위험이 커서, "이력 없음"과 똑같이 fail-closed.
+        if ((otherItems || []).length >= WING_PROMOTE_HISTORY_QUERY_CAP)
+          return { ok: false, title: "처리하지 않았어요 - 다른 발주서 겹침 확인이 너무 많아 전부 못 봤어요",
+            message: `조회 결과가 ${WING_PROMOTE_HISTORY_QUERY_CAP}행에 딱 걸려 잘렸을 수 있어요(더 있는데 못 봤을 위험) - "겹침 없음"으로 조용히 넘기지 않고 막았어요.` };
         const others = (otherItems || []).filter(it => it.po_id !== id
           && it.purchase_orders && !["rejected", "canceled"].includes(it.purchase_orders.status));
         if (others.length) {
           overlapFound = true;
-          overlapNote = `⚠️ 같은 상품에 다른 활성 발주서 있음: ${[...new Set(others.map(it => it.purchase_orders.po_no))].join(", ")} - 중복 매입인지 직접 확인 후 진행하세요.`;
+          // 2026-09-18 [PM 지적 - XSS] ErpUi.confirmModal() 은 notes 를 이스케이프 없이 그대로
+          // <li>${n}</li> 로 삽입한다(js/erp_ui.js) - po_no 는 DB 값이라 HTML 태그가 들어있으면
+          // 승인 권한자 브라우저에서 그대로 실행될 위험이 있다. 위 "품목" 행이 이미 prodName 에
+          // esc() 를 쓰는 것과 같은 원칙으로 동적 텍스트는 전부 esc() 를 거친다.
+          overlapNote = `⚠️ 같은 상품에 다른 활성 발주서 있음: ${[...new Set(others.map(it => esc(it.purchase_orders.po_no)))].join(", ")} - 중복 매입인지 직접 확인 후 진행하세요.`;
         }
       }
-      return { ok: true, overlapNote, overlapFound };
+
+      // 2026-09-18 [PM 요청 - 완료매입 이력 표시, 14일 창 밖 놓침 방지] 위 활성 발주서 겹침 확인과
+      // 백엔드 evaluate_shipment() 의 COMPLETED_PURCHASE_OVERLAP 은 각각 "아직 안 끝난 발주"만
+      // 보거나 "가까운 날짜 창(PO_RECENCY_WINDOW_DAYS=14일)" 안에서만 완료 PO·매입을 겹침으로
+      // 본다 - 실측(휴지통 shipment 1103886464850071552, 720EA, 과거 완료 PO 리버스-발주-2026-001
+      // 720EA 2026-08-27 매입, 이번 기대일 2026-09-23 라 28일 차이로 그 14일 창 밖)으로 확인된
+      // 바로 그 구멍이 이 승인 화면까지 그대로 뚫려 있었다. *** 자동으로 막지는 않는다 - 정상적인
+      // 반복 발주(같은 상품을 주기적으로 다시 사입하는 경우)까지 막으면 안 되기 때문 ***. 대신
+      // 날짜 창 제한 없이 같은 상품의 완료 PO·매입 이력이 하나라도 있으면 전부 확인창에 그대로
+      // 보여줘서, 자동 차단 여부와 무관하게 사람이 직접 보고 판단하게 한다(같은 상품·수량이 우연히
+      // 겹치는 건지, 그냥 반복 발주인지는 이 화면이 판단하지 않음 - 위 활성 발주서 겹침과 같은
+      // 원칙으로 "사유 필수" 확인만 강제). *** 조회 자체가 실패하면(위와 같은 원칙) 승인 진행을
+      // 막는다(fail-closed) - "이력 없음"과 "확인 못 함"을 절대 같게 취급하지 않는다 ***.
+      let completedHistoryNote = "같은 상품의 과거 완료 매입 이력을 확인했고, 없어요.";
+      let completedHistoryFound = false;
+      if (pids.length) {
+        // 2026-09-18 [PM 교차검토 지적 1 - 라벨 오류] purchase_orders.due_date 는 "완료일"이 아니라
+        // "납품희망일"이다(발주 시점에 정해지는 희망 납기, 실제 완료 여부와는 별개 값) - 아래 표시
+        // 문구에서 "완료일"이라고 부르면 승인 권한자가 실제 완료 시점으로 오인해 판단을 그르칠 수
+        // 있다. "완료 여부"는 purchase_orders.status='done' 으로만 판단하고, due_date 는 그
+        // 날짜값 자체가 뜻하는 그대로 "납품희망일"로 표기한다(값을 바꾸지 않음, 라벨만 정정).
+        //
+        // 2026-09-18 [PM 교차검토 지적 2 - 다품목 혼동 방지] 이 초안이 다품목이면(product_id 여러
+        // 개) 이력을 상품 구분 없이 한 줄로 늘어놓으면 어느 이력이 어느 상품 것인지 승인 권한자가
+        // 헷갈릴 수 있다 - 각 항목 앞에 상품명(prodName, 위 "품목" 행과 같은 표시 방식)을 붙인다.
+        //
+        // 2026-09-18 [PM 교차검토 지적 3 - PostgREST 기본 1,000행 캡] .in("product_id", pids) 는
+        // limit 을 안 주면 PostgREST 기본 상한(보통 1,000행)에서 조용히 잘릴 수 있다 - 상품이
+        // 여러 개거나 이력이 많으면 정말 "이력 없음"인지 "1,000행 캡에 밀려 못 본 것"인지 구분이
+        // 안 된다. limit() 을 명시해서 상한을 우리가 아는 값으로 고정하고, 정확히 그 값만큼
+        // 돌아오면(캡에 걸렸을 가능성) "이력 없음"으로 조용히 통과시키지 않고 fail-closed 로 막는다
+        // (모르면 막는다 - 이 화면의 다른 모든 검사와 같은 원칙. 위 활성 발주서 겹침 조회도 같은
+        // 상수·같은 원칙으로 막음 - WING_PROMOTE_HISTORY_QUERY_CAP 정의부 참고).
+        const { data: doneItems, error: dpe } = await sb.from("purchase_order_items")
+          .select("qty,received_qty,product_id,purchase_orders(po_no,status,due_date)")
+          .in("product_id", pids).limit(WING_PROMOTE_HISTORY_QUERY_CAP);
+        if (dpe) return { ok: false, message: `과거 완료 발주 이력을 확인하지 못했어요: ${dpe.message || dpe.code} - 확인 전엔 전환하지 않아요.` };
+        const { data: purchaseRows, error: ppe } = await sb.from("purchases")
+          .select("date,qty,product_id").in("product_id", pids).limit(WING_PROMOTE_HISTORY_QUERY_CAP);
+        if (ppe) return { ok: false, message: `매입 원장을 확인하지 못했어요: ${ppe.message || ppe.code} - 확인 전엔 전환하지 않아요.` };
+        if ((doneItems || []).length >= WING_PROMOTE_HISTORY_QUERY_CAP || (purchaseRows || []).length >= WING_PROMOTE_HISTORY_QUERY_CAP)
+          return { ok: false, title: "처리하지 않았어요 - 과거 이력이 너무 많아 전부 확인 못 했어요",
+            message: `조회 결과가 ${WING_PROMOTE_HISTORY_QUERY_CAP}행에 딱 걸려 잘렸을 수 있어요(더 있는데 못 봤을 위험) - "이력 없음"으로 조용히 넘기지 않고 막았어요. 상품별로 나눠 직접 확인해 주세요.` };
+        // 2026-09-18 [PM 지적 - XSS] 위 overlapNote 와 같은 이유로 prodName/po_no/납품희망일/매입
+        // 날짜 전부 esc() 를 거친다 - 전부 DB 값(상품명·PO 번호·날짜 문자열)이라 이스케이프 없이
+        // notes 에 그대로 들어가면 confirmModal() 이 raw HTML 로 삽입해 버린다(js/erp_ui.js).
+        const doneParts = (doneItems || [])
+          .filter(it => it.purchase_orders && it.purchase_orders.status === "done")
+          .map(it => `${esc(prodName(it.product_id))} - PO ${esc(it.purchase_orders.po_no)}(납품희망일 ${esc(it.purchase_orders.due_date || "미상")}, ${fmt(it.qty)}개${it.received_qty != null ? `, 입고 ${fmt(it.received_qty)}` : ""})`);
+        const purchaseParts = (purchaseRows || []).map(p => `${esc(prodName(p.product_id))} - 매입 ${esc(p.date || "날짜 미상")} ${fmt(p.qty)}개`);
+        const allParts = [...doneParts, ...purchaseParts];
+        if (allParts.length) {
+          completedHistoryFound = true;
+          completedHistoryNote = `📋 같은 상품의 과거 완료 발주·매입 이력(날짜 무관, 자동 중복 차단 대상 아닐 수 있음): ${allParts.join(" · ")} - 이번 신청과 같은 건인지 직접 확인 후 진행하세요.`;
+        }
+      }
+
+      return { ok: true, overlapNote, overlapFound, completedHistoryNote, completedHistoryFound };
     },
     confirm: pre => ({
       title: "WING 직접입고 검토 초안 → 정식 발주 전환",
       actionLabel: isJeongyeol ? "전결 승인(공급처 발주·지급예정 등록은 다음 단계에서 따로)" : "결재선 지정하고 전환",
-      danger: !!pre?.overlapFound,
+      danger: !!pre?.overlapFound || !!pre?.completedHistoryFound,
       rows: [
         ["발주번호", `<b>${esc(fresh?.po_no || "")}</b>`],
         ["거래처", esc(fresh?.supplier || "-")],
@@ -8703,10 +8776,11 @@ async function promoteWingDirectDraft(id) {
           ? "전결이라도 '발주 완료'가 아니라 '승인 완료'로만 바뀌어요 - 실제 거래처 발주·지급예정 등록은 전환 뒤 [거래처에 발주 완료] 버튼(markOrdered)에서 사람이 직접 눌러야 해요(공급처 전송·지급예정 없이 자동으로 '발주 완료'로 표시하면 실제로 안 한 일이 된 것처럼 보여요)."
           : "전환 뒤에는 일반 발주서와 완전히 같은 절차(결재 → 거래처에 발주 완료 → 입고 처리)를 그대로 따라요.",
         pre?.overlapNote,
+        pre?.completedHistoryNote,
       ],
-      reason: pre?.overlapFound
-        ? { label: "겹침 확인 사유 (필수)", required: true, minLength: 5,
-            placeholder: "예) PO#016 과 상품·시점 겹치지만 확인 결과 수량이 달라 별개 매입임" }
+      reason: (pre?.overlapFound || pre?.completedHistoryFound)
+        ? { label: "겹침/이력 확인 사유 (필수)", required: true, minLength: 5,
+            placeholder: "예) 과거 완료 매입과 상품·수량은 같지만 시점이 달라 별개 주문으로 확인함" }
         : { label: "메모(선택)", required: false },
     }),
     exec: async reason => {
@@ -8724,7 +8798,7 @@ async function promoteWingDirectDraft(id) {
         // 'ordered'는 안 감 - markOrdered() 만의 몫이라 여기서도 똑같이 지켜짐).
         status: isJeongyeol ? "approved" : "progress",
         ordered_at: null,
-        memo: reason ? `${fresh?.memo || ""}\n[전환 시 겹침 확인 사유] ${reason}` : fresh?.memo,
+        memo: reason ? `${fresh?.memo || ""}\n[전환 시 겹침/이력 확인 사유] ${reason}` : fresh?.memo,
       };
       const { data, error } = await sb.from("purchase_orders").update(patch)
         .eq("id", id).eq("status", "wing_direct_review").select("id");

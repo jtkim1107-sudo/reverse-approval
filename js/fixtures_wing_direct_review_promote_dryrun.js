@@ -115,6 +115,10 @@ function buildContext() {
     var __test = {
       setMe: function (v) { me = v; },
       setUsers: function (v) { USERS = v; },
+      // 2026-09-18 [PM 교차검토 지적 - 다품목 상품명 표시 검증] prodName() 이 erpProducts 에서
+      // 이름을 찾으므로(app.js:2645 부근), 이력 문구에 진짜 상품명이 붙는지 보려면 테스트가 직접
+      // 채워 넣을 수 있어야 함 - 기본값(빈 배열)이면 prodName() 은 항상 "?" 를 돌려줌(안전, throw 안 함).
+      setProducts: function (v) { erpProducts = v; },
       getPromote: function () { return promoteWingDirectDraft; },
       getReject: function () { return rejectWingDirectDraft; },
       getPOStatus: function () { return PO_STATUS; },
@@ -140,7 +144,10 @@ function armConfirmSignal(ctx) {
   let resolveReady;
   const ready = new Promise(r => { resolveReady = r; });
   const modalRoot = ctx.document.getElementById("modal-root");
-  modalRoot._onInnerHTML = html => { if (html.includes("erp-confirm-title")) resolveReady(); };
+  // 2026-09-18 [PM 교차검토 지적 - 라벨·다품목 표시 검증] 렌더된 실제 확인창 HTML 을 잡아둔다
+  // (ready.html) - "완료일"이 아니라 "납품희망일"로 뜨는지, 다품목이면 상품명이 이력마다 붙는지를
+  // 동작(막힘/통과)만이 아니라 실제 표시 문구로도 확인하기 위함(기존엔 동작만 검증했음).
+  modalRoot._onInnerHTML = html => { ready.html = html; if (html.includes("erp-confirm-title")) resolveReady(); };
   return ready;
 }
 
@@ -166,7 +173,12 @@ const DEFAULT_MANIFEST_ROW = { collected_at: FRESH_CHECKED_AT, shipment_sku_map:
 function scriptFor({ poRow = BASE_PO, items = BASE_ITEMS, itemsError = null,
   mirrorRows = [MATCHING_MIRROR_ROW], mirrorError = null,
   manifestRows = [DEFAULT_MANIFEST_ROW], manifestError = null,
-  overlapRows = [], overlapError = null, updateOk = true, updateCalls = [] } = {}) {
+  overlapRows = [], overlapError = null,
+  // 2026-09-18 [PM 요청 - 완료매입 이력 표시] promoteWingDirectDraft() 가 이제 purchase_order_items
+  // 를 "in" 필터로 *두 번* 다른 목적으로 조회한다(기존: 활성 발주서 겹침 / 신규: 완료 PO 이력) -
+  // 둘 다 같은 테이블·같은 in() 호출이라 select 문자열(due_date 포함 여부)로 구분해야 한다.
+  doneItems = [], doneItemsError = null, purchaseRows = [], purchasesError = null,
+  updateOk = true, updateCalls = [] } = {}) {
   return (table, calls) => {
     if (table === "purchase_orders" && calls.some(c => c[0] === "update")) {
       updateCalls.push(calls.find(c => c[0] === "update")[1]);
@@ -174,8 +186,15 @@ function scriptFor({ poRow = BASE_PO, items = BASE_ITEMS, itemsError = null,
       return { data: [{ id: poRow.id }], error: null };
     }
     if (table === "purchase_orders") return { data: poRow, error: null };
-    if (table === "purchase_order_items" && calls.some(c => c[0] === "in")) return { data: overlapRows, error: overlapError };
-    if (table === "purchase_order_items") return { data: items, error: itemsError };
+    if (table === "purchase_order_items") {
+      const selectCall = calls.find(c => c[0] === "select");
+      const selectStr = selectCall ? String(selectCall[1] || "") : "";
+      const isInQuery = calls.some(c => c[0] === "in");
+      if (isInQuery && selectStr.includes("due_date")) return { data: doneItems, error: doneItemsError };
+      if (isInQuery) return { data: overlapRows, error: overlapError };
+      return { data: items, error: itemsError };
+    }
+    if (table === "purchases") return { data: purchaseRows, error: purchasesError };
     if (table === "wing_direct_inbounds") return { data: mirrorRows, error: mirrorError };
     if (table === "wing_direct_inbound_collection_manifest") return { data: manifestRows, error: manifestError };
     throw new Error(`시나리오에 없는 테이블 조회: ${table}`);
@@ -259,6 +278,12 @@ async function main() {
     // 방어적 이중 확인 - SKU 집합 비교는 우연히 통과했다고 가정해도(가상 시나리오) qty_review_keys 가 별도로 막음.
     ["[13i] [방어적 이중 확인] SKU 집합이 manifest 와 일치해도 qty_review_keys 에 이 shipment 가 있으면 막힘",
       { manifestRows: [{ collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "ship-1": ["vid-a"] }, qty_review_keys: [["ship-1", "vid-a"]] }] }],
+
+    // ── [14] [PM 요청] 완료매입 이력 표시(14일 창 밖 놓침 방지) - 조회 실패는 fail-closed ─────────
+    ["[14a] 과거 완료 발주 이력 조회 자체가 실패 -> 막힘(조용히 통과 안 함)",
+      { doneItemsError: { message: "network down" } }],
+    ["[14b] 매입 원장 조회 자체가 실패 -> 막힘(조용히 통과 안 함)",
+      { purchasesError: { message: "network down" } }],
   ];
   for (const [name, overrides] of blockCases) {
     const ctx = buildContext();
@@ -430,6 +455,257 @@ async function main() {
     ctx.ErpUi._answer(true);
     const res = await p;
     check("[13j] [핵심] 문자열 표기만 다르고 실제로는 같은 순간 -> 오탐 없이 DONE 까지 도달", res.status, "DONE");
+  }
+
+  // [14c] 완료 발주·매입 이력이 둘 다 없음(정상적인 신규 상품) -> 불필요하게 안 막힘, 사유 없이도 DONE
+  // (PM 지시: "정상적인 다른 주문은 불필요하게 막지 않으며" - 이 케이스가 그 요구를 직접 검증)
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    ctx.__sbScript = scriptFor({ doneItems: [], purchaseRows: [], updateCalls });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    ctx.ErpUi._answer(true);   // 사유란이 필수가 아니므로 빈 채로 확인해도 통과해야 함
+    const res = await p;
+    check("[14c] [핵심] 완료 이력 없음 -> 불필요하게 안 막힘, 사유 없이도 DONE", res.status, "DONE");
+    check("[14c] 메모에 '확인 사유' 텍스트가 안 남음(강제된 적 없으므로)",
+         (updateCalls[0]?.memo || "").includes("확인 사유"), false);
+  }
+
+  // [14d] [PM 요청 - 핵심 재현] 휴지통 shipment 1103886464850071552 실례 그대로: 신규 검토 초안
+  // 720EA·₩3,960,000 대 과거 완료 PO 리버스-발주-2026-001(720EA, 2026-08-26 완료) + 매입원장
+  // (2026-08-27, 720EA) - 기대일과 28일 차이라 백엔드 COMPLETED_PURCHASE_OVERLAP 의 14일 창 밖
+  // (evaluate_shipment 단계에서 이미 못 잡음) - 이 승인 화면이 날짜 창과 무관하게 표시하고 사유를
+  // 강제하는지 확인한다.
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    const realDoneItems = [{
+      qty: 720, received_qty: 720, product_id: "prod-a",
+      purchase_orders: { po_no: "리버스-발주-2026-001", status: "done", due_date: "2026-08-26" },
+    }];
+    const realPurchaseRows = [{ date: "2026-08-27", qty: 720, product_id: "prod-a" }];
+    ctx.__sbScript = scriptFor({ doneItems: realDoneItems, purchaseRows: realPurchaseRows, updateCalls });
+
+    // 사유 없이 확인 -> 아직 처리 안 됨(필수 검증에 막힘, run() 안 끝남)
+    let ready = armConfirmSignal(ctx);
+    let p = ctx.__test.getPromote()("po-1");
+    await ready;
+    ctx.document.getElementById("erp-confirm-reason").value = "";
+    ctx.ErpUi._answer(true);
+    await Promise.resolve(); await Promise.resolve();
+    check("[14d-a] [핵심] 완료 PO·매입 이력 있음(28일 차이, 14일 창 밖) + 사유 없음 -> 아직 처리 안 됨(update 없음)",
+         updateCalls.length, 0);
+
+    // 사유를 적으면 통과 + 메모에 남음
+    ctx.document.getElementById("erp-confirm-reason").value = "완료 매입과 상품은 같지만 8월분 재고 소진 확인 후 재입고로 승인함";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[14d-b] [핵심] 사유를 적으면 통과(자동 차단 아님 - 사람 판단으로 진행 가능)", res.status, "DONE");
+    check("[14d-b] 메모에 완료 매입 확인 사유가 남음",
+         (updateCalls[0]?.memo || "").includes("8월분 재고 소진 확인 후 재입고로 승인함"), true);
+    check("[14d-b] 메모 라벨이 '겹침/이력 확인 사유'로 남음(어떤 검사가 걸렸는지 감사기록에 구분됨)",
+         (updateCalls[0]?.memo || "").includes("[전환 시 겹침/이력 확인 사유]"), true);
+  }
+
+  // [14e] 완료 PO 는 없고 매입 원장에만 이력이 있는 경우도 똑같이 표시·사유 강제(두 소스 중 하나만
+  // 있어도 놓치지 않아야 함 - 백엔드 _check_completed_purchase_overlap 이 두 소스를 독립적으로 보는
+  // 것과 같은 원칙, 프론트는 자동 판단 없이 둘 다 그대로 보여줌).
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    ctx.__sbScript = scriptFor({
+      doneItems: [], purchaseRows: [{ date: "2026-07-01", qty: 200, product_id: "prod-a" }], updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    ctx.document.getElementById("erp-confirm-reason").value = "";
+    ctx.ErpUi._answer(true);
+    await Promise.resolve(); await Promise.resolve();
+    check("[14e] 매입 원장에만 이력 있어도 사유 없이는 아직 처리 안 됨", updateCalls.length, 0);
+    ctx.document.getElementById("erp-confirm-reason").value = "7월 매입과 무관한 별개 재입고로 확인함";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[14e] 사유 적으면 통과", res.status, "DONE");
+  }
+
+  // [15a] [PM 교차검토 지적 1] due_date 라벨이 "완료일"이 아니라 "납품희망일"로 실제 확인창에 뜨는지
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    ctx.__test.setProducts([{ id: "prod-a", name: "모노플랫_우든 원터치 휴지통" }]);
+    const updateCalls = [];
+    ctx.__sbScript = scriptFor({
+      doneItems: [{ qty: 720, received_qty: 720, product_id: "prod-a",
+                   purchase_orders: { po_no: "리버스-발주-2026-001", status: "done", due_date: "2026-08-26" } }],
+      purchaseRows: [], updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    check("[15a] [핵심] 확인창에 '납품희망일'로 표기됨(완료일 아님)", (ready.html || "").includes("납품희망일"), true);
+    check("[15a] [핵심] '완료일'이라는 잘못된 라벨은 안 뜸", (ready.html || "").includes("완료일"), false);
+    ctx.document.getElementById("erp-confirm-reason").value = "라벨 확인용";
+    ctx.ErpUi._answer(true);
+    await p;
+  }
+
+  // [15b] [PM 교차검토 지적 2] 다품목 초안 - 상품 A 만 완료 이력 있고 B 는 없음 -> 이력 문구에
+  // 상품명이 붙어서 A 것인지 명확히 구분돼야 함(어느 상품 이력인지 안 헷갈려야 함)
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    ctx.__test.setProducts([{ id: "prod-a", name: "우든 원터치 휴지통" }, { id: "prod-b", name: "실리콘 도마" }]);
+    const updateCalls = [];
+    const twoItems = [{ po_id: "po-1", product_id: "prod-a", vendor_item_id: "vid-a", qty: 720, received_qty: 0, wing_observed_received_qty: 0 },
+                      { po_id: "po-1", product_id: "prod-b", vendor_item_id: "vid-b", qty: 30, received_qty: 0, wing_observed_received_qty: 0 }];
+    const twoMirrorRows = [{ vendor_item_id: "vid-a", requested_qty: 720, received_qty: 0, wing_status: "STOWING", source_checked_at: FRESH_CHECKED_AT },
+                          { vendor_item_id: "vid-b", requested_qty: 30, received_qty: 0, wing_status: "STOWING", source_checked_at: FRESH_CHECKED_AT }];
+    const twoSkuManifest = [{ collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "ship-1": ["vid-a", "vid-b"] }, qty_review_keys: [] }];
+    ctx.__sbScript = scriptFor({
+      items: twoItems, mirrorRows: twoMirrorRows, manifestRows: twoSkuManifest,
+      doneItems: [{ qty: 720, received_qty: 720, product_id: "prod-a",
+                   purchase_orders: { po_no: "리버스-발주-2026-001", status: "done", due_date: "2026-08-26" } }],
+      purchaseRows: [], updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    check("[15b] [핵심] 이력이 있는 상품(우든 원터치 휴지통) 이름이 확인창에 붙어서 나옴",
+         (ready.html || "").includes("우든 원터치 휴지통 - PO"), true);
+    check("[15b] 이력 없는 상품(실리콘 도마)은 이력 문구에 안 섞여 나옴(혼동 방지)",
+         (ready.html || "").includes("실리콘 도마 - PO"), false);
+    ctx.document.getElementById("erp-confirm-reason").value = "다품목 표시 확인용";
+    ctx.ErpUi._answer(true);
+    await p;
+  }
+
+  // [15f] [PM 추가 지적 - 같은 캡 위험이 기존 활성 발주서 겹침 조회에도 있음] otherItems 조회도
+  // in("product_id", pids) 라 완료매입 이력과 같은 1,000행 캡 위험을 그대로 공유한다 - 사람이 보는
+  // 승인 화면에서 "겹침 없음"으로 잘못 보여주면 중복 승인 위험이 커서 완료매입 이력과 같은 원칙으로
+  // fail-closed 로 막아야 한다.
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true, rank: 5 });
+    ctx.__test.setUsers([{ id: "me-1", rank: 5, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    const cappedOverlapRows = Array.from({ length: 1000 }, (_, i) => ({
+      po_id: `other-po-${i}`, product_id: "prod-a",
+      purchase_orders: { po_no: `PO-${i}`, status: "canceled" },   // 실제 활성이 아니어도 캡 자체를 봄
+    }));
+    ctx.__sbScript = scriptFor({ overlapRows: cappedOverlapRows, updateCalls });
+    const res = await ctx.__test.getPromote()("po-1");
+    check("[15f] [핵심] 활성 발주서 겹침 조회가 정확히 1,000행(캡 의심) -> fail-closed 로 막힘",
+         [res.status !== "DONE", updateCalls.length], [true, 0]);
+  }
+
+  // [16a]/[16b] [PM 지적 - XSS] ErpUi.confirmModal() 은 notes 를 이스케이프 없이 그대로 <li>${n}</li>
+  // 로 삽입한다(js/erp_ui.js:171) - overlapNote/completedHistoryNote 에 들어가는 po_no·상품명·
+  // 납품희망일·매입날짜는 전부 DB 값이라, HTML 태그가 섞여 있으면 승인 권한자 브라우저에서 그대로
+  // 실행될 위험이 있었다. esc() 로 감쌌는지 실제 렌더된 HTML 문자열로 직접 확인한다(동작만이 아니라
+  // 표시 문구 자체를 검증 - [15a]/[15b] 와 같은 방식).
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true, rank: 5 });
+    ctx.__test.setUsers([{ id: "me-1", rank: 5, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    const XSS_PO_NO = '<img src=x onerror=alert(1)>';
+    ctx.__sbScript = scriptFor({
+      overlapRows: [{ po_id: "other-po-xss", product_id: "prod-a",
+                     purchase_orders: { po_no: XSS_PO_NO, status: "progress" } }],
+      updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    check("[16a] [핵심] 활성 발주서 겹침 po_no 의 HTML 태그가 이스케이프됨(원본 그대로 안 들어감)",
+         (ready.html || "").includes(XSS_PO_NO), false);
+    check("[16a] [핵심] 이스케이프된 형태(&lt;img)로는 들어감(내용 자체는 여전히 보임)",
+         (ready.html || "").includes("&lt;img"), true);
+    ctx.document.getElementById("erp-confirm-reason").value = "XSS 이스케이프 확인용";
+    ctx.ErpUi._answer(true);
+    await p;
+  }
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true, rank: 5 });
+    ctx.__test.setUsers([{ id: "me-1", rank: 5, name: "대표", role: "대표" }]);
+    const XSS_NAME = '<script>alert(1)</script>';
+    const XSS_PO_NO = '<b>PO-XSS</b>';
+    const XSS_DUE_DATE = '<i>2026-08-26</i>';
+    ctx.__test.setProducts([{ id: "prod-a", name: XSS_NAME }]);
+    const updateCalls = [];
+    ctx.__sbScript = scriptFor({
+      doneItems: [{ qty: 1, received_qty: 1, product_id: "prod-a",
+                   purchase_orders: { po_no: XSS_PO_NO, status: "done", due_date: XSS_DUE_DATE } }],
+      purchaseRows: [], updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    check("[16b] [핵심] 완료매입 이력의 상품명 HTML 태그가 이스케이프됨", (ready.html || "").includes(XSS_NAME), false);
+    check("[16b] [핵심] 완료매입 이력의 po_no HTML 태그가 이스케이프됨", (ready.html || "").includes(XSS_PO_NO), false);
+    check("[16b] [핵심] 완료매입 이력의 납품희망일 HTML 태그가 이스케이프됨", (ready.html || "").includes(XSS_DUE_DATE), false);
+    check("[16b] 이스케이프된 형태(&lt;script)로는 들어감(내용 자체는 여전히 보임)",
+         (ready.html || "").includes("&lt;script"), true);
+    ctx.document.getElementById("erp-confirm-reason").value = "XSS 이스케이프 확인용";
+    ctx.ErpUi._answer(true);
+    await p;
+  }
+
+  // [15c]/[15d] [PM 교차검토 지적 3] PostgREST 기본 1,000행 캡에 걸릴 수 있는 상황 -> "이력 없음"
+  // 으로 조용히 통과시키지 않고 fail-closed 로 막아야 함
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true, rank: 5 });
+    ctx.__test.setUsers([{ id: "me-1", rank: 5, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    const cappedDoneItems = Array.from({ length: 1000 }, (_, i) => ({
+      qty: 1, received_qty: 1, product_id: "prod-a",
+      purchase_orders: { po_no: `PO-${i}`, status: "progress", due_date: "2026-01-01" },   // done 아님(집계 안 됨) - 그래도 캡 자체를 봄
+    }));
+    ctx.__sbScript = scriptFor({ doneItems: cappedDoneItems, purchaseRows: [], updateCalls });
+    const res = await ctx.__test.getPromote()("po-1");
+    check("[15c] [핵심] 완료 발주 조회가 정확히 1,000행(캡 의심) -> fail-closed 로 막힘",
+         [res.status !== "DONE", updateCalls.length], [true, 0]);
+  }
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true, rank: 5 });
+    ctx.__test.setUsers([{ id: "me-1", rank: 5, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    const cappedPurchaseRows = Array.from({ length: 1000 }, (_, i) => ({ date: "2026-01-01", qty: 1, product_id: "prod-a" }));
+    ctx.__sbScript = scriptFor({ doneItems: [], purchaseRows: cappedPurchaseRows, updateCalls });
+    const res = await ctx.__test.getPromote()("po-1");
+    check("[15d] [핵심] 매입 원장 조회가 정확히 1,000행(캡 의심) -> fail-closed 로 막힘",
+         [res.status !== "DONE", updateCalls.length], [true, 0]);
+  }
+
+  // [15e] 캡 근처지만 캡은 아닌 정상 범위(999행) -> 오탐 없이 정상 통과(과다 차단 방지 대조군)
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    const near999 = Array.from({ length: 999 }, (_, i) => ({ date: "2026-01-01", qty: 1, product_id: "prod-a" }));
+    ctx.__sbScript = scriptFor({ doneItems: [], purchaseRows: near999, updateCalls });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    ctx.document.getElementById("erp-confirm-reason").value = "999건 정상 범위 확인용";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[15e] 999행(캡 아님) -> 오탐 없이 정상 통과(캡 근처에서 과다 차단 안 함)", res.status, "DONE");
   }
 
   console.log("\n" + "=".repeat(70));
