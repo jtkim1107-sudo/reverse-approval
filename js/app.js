@@ -4578,8 +4578,19 @@ async function loadInvWingDirectSection(productId) {
     const statusBadge = override
       ? `<br><span class="chip ${overrideConflict ? "waiting" : "approved"}" style="font-size:10px;margin-top:2px;display:inline-block">${overrideConflict ? "⚠️ 취소 확인·실입고 충돌" : "✓ 취소 확인"}</span>`
       : "";
+    // 2026-09-18 [교차검증 지적 - onclick 인라인 핸들러의 이중 파싱 위험] esc() 는 HTML 속성값
+    // 탈출(따옴표 등)만 막는다 - onclick="...('${esc(x)}')" 형태로 넣으면 브라우저가 속성값을
+    // HTML 엔티티로 한 번 디코드한 뒤(예: &#39; -> ') 그 결과를 인라인 핸들러의 JS 소스로 다시
+    // 파싱하므로, 디코드된 문자열 안에 홑따옴표가 되살아나 JS 문자열 리터럴을 조기 종료시키고
+    // 뒤 내용이 코드로 실행될 수 있다(이중 파싱 - esc() 는 1차만 막음, 2차 JS 파싱은 못 막음).
+    // 그래서 인라인 onclick 대신 data-* 속성(이스케이프는 여전히 필요 - 속성값 탈출 방지용)만
+    // 쓰고, 실제 값 전달은 이벤트 리스너가 element.dataset 로 읽어서(디코드 1회로 끝, JS 소스로
+    // 다시 파싱 안 됨) decideWingDirectCancellation() 을 직접 호출한다(아래 querySelectorAll 배선).
     const cancelButton = me?.approver
-      ? `<br><button class="btn sm secondary" style="font-size:10px;margin-top:2px" onclick="decideWingDirectCancellation('${esc(r.wing_inbound_id)}','${override ? "REVOKE" : "CONFIRM_CANCELLED"}','${esc(productId)}')">${override ? "취소 확인 철회" : "취소 확인"}</button>`
+      ? `<br><button type="button" class="btn sm secondary wing-cancel-btn" style="font-size:10px;margin-top:2px"
+          data-shipment-id="${esc(r.wing_inbound_id)}" data-action="${override ? "REVOKE" : "CONFIRM_CANCELLED"}"
+          ${overrideLookupFailed ? `disabled title="취소 확인 이력 조회 실패 - 확정할 수 없어 비활성화됨"` : ""}
+          >${override ? "취소 확인 철회" : "취소 확인"}</button>`
       : "";
     return `<tr>
       <td><code style="font-size:11.5px">${esc(r.wing_inbound_id)}</code>${linkedPoNo
@@ -4611,6 +4622,11 @@ async function loadInvWingDirectSection(productId) {
       <tbody>${rows}</tbody></table></div>
     <p style="font-size:11.5px;color:var(--text-sub);margin-top:4px">WING 에 실제로 신청된 입고 전체(ERP 발주 경유 여부와 무관)를 그대로 보여줘요 - 위 '기존 발주 / 입고' 목록과 대조해서 ERP 발주서 없이 들어온 건지 사람이 직접 확인해야 해요.
     이 표는 WING 원본 기록을 보여주는 참고 자료이며, 표의 미입고 수량을 재고·입고예정에 자동으로 더하지 않습니다. 실제 반영 여부는 위 재고판단 결과에서 확인하세요. WING이 취소 상태를 보내면 자동 제외되고, 상태가 남은 예약은 승인 권한자가 신청 ID별로 취소 확인할 수 있어요.</p>`;
+  // innerHTML 문자열 안에 JS 를 안 심으므로(위 참고) 렌더링 뒤 리스너를 직접 붙인다 - dataset 값은
+  // HTML 파싱 때 엔티티 디코드가 한 번만 일어나고 그대로 문자열로 전달되며 다시 JS 로 파싱되지 않는다.
+  box.querySelectorAll(".wing-cancel-btn").forEach(btn => {
+    btn.addEventListener("click", () => decideWingDirectCancellation(btn.dataset.shipmentId, btn.dataset.action, productId));
+  });
 }
 
 async function decideWingDirectCancellation(shipmentId, action, productId) {
