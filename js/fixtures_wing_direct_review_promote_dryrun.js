@@ -708,6 +708,65 @@ async function main() {
     check("[15e] 999행(캡 아님) -> 오탐 없이 정상 통과(캡 근처에서 과다 차단 안 함)", res.status, "DONE");
   }
 
+  // [17a] [PM 라이브 UI 점검 지적] 완료(done) 상태 PO 만 있을 때 - "다른 활성 발주서 있음" 경고는
+  // 이제 안 떠야 하고(done 은 활성이 아니므로), 완료매입 이력 표시·사유 필수는 그대로 떠야 한다
+  // (실측: PO#001 이 두 note 에 동시에 떴던 바로 그 상황 재현).
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    ctx.__sbScript = scriptFor({
+      overlapRows: [{ po_id: "other-po-done", product_id: "prod-a",
+                     purchase_orders: { po_no: "리버스-발주-2026-001", status: "done" } }],
+      doneItems: [{ qty: 720, received_qty: 720, product_id: "prod-a",
+                   purchase_orders: { po_no: "리버스-발주-2026-001", status: "done", due_date: "2026-08-26" } }],
+      purchaseRows: [], updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    // 2026-09-18 기본(겹침 없음) 문구 자체가 "...다른 활성 발주서를 다시 확인했고, 겹치는 게
+    // 없어요"라 "다른 활성 발주서"만으로는 경고 여부를 구분 못 한다(둘 다 그 substring 포함) -
+    // 경고 문구에만 있는 "⚠️ 같은 상품에 다른 활성 발주서 있음" 접두사로 정확히 구분한다.
+    check("[17a] [핵심] done 상태만 있으면 '다른 활성 발주서' 경고는 안 뜸(더 이상 활성 아님으로 취급 안 함)",
+         (ready.html || "").includes("⚠️ 같은 상품에 다른 활성 발주서 있음"), false);
+    check("[17a] [핵심] 완료매입 이력 표시는 그대로 뜸(리버스-발주-2026-001)",
+         (ready.html || "").includes("리버스-발주-2026-001"), true);
+    check("[17a] [핵심] 사유는 여전히 필수(완료매입 이력 때문)",
+         (ready.html || "").includes("필수"), true);
+    ctx.document.getElementById("erp-confirm-reason").value = "완료 이력만 있고 활성 겹침은 없음 확인";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[17a] 사유 적으면 통과", res.status, "DONE");
+  }
+
+  // [17b] 회귀 방지 - 진짜 활성(done 아닌) 발주서는 여전히 경고가 뜸(위 수정이 과다 완화 아님을 확인)
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    ctx.__sbScript = scriptFor({
+      overlapRows: [{ po_id: "other-po-active", product_id: "prod-a",
+                     purchase_orders: { po_no: "리버스-발주-2026-099", status: "progress" } }],
+      updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    check("[17b] [핵심] 진짜 활성(progress) 발주서는 여전히 '다른 활성 발주서' 경고가 뜸(과다 완화 아님)",
+         (ready.html || "").includes("⚠️ 같은 상품에 다른 활성 발주서 있음"), true);
+    ctx.document.getElementById("erp-confirm-reason").value = "";
+    ctx.ErpUi._answer(true);   // 사유 필수인데 비어 있음 -> _answer() 안에서 막히고 pending 유지(run() 안 끝남)
+    await Promise.resolve(); await Promise.resolve();
+    check("[17b] 사유 없이 확인하면 아직 처리 안 됨", updateCalls.length, 0);
+    ctx.document.getElementById("erp-confirm-reason").value = "활성 발주와 무관한 별개 건으로 확인함";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[17b] 사유 적으면 통과", res.status, "DONE");
+  }
+
   console.log("\n" + "=".repeat(70));
   if (FAILS.length) { console.log(`FAIL ${FAILS.length}건: ${FAILS.join(", ")}`); process.exit(1); }
   console.log("모두 통과");

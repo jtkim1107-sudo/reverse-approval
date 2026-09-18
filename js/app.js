@@ -8687,8 +8687,15 @@ async function promoteWingDirectDraft(id) {
         if ((otherItems || []).length >= WING_PROMOTE_HISTORY_QUERY_CAP)
           return { ok: false, title: "처리하지 않았어요 - 다른 발주서 겹침 확인이 너무 많아 전부 못 봤어요",
             message: `조회 결과가 ${WING_PROMOTE_HISTORY_QUERY_CAP}행에 딱 걸려 잘렸을 수 있어요(더 있는데 못 봤을 위험) - "겹침 없음"으로 조용히 넘기지 않고 막았어요.` };
+        // 2026-09-18 [PM 라이브 UI 점검 지적] 이 필터는 원래 rejected/canceled 만 뺐다 - done(완료)
+        // 은 "활성" 발주서가 아닌데도 이 목록에 그대로 남아 "다른 활성 발주서 있음" 경고가 완료된
+        // PO(예: PO#001)에 대해서도 잘못 뜬다(실측: 리버스-발주-2026-001 이 이 겹침 경고와 아래
+        // completedHistoryNote 둘 다에 동시에 뜸 - 완료 이력은 맞지만 "활성"은 아님). done 은 여기서
+        // 빼고, 완료매입 이력(completedHistoryNote, 아래 doneItems 필터가 status==='done' 만 골라
+        // 쓰는 부분)에서는 그대로 유지한다 - 사유 필수 확인은 계속 필요하되, 문구가 실제 상태와
+        // 맞아야 승인 권한자가 헷갈리지 않는다.
         const others = (otherItems || []).filter(it => it.po_id !== id
-          && it.purchase_orders && !["rejected", "canceled"].includes(it.purchase_orders.status));
+          && it.purchase_orders && !["rejected", "canceled", "done"].includes(it.purchase_orders.status));
         if (others.length) {
           overlapFound = true;
           // 2026-09-18 [PM 지적 - XSS] ErpUi.confirmModal() 은 notes 를 이스케이프 없이 그대로
