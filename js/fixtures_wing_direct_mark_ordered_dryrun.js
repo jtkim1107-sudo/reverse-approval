@@ -94,7 +94,10 @@ function buildContext() {
 
 function armConfirmSignal(ctx) {
   let resolveReady;
-  const ready = new Promise(r => { resolveReady = r; });
+  const ready = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("확인창이 열리지 않아 테스트 중단")), 2000);
+    resolveReady = () => { clearTimeout(timeout); resolve(); };
+  });
   const modalRoot = ctx.document.getElementById("modal-root");
   modalRoot._onInnerHTML = html => { if (html.includes("erp-confirm-title")) resolveReady(); };
   return ready;
@@ -103,8 +106,13 @@ function armConfirmSignal(ctx) {
 const BASE_PO = { id: "po-1", po_no: "리버스-발주-WING검토-ship-1", status: "approved",
   supplier: "리파코", total: 500000, memo: "", freight_est: 0, wing_direct_shipment_id: "ship-1" };
 
-function scriptFor({ poRow = BASE_PO, existingPlans = [], updateCalls = [], insertCalls = [] } = {}) {
+function scriptFor({ poRow = BASE_PO, existingPlans = [], updateCalls = [], insertCalls = [],
+  items = [{ product_id: "prod-1", qty: 100, unit_cost: 5000, amount: 500000 }],
+  taxType = "과세", vatSetting = { enabled: true, purchaseCostIncludesVat: false } } = {}) {
   return (table, calls) => {
+    if (table === "settings") return { data: { value: vatSetting }, error: null };
+    if (table === "purchase_order_items") return { data: items, error: null };
+    if (table === "products") return { data: [{ id: "prod-1", tax_type: taxType }], error: null };
     if (table === "purchase_orders" && calls.some(c => c[0] === "update")) {
       updateCalls.push(calls.find(c => c[0] === "update")[1]);
       return { data: [{ id: poRow.id }], error: null };
@@ -170,7 +178,7 @@ async function main() {
     check("[3] DONE", res.status, "DONE");
     check("[3] cash_plans 에 사람이 입력한 날짜 그대로(추정 아님)", insertCalls[0]?.date, "2026-10-20");
     check("[3] 제목에 'WING 사후기록' 표시(일반 발주와 구분)", (insertCalls[0]?.title || "").includes("WING 사후기록"), true);
-    check("[3] 금액은 PO 총액 그대로", insertCalls[0]?.amount, 500000);
+    check("[3] 금액은 과세 상품 VAT 포함(운반비 별도)", insertCalls[0]?.amount, 550000);
   }
 
   // [4] 중복 없음 + 지급예정일 비워둠 -> status 만 바뀌고 cash_plans 는 안 만듦(추정 등록 금지)
@@ -201,9 +209,74 @@ async function main() {
     check("[5] status !== DONE", res.status !== "DONE", true);
   }
 
+  // [6] 확인창 대기 중 품목 변경 -> 오래된 지급예정액으로 확정하지 않음
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true });
+    const updateCalls = [], insertCalls = [];
+    const items = [{ product_id: "prod-1", qty: 100, unit_cost: 5000, amount: 500000 }];
+    ctx.__sbScript = scriptFor({ updateCalls, insertCalls, items });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getMarkOrdered()("po-1");
+    await ready;
+    items[0] = { product_id: "prod-1", qty: 50, unit_cost: 10000, amount: 500000 };
+    ctx.document.getElementById("wing-order-due-date").value = "2026-10-20";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[6] 품목 변경 차단", res.status !== "DONE", true);
+    check("[6] update/insert 없음", [updateCalls.length, insertCalls.length], [0, 0]);
+  }
+
+  // [7] VAT 설정 행 없음 -> 기본값으로 계산하지 않고 결재/지급예정 모두 유지
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true });
+    const updateCalls = [], insertCalls = [];
+    ctx.__sbScript = scriptFor({ updateCalls, insertCalls, vatSetting: null });
+    const res = await ctx.__test.getMarkOrdered()("po-1");
+    check("[7] VAT 설정 없음 차단", res.status !== "DONE", true);
+    check("[7] update/insert 없음", [updateCalls.length, insertCalls.length], [0, 0]);
+  }
+
+  // [8] 확인창 대기 중 VAT 기준 변경 -> 오래된 금액으로 등록하지 않음
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true });
+    const updateCalls = [], insertCalls = [];
+    const vatSetting = { enabled: true, purchaseCostIncludesVat: false };
+    ctx.__sbScript = scriptFor({ updateCalls, insertCalls, vatSetting });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getMarkOrdered()("po-1");
+    await ready;
+    vatSetting.purchaseCostIncludesVat = true;
+    ctx.document.getElementById("wing-order-due-date").value = "2026-10-20";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[8] VAT 기준 변경 차단", res.status !== "DONE", true);
+    check("[8] update/insert 없음", [updateCalls.length, insertCalls.length], [0, 0]);
+  }
+
+  // [9] 확인창 대기 중 공급처 변경 -> 과거 공급처명으로 지급예정 등록 차단
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "me-1", approver: true });
+    const updateCalls = [], insertCalls = [];
+    const poRow = { ...BASE_PO };
+    ctx.__sbScript = scriptFor({ updateCalls, insertCalls, poRow });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getMarkOrdered()("po-1");
+    await ready;
+    poRow.supplier = "다른 공급처";
+    ctx.document.getElementById("wing-order-due-date").value = "2026-10-20";
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[9] 공급처 변경 차단", res.status !== "DONE", true);
+    check("[9] update/insert 없음", [updateCalls.length, insertCalls.length], [0, 0]);
+  }
+
   console.log("\n" + "=".repeat(70));
   if (FAILS.length) { console.log(`FAIL ${FAILS.length}건: ${FAILS.join(", ")}`); process.exit(1); }
   console.log("모두 통과");
 }
 
-main().catch(e => { console.error("테스트 실행 중 예외:", e); process.exit(1); });
+main().catch(e => { console.error("테스트 실행 중 예외:", e); process.exitCode = 1; });
