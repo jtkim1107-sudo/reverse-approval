@@ -8318,6 +8318,14 @@ function poEstimatedCashPayment(po, items, products, vat) {
   return supply + tax;
 }
 
+function wingDirectPaymentBasis(po, items, products, vat) {
+  if (!items.length || items.some(it => !products.some(p => p.id === it.product_id)))
+    throw new Error("발주 품목의 과세 구분을 모두 확인하지 못했어요");
+  const supply = items.reduce((sum, it) => sum + Number(it.amount || Number(it.qty) * Number(it.unit_cost) || 0), 0);
+  if (supply !== Number(po.total)) throw new Error("발주서와 품목 합계가 달라요 - 지급예정액을 계산하지 않아요");
+  return poEstimatedCashPayment(po, items, products, vat);
+}
+
 // 승인된 발주서를 실제로 거래처에 보냈을 때 → 결제 예정도 함께 등록
 async function markOrdered(id) {
   const p = poCache.find(x => x.id === id);
@@ -8382,15 +8390,26 @@ async function markOrderedFromWingDirect(id) {
       if (!data || data.status !== "approved" || !data.wing_direct_shipment_id)
         return { ok: false, title: "처리하지 않았어요 - 대상이 아니에요", message: "승인 완료 상태의 WING 직접입고 발주서만 여기서 처리해요. 화면을 새로 읽었어요." };
       fresh = data;
-      const curFreight = poCurrentFreightEst(fresh);
-      total = Number(fresh.total) + curFreight;
+      // 사후 매입도 일반 리파코 발주와 같은 과세 기준으로 현금 지급액을 계산한다.
+      // 운반비는 별도 청구서로 관리하므로 여기서는 더하지 않는다.
+      await loadVatCfg();
+      if (!vatCfgLoaded) return { ok: false, message: "부가세 설정을 확인하지 못해 지급예정액을 계산하지 않아요" };
+      const { data: items, error: ie } = await sb.from("purchase_order_items")
+        .select("product_id,qty,unit_cost,amount").eq("po_id", id);
+      if (ie || !items?.length) return { ok: false, message: "발주 품목을 확인하지 못해 진행하지 않아요" };
+      const ids = [...new Set(items.map(it => it.product_id))];
+      const { data: products, error: pe } = await sb.from("products")
+        .select("id,tax_type").in("id", ids);
+      if (pe) return { ok: false, message: "상품 과세 구분을 확인하지 못해 진행하지 않아요" };
+      try { total = wingDirectPaymentBasis(fresh, items, products || [], vatCfg); }
+      catch (e) { return { ok: false, message: e.message }; }
       // 이미 이 po_no 로 등록된 지급예정이 있는지(사후 기록이라 회계가 먼저 처리했을 수 있음) - 중복
       // 등록을 막기 위해 반드시 확인한다(제목에 po_no 를 그대로 찍어 넣는 건 markOrdered() 도 같은
       // 관례라 - "%po_no%" 로 찾으면 그쪽이 이미 등록한 것도 같이 잡힘).
       const { data: existingPlans, error: cpe } = await sb.from("cash_plans")
         .select("id,date,amount,title").ilike("title", `%${fresh.po_no}%`);
       if (cpe) return { ok: false, message: `기존 지급예정을 확인하지 못했어요: ${cpe.message || cpe.code} - 중복 확인 전엔 진행하지 않아요.` };
-      return { ok: true, total, curFreight, existingPlans: existingPlans || [] };
+      return { ok: true, total, existingPlans: existingPlans || [] };
     },
     confirm: pre => {
       const sup = erpSupplierList.find(s => s.name === fresh.supplier);
@@ -8401,7 +8420,7 @@ async function markOrderedFromWingDirect(id) {
         rows: [
           ["발주번호", `<b>${esc(fresh.po_no)}</b>`],
           ["거래처", esc(fresh.supplier)],
-          ["금액", `₩${fmt(pre?.total)}${pre?.curFreight ? " (운송비 포함)" : ""}`],
+          ["예상 지급액(VAT 포함, 운반비 별도)", `₩${fmt(pre?.total)}`],
           ["결제조건(참고용 - 자동 반영 안 됨)", esc(sup?.pay_terms || "등록된 결제조건 없음")],
           ...(dup.length ? [["⚠️ 이미 등록된 지급예정", dup.map(d => `${esc(d.date)} · ₩${fmt(d.amount)} · ${esc(d.title)}`).join("<br>")]]
             : [["지급예정일(선택 - 비우면 지금 등록 안 함)", `<input type="date" id="wing-order-due-date">`]]),
