@@ -84,6 +84,12 @@ function makeQueryBuilder(sandbox, table) {
     eq(...a) { calls.push(["eq", ...a]); return builder; },
     in(...a) { calls.push(["in", ...a]); return builder; },
     order(...a) { calls.push(["order", ...a]); return builder; },
+    // 2026-09-18 [PM 지적 - 테스트 중단 원인] 새 manifest 조회가 .order(...).limit(1) 을 부르는데
+    // 이 가짜 builder 에 limit() 이 없어서 precheck() 안에서 TypeError 로 조용히 실패했다 - 양성
+    // 케이스([6i]/[8]/[9]/[10])가 confirm() 까지 못 가고 armConfirmSignal 의 await 만 영원히 남아
+    // (마이크로태스크만 대기 중이라 Node 가 그냥 조용히 종료해버림 - 테스트가 "중단"된 게 아니라
+    // "그 뒤로 아무것도 안 됨"으로 보인 이유) 전체 실행 결과가 [6j] 뒤로 통째로 안 보였다.
+    limit(...a) { calls.push(["limit", ...a]); return builder; },
     update(...a) { calls.push(["update", ...a]); return builder; },
     insert(...a) { calls.push(["insert", ...a]); return builder; },
     maybeSingle() { isSingle = true; return resolveNow(); },
@@ -140,6 +146,9 @@ function armConfirmSignal(ctx) {
 
 const FRESH_CHECKED_AT = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();    // 2시간 전 - 신선
 const STALE_CHECKED_AT = new Date(Date.now() - 40 * 60 * 60 * 1000).toISOString();   // 40시간 전 - 오래됨(기준 36h)
+// 2026-09-18 [PM 지적 - manifest 기반 원본 완전성 재확인] "다음 수집에서 SKU 가 원본에서 사라짐"을
+// 정확히 겨냥한 24시간 값 - STALE_CHECKED_AT(40h, 이미 기존 36h 검사에 걸림)과 겹치지 않게 분리.
+const YESTERDAY_CHECKED_AT = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
 const BASE_PO = { id: "po-1", po_no: "리버스-발주-WING검토-ship-1", status: "wing_direct_review",
   supplier: "리파코", total: 1000000, memo: "", wing_direct_shipment_id: "ship-1" };
@@ -147,9 +156,16 @@ const BASE_ITEMS = [{ po_id: "po-1", product_id: "prod-a", vendor_item_id: "vid-
 // 기본 미러 - BASE_ITEMS 와 수량이 정확히 같아야(품목쪽 qty=requested_qty, wing_observed_received_qty=received_qty)
 // 그 자체로는 안 막힘(수량 비교 통과) - 수량이 다른 테스트만 따로 override.
 const MATCHING_MIRROR_ROW = { vendor_item_id: "vid-a", requested_qty: 100, received_qty: 0, wing_status: "STOWING", source_checked_at: FRESH_CHECKED_AT };
+// 2026-09-18 [PM 핵심 요청] promoteWingDirectDraft() 가 이제 승인 직전 최신 수집 manifest 도 다시
+// 읽는다 - 이 검사 자체를 안 겨냥하는(다른 사유를 테스트하는) 기존 케이스가 전부 막히지 않으려면,
+// "지금 mirror 행 그대로가 최신 회차 전부"라고 말하는 완벽히 일치하는 기본 manifest 를 깔아준다
+// (백엔드 fixtures 의 _default_manifest()/ev_call() 과 같은 원칙) - manifest 검사 자체를 겨냥하는
+// 케이스만(아래 [13]) 명시적으로 다른 값을 준다.
+const DEFAULT_MANIFEST_ROW = { collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "ship-1": ["vid-a"] }, qty_review_keys: [] };
 
 function scriptFor({ poRow = BASE_PO, items = BASE_ITEMS, itemsError = null,
   mirrorRows = [MATCHING_MIRROR_ROW], mirrorError = null,
+  manifestRows = [DEFAULT_MANIFEST_ROW], manifestError = null,
   overlapRows = [], overlapError = null, updateOk = true, updateCalls = [] } = {}) {
   return (table, calls) => {
     if (table === "purchase_orders" && calls.some(c => c[0] === "update")) {
@@ -161,6 +177,7 @@ function scriptFor({ poRow = BASE_PO, items = BASE_ITEMS, itemsError = null,
     if (table === "purchase_order_items" && calls.some(c => c[0] === "in")) return { data: overlapRows, error: overlapError };
     if (table === "purchase_order_items") return { data: items, error: itemsError };
     if (table === "wing_direct_inbounds") return { data: mirrorRows, error: mirrorError };
+    if (table === "wing_direct_inbound_collection_manifest") return { data: manifestRows, error: manifestError };
     throw new Error(`시나리오에 없는 테이블 조회: ${table}`);
   };
 }
@@ -208,6 +225,40 @@ async function main() {
     ["[6j] 초안 품목(items) 자체에 같은 vendor_item_id 가 중복 -> 막힘",
       { items: [...BASE_ITEMS, { ...BASE_ITEMS[0] }],
        mirrorRows: [MATCHING_MIRROR_ROW] }],
+
+    // ── [13] [PM 핵심 요청] manifest 기반 원본 완전성 재확인(TOCTOU 방어) ─────────────────────────
+    ["[13a] 최신 수집 manifest 조회 자체가 실패 -> 막힘(조용히 통과 안 함)",
+      { manifestError: { message: "network down" } }],
+    ["[13b] 최신 수집 manifest 가 아예 없음(빈 배열, 수집기가 manifest 를 남기기 전 버전) -> 막힘",
+      { manifestRows: [] }],
+    ["[13c] manifest 에 이 shipment 자체가 없음(다른 shipment 것만 있음) -> 막힘",
+      { manifestRows: [{ collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "completely-different-ship": ["v1"] }, qty_review_keys: [] }] }],
+    ["[13d] manifest.collected_at 형식 이상 -> 막힘(fail-closed, 추정 안 함)",
+      { manifestRows: [{ collected_at: "이상한값", shipment_sku_map: { "ship-1": ["vid-a"] }, qty_review_keys: [] }] }],
+    ["[13d2] manifest.collected_at 에 타임존 없음(naive, JS Date 는 로컬로 해석함) -> 막힘",
+      { manifestRows: [{ collected_at: "2026-09-18T03:00:00", shipment_sku_map: { "ship-1": ["vid-a"] }, qty_review_keys: [] }] }],
+    ["[13e] manifest.shipment_sku_map[shipmentId] 가 배열이 아님(오염된 데이터) -> 막힘(throw 아니라 명시적 안내)",
+      { manifestRows: [{ collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "ship-1": "vid-a" }, qty_review_keys: [] }] }],
+    ["[13f] manifest.qty_review_keys 가 배열이 아님(오염된 데이터) -> 막힘(throw 아니라 명시적 안내)",
+      { manifestRows: [{ collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "ship-1": ["vid-a"] }, qty_review_keys: "oops" }] }],
+    ["[13g] mirror 행의 source_checked_at 에 타임존 없음(naive) -> 막힘",
+      { mirrorRows: [{ vendor_item_id: "vid-a", requested_qty: 100, received_qty: 0, wing_status: "STOWING", source_checked_at: "2026-09-18T01:00:00" }] }],
+    // 2026-09-18 [PM 독립 리뷰 - TOCTOU 핵심 재현] A+B 초안을 승인하려는 순간, 그 사이(평가~승인)에
+    // 수집기가 한 번 더 돌아서 다음 WING GET 에서 B 가 원본에서 사라진 24시간 시나리오. B 의 mirror
+    // 행은 수집기가 안 지워서 어제 값(24시간 전) 그대로 남아 있고, 이건 기존 36시간 신선도 검사
+    // (badChecked)는 그냥 통과한다(24h < 36h) - 최신 manifest 는 이번 회차에 A 만 실제로 봤다고
+    // 말하므로, manifest 의 SKU 집합과 mirror 의 SKU 집합이 안 맞아서 여기서 막혀야 한다.
+    ["[13h] [핵심 재현] A+B 초안 - 다음 WING GET 에서 B 가 원본에서 사라진 24시간 시나리오 -> 막힘"
+     + "(기존 36h 신선도 검사만으론 못 잡음 - B 의 옛 행이 24h<36h 라 그냥 통과했을 것)",
+      { items: [{ po_id: "po-1", product_id: "prod-a", vendor_item_id: "vid-a", qty: 100, received_qty: 0, wing_observed_received_qty: 0 },
+               { po_id: "po-1", product_id: "prod-b", vendor_item_id: "vid-b", qty: 50, received_qty: 0, wing_observed_received_qty: 0 }],
+       mirrorRows: [{ vendor_item_id: "vid-a", requested_qty: 100, received_qty: 0, wing_status: "STOWING", source_checked_at: FRESH_CHECKED_AT },
+                   { vendor_item_id: "vid-b", requested_qty: 50, received_qty: 0, wing_status: "STOWING", source_checked_at: YESTERDAY_CHECKED_AT }],
+       // 오늘(FRESH_CHECKED_AT) 회차의 WING 원본엔 vid-a 만 실제로 있었음(vid-b 는 사라짐).
+       manifestRows: [{ collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "ship-1": ["vid-a"] }, qty_review_keys: [] }] }],
+    // 방어적 이중 확인 - SKU 집합 비교는 우연히 통과했다고 가정해도(가상 시나리오) qty_review_keys 가 별도로 막음.
+    ["[13i] [방어적 이중 확인] SKU 집합이 manifest 와 일치해도 qty_review_keys 에 이 shipment 가 있으면 막힘",
+      { manifestRows: [{ collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "ship-1": ["vid-a"] }, qty_review_keys: [["ship-1", "vid-a"]] }] }],
   ];
   for (const [name, overrides] of blockCases) {
     const ctx = buildContext();
@@ -232,7 +283,8 @@ async function main() {
                       { po_id: "po-1", product_id: "prod-b", vendor_item_id: "vid-b", qty: 50, received_qty: 0, wing_observed_received_qty: 0 }];
     const twoMirrorRows = [{ vendor_item_id: "vid-a", requested_qty: 100, received_qty: 0, wing_status: "STOWING", source_checked_at: FRESH_CHECKED_AT },
                           { vendor_item_id: "vid-b", requested_qty: 50, received_qty: 0, wing_status: "STOWING", source_checked_at: FRESH_CHECKED_AT }];
-    ctx.__sbScript = scriptFor({ items: twoItems, mirrorRows: twoMirrorRows, updateCalls });
+    const twoSkuManifest = [{ collected_at: FRESH_CHECKED_AT, shipment_sku_map: { "ship-1": ["vid-a", "vid-b"] }, qty_review_keys: [] }];
+    ctx.__sbScript = scriptFor({ items: twoItems, mirrorRows: twoMirrorRows, manifestRows: twoSkuManifest, updateCalls });
     const ready = armConfirmSignal(ctx);
     const p = ctx.__test.getPromote()("po-1");
     await ready;
@@ -344,6 +396,40 @@ async function main() {
     const st = ctx.__test.getPOStatus();
     check("[12] PO_STATUS.wing_direct_review 존재", !!st.wing_direct_review, true);
     check("[12] 라벨이 '결재 대기' 로 안 빠짐(기본값 폴백 회귀)", st.wing_direct_review.label !== st.progress.label, true);
+  }
+
+  // [13j] [PM 코드 리뷰 핵심 지적] source_checked_at/manifest.collected_at 이 같은 순간의 '다른'
+  // ISO 표기(Z 대 +00:00, 소수초 유무)여도 - 문자열이 달라도 실제 순간이 같으면 오탐 없이 통과해야
+  // 한다(parseTzAwareMs 가 new Date().getTime() 로 실제 순간을 비교하기 때문 - 문자열 비교였다면
+  // 이 테스트가 깨졌을 것).
+  {
+    const ctx = buildContext();
+    ctx.__test.setMe({ id: "top-1", approver: true, rank: 99 });
+    ctx.__test.setUsers([{ id: "top-1", rank: 99, name: "대표", role: "대표" }]);
+    const updateCalls = [];
+    // 2026-09-18 [PM 지적 - 테스트 자체 버그] Date.now() 는 밀리초를 포함하는데, 아래 zRepr 는 그
+    // 소수초를 지우고 offsetRepr 는 남겨서(toISOString() 기본 출력) 두 표기가 "같은 순간의 다른
+    // 문자열"이 아니라 실제로 다른 순간이 돼버렸다 - precheck() 가 (정확한 로직대로) 진짜 불일치로
+    // 판단해 막았고, 그 뒤 confirm() 모달이 절대 안 떠서 armConfirmSignal 의 await 가 영원히 남았다
+    // (테스트가 "중단"된 게 아니라 원인이 이 테스트 자신의 시각 계산 버그였음). 초 단위로 미리
+    // 내림해서(밀리초를 0으로 고정) 두 표기가 문자열만 다르고 실제 순간은 정확히 같게 만든다.
+    const sameInstantMs = Math.floor((Date.now() - 2 * 60 * 60 * 1000) / 1000) * 1000;
+    const zRepr = new Date(sameInstantMs).toISOString().replace(/\.\d{3}Z$/, "Z");   // "...Z", 소수초 없음
+    const offsetRepr = new Date(sameInstantMs).toISOString().replace("Z", "+00:00");   // "...000+00:00", 소수초 있음(기본 toISOString)
+    if (zRepr === offsetRepr) throw new Error("[13j] 테스트 전제 깨짐 - 두 표기가 실제로 달라야 의미가 있음");
+    if (new Date(zRepr).getTime() !== new Date(offsetRepr).getTime())
+      throw new Error("[13j] 테스트 전제 깨짐 - 두 표기가 실제로는 같은 순간이어야 의미가 있음");
+    ctx.__sbScript = scriptFor({
+      mirrorRows: [{ vendor_item_id: "vid-a", requested_qty: 100, received_qty: 0, wing_status: "STOWING", source_checked_at: zRepr }],
+      manifestRows: [{ collected_at: offsetRepr, shipment_sku_map: { "ship-1": ["vid-a"] }, qty_review_keys: [] }],
+      updateCalls,
+    });
+    const ready = armConfirmSignal(ctx);
+    const p = ctx.__test.getPromote()("po-1");
+    await ready;
+    ctx.ErpUi._answer(true);
+    const res = await p;
+    check("[13j] [핵심] 문자열 표기만 다르고 실제로는 같은 순간 -> 오탐 없이 DONE 까지 도달", res.status, "DONE");
   }
 
   console.log("\n" + "=".repeat(70));
