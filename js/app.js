@@ -6741,17 +6741,30 @@ async function loadPoHolds(poIds = null) {
 
 // 2026-09-19 [대표 지시 - WING 취소 후 연결 PO 정리, "입고 취소" 배지 + 사유·시각 표시] Rebirth-ops
 // 레포의 wing_direct_po_cancellations(fn_cancel_wing_direct_po 가 취소할 때만 쓰는 이력 테이블,
-// 마이그레이션 미적용 상태일 수 있음)을 읽어서 po_id -> 이력 매핑을 만든다. loadPoHolds() 와 동일한
-// 방어 원칙(에러/테이블 없음 -> 조용히 {} - 목록 화면 전체를 막지 않음).
+// 마이그레이션 미적용 상태일 수 있음)을 읽어서 po_id -> 이력 매핑을 만든다.
+//
+// 2026-09-19 [대표 재지적 - 2차 보완] "테이블이 아직 없음"(마이그레이션 미적용 - 정상적인 배포 전
+// 상태)과 "다른 이유로 조회 자체가 실패함"(네트워크·권한·RLS 등 - 이력이 있는데도 화면에 조용히
+// 안 보일 위험)을 구분한다. 예전엔 둘 다 조용히 {} 로 묶었는데, 후자의 경우 "이 PO는 취소 이력이
+// 없다"로 잘못 보여서(배지가 안 붙음) WING이 이미 취소한 PO 를 놓칠 위험이 있었다 - 이제 후자는
+// 경고로 화면에 명시한다(viewPurchaseOrders() 가 wingDirectCancellationsWarning 을 표시).
+// "테이블 없음" 판정은 이 저장소의 기존 관례(viewUnmatchedSales() 등)와 동일한 정규식을 그대로 씀.
 let wingDirectCancellationById = {};
+let wingDirectCancellationsWarning = null;
 async function loadWingDirectCancellations(poIds = null) {
   try {
     let q = sb.from("wing_direct_po_cancellations").select("po_id,wing_shipment_id,reason,previous_status,confirmed_by,confirmed_at");
     if (poIds) q = q.in("po_id", poIds);
     const { data, error } = await q;
-    if (error) return {};
-    return Object.fromEntries((data || []).map(c => [c.po_id, c]));
-  } catch (e) { return {}; }
+    if (error) {
+      const missingTable = /PGRST205|Could not find the table|does not exist|schema cache/i.test(error.message || "");
+      if (missingTable) return { map: {}, warning: null };   // 마이그레이션 미적용 - 정상 상태, 조용히 빈 값
+      return { map: {}, warning: `입고 취소 이력을 확인하지 못했습니다: ${error.message || error.code}` };
+    }
+    return { map: Object.fromEntries((data || []).map(c => [c.po_id, c])), warning: null };
+  } catch (e) {
+    return { map: {}, warning: `입고 취소 이력을 확인하지 못했습니다: ${e?.message || e}` };
+  }
 }
 
 // "입고 취소" 배지 - wing_direct_po_cancellations 에 이력이 있는 PO(=fn_cancel_wing_direct_po 로
@@ -6790,7 +6803,8 @@ async function loadPOs() {
   ]);
   poCache = poRes.data || [];
   poHoldById = holds;
-  wingDirectCancellationById = wingCancellations;
+  wingDirectCancellationById = wingCancellations.map;
+  wingDirectCancellationsWarning = wingCancellations.warning;
   poItemCache = {};
   (itRes.data || []).forEach(it => { (poItemCache[it.po_id] ||= []).push(it); });
   return poCache;
@@ -6828,6 +6842,8 @@ async function viewPurchaseOrders() {
         ⏳ 내 결재를 기다리는 발주서가 <b>${waiting}건</b> 있습니다.</div>` : ""}
       ${wingReviewCount && me?.approver ? `<div style="background:var(--purple-bg);border:1px solid var(--purple);border-radius:9px;padding:10px 12px;margin-top:12px;font-size:13.5px">
         🔎 WING 직접입고에서 자동 생성된 검토 초안이 <b>${wingReviewCount}건</b> 있습니다 - 겹침·공급처·원가를 확인하고 정식 발주로 전환하거나 취소해 주세요.</div>` : ""}
+      ${wingDirectCancellationsWarning ? `<div style="background:var(--red-bg,#fdecea);border:1px solid var(--red,#e11d48);border-radius:9px;padding:10px 12px;margin-top:12px;font-size:13.5px">
+        ⚠️ ${esc(wingDirectCancellationsWarning)} - 아래 "🚫 입고 취소(WING)" 배지가 실제와 다를 수 있어요(조회 실패로 일부 이력이 안 보일 수 있음).</div>` : ""}
     </div>
     ${InboundApproval.reinboundCardHtml(reinbound.rows, { me, error: reinbound.error, refreshOnclick: "route()" })}
 
