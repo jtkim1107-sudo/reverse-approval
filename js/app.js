@@ -6739,6 +6739,31 @@ async function loadPoHolds(poIds = null) {
   } catch (e) { return {}; }
 }
 
+// 2026-09-19 [대표 지시 - WING 취소 후 연결 PO 정리, "입고 취소" 배지 + 사유·시각 표시] Rebirth-ops
+// 레포의 wing_direct_po_cancellations(fn_cancel_wing_direct_po 가 취소할 때만 쓰는 이력 테이블,
+// 마이그레이션 미적용 상태일 수 있음)을 읽어서 po_id -> 이력 매핑을 만든다. loadPoHolds() 와 동일한
+// 방어 원칙(에러/테이블 없음 -> 조용히 {} - 목록 화면 전체를 막지 않음).
+let wingDirectCancellationById = {};
+async function loadWingDirectCancellations(poIds = null) {
+  try {
+    let q = sb.from("wing_direct_po_cancellations").select("po_id,wing_shipment_id,reason,previous_status,confirmed_by,confirmed_at");
+    if (poIds) q = q.in("po_id", poIds);
+    const { data, error } = await q;
+    if (error) return {};
+    return Object.fromEntries((data || []).map(c => [c.po_id, c]));
+  } catch (e) { return {}; }
+}
+
+// "입고 취소" 배지 - wing_direct_po_cancellations 에 이력이 있는 PO(=fn_cancel_wing_direct_po 로
+// 실제 취소된 PO)에만 붙는다. 일반 cancelPO() 로 취소된 PO(WING 직접입고와 무관)는 이 이력이 없어서
+// 이 배지가 안 붙는다(기존 "취소" 상태 칩과는 다른, WING 재검증을 통과했다는 더 구체적인 표시).
+const wingCancelChipHtml = c => c
+  ? `<small class="erp-sub">${ErpUi.badge("rejected", {
+      text: "🚫 입고 취소(WING)", small: true,
+      title: `사유: ${c.reason}\n확인 시각: ${c.confirmed_at}\nWING shipment: ${c.wing_shipment_id}`,
+    })}</small>`
+  : "";
+
 const PO_STATUS = {
   progress: { label: "결재 대기", chip: "progress" },
   approved: { label: "승인 완료", chip: "approved" },
@@ -6757,13 +6782,15 @@ const poChip = s => { const t = PO_STATUS[s] || PO_STATUS.progress;
   return `<span class="chip ${t.chip}">${t.label}</span>`; };
 
 async function loadPOs() {
-  const [poRes, itRes, holds] = await Promise.all([
+  const [poRes, itRes, holds, wingCancellations] = await Promise.all([
     sb.from("purchase_orders").select("*").order("date", { ascending: false }).order("created_at", { ascending: false }),
     sb.from("purchase_order_items").select("*"),
     loadPoHolds(),
+    loadWingDirectCancellations(),
   ]);
   poCache = poRes.data || [];
   poHoldById = holds;
+  wingDirectCancellationById = wingCancellations;
   poItemCache = {};
   (itRes.data || []).forEach(it => { (poItemCache[it.po_id] ||= []).push(it); });
   return poCache;
@@ -6834,7 +6861,7 @@ async function viewPurchaseOrders() {
             <td class="num" data-label="금액">₩${fmt(p.total)}</td>
             <td class="num" data-label="운송비(예상)">${p.freight_est ? `<div>₩${fmt(p.freight_est)}${poFreightInactiveOnly(p.id)
               ? `<small class="erp-sub">${ErpUi.badge("muted", { text: "현재 비용 아님", small: true, title: "취소된 운송 묶음 기준 금액이라 현재 비용으로 쓰지 않아요 - 근거는 [열기]" })}</small>` : ""}</div>` : "—"}</td>
-            <td data-label="상태"><div class="erp-stack">${poChip(p.status)}${InboundApproval.poHoldChipHtml(poHoldById[p.id], { short: true })}</div></td>
+            <td data-label="상태"><div class="erp-stack">${poChip(p.status)}${InboundApproval.poHoldChipHtml(poHoldById[p.id], { short: true })}${wingCancelChipHtml(wingDirectCancellationById[p.id])}</div></td>
             <td class="erp-actions po-list-act">
               <button class="btn sm secondary" onclick="event.stopPropagation();openPODetail('${p.id}')">열기</button>
               <button class="btn sm secondary" aria-label="발주서 문서 보기" title="발주서 문서 보기" onclick="event.stopPropagation();location.hash='#/podoc/${p.id}'">📄</button></td>
@@ -7134,12 +7161,19 @@ function openPODetail(id) {
   const canReceive = ["ordered", "partial"].includes(p.status);
   const isWingReview = p.status === "wing_direct_review";   // 2026-09-18 WING 직접입고 검토 초안
   const sup = erpSupplierList.find(s => s.name === p.supplier);
+  const wingCancellation = wingDirectCancellationById[p.id];   // 2026-09-19 대표 지시 - 취소 사유·시각 표시
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:820px;width:96vw">
         <div class="card-head" style="margin-bottom:10px">
-          <h3>${esc(p.po_no)}</h3>${poChip(p.status)} ${InboundApproval.poHoldChipHtml(poHoldById[p.id])}
+          <h3>${esc(p.po_no)}</h3>${poChip(p.status)} ${InboundApproval.poHoldChipHtml(poHoldById[p.id])} ${wingCancelChipHtml(wingCancellation)}
         </div>
+        ${wingCancellation ? `
+        <p style="font-size:13px;color:var(--text-sub);background:var(--rejected-bg,#fdecea);border:1px solid var(--rejected,#e11d48);border-radius:8px;padding:8px 10px;margin:0 0 12px">
+          🚫 <b>WING 직접입고 취소로 정리된 발주서입니다.</b><br>
+          사유: ${esc(wingCancellation.reason)}<br>
+          확인 시각: ${esc(wingCancellation.confirmed_at)}<br>
+          WING shipment: ${esc(wingCancellation.wing_shipment_id)}</p>` : ""}
         <div class="table-wrap"><table><tbody>
           <tr><td style="width:110px;color:var(--text-sub)">발주일</td><td>${esc(p.date)}</td>
               <td style="width:110px;color:var(--text-sub)">거래처</td><td>${esc(p.supplier)}${sup?.pay_terms ? ` <span class="chip waiting">${esc(sup.pay_terms)}</span>` : ""}</td></tr>
