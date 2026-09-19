@@ -6771,6 +6771,14 @@ async function loadPOs() {
 
 const poRemain = id => (poItemCache[id] || []).reduce((s, it) => s + (Number(it.qty) - Number(it.received_qty)), 0);
 const poOrdered = id => (poItemCache[id] || []).reduce((s, it) => s + Number(it.qty), 0);
+// 2026-09-19 [대표 지적 - "발주서 목록/상세 모달에 기한이 ? 로 보인다"를 추적한 결과] 실제로는
+// due_date 가 아니라 기안(drafter) 표시였다 - userName(null) 이 "?"를 돌려주는데, WING 직접입고
+// 자동 생성 검토 초안(status=wing_direct_review)은 사람이 안 만들어서 drafter_id 가 항상 null 이라
+// 그 칸이 "?" 로 보였다(due_date 는 애초에 목록·모달 어디에도 표시하는 칸이 없었음 - 값이 사라진
+// 버그가 아니라 표시 자체가 없던 누락). 그 자동 생성 초안만 "?" 대신 "자동생성"으로 명시하고
+// (다른 이유로 drafter_id 가 비어 있을 수 있는 기존 케이스는 기존 동작 그대로 "?" 유지 - 회귀 없음),
+// due_date 는 따로 "납품희망일"로 노출한다(아래 openPODetail()/viewPurchaseOrders() 참고).
+const poDrafterLabel = p => p.drafter_id ? userName(p.drafter_id) : (p.status === "wing_direct_review" ? "자동생성" : userName(p.drafter_id));
 
 async function viewPurchaseOrders() {
   await loadErpBase();
@@ -6821,7 +6829,7 @@ async function viewPurchaseOrders() {
         <thead><tr><th>발주번호 · 발주일 · 기안</th><th>거래처 · 입고처</th><th class="num">금액</th><th class="num">운송비(예상)</th><th>상태</th><th></th></tr></thead>
         <tbody>${poCache.length ? poCache.map(p => `
           <tr class="clickable" onclick="openPODetail('${p.id}')">
-            <td class="erp-card-head"><b>${esc(p.po_no)}</b><small class="erp-sub">${esc(p.date)} · ${esc(userName(p.drafter_id))}</small></td>
+            <td class="erp-card-head"><b>${esc(p.po_no)}</b><small class="erp-sub">${esc(p.date)}${p.due_date ? ` · 희망 ${esc(p.due_date)}` : ""} · ${esc(poDrafterLabel(p))}</small></td>
             <td data-label="거래처 · 입고처"><div>${esc(p.supplier)}<small class="erp-sub">${p.deliver_to === "쿠팡" ? "쿠팡 직송" : "자사창고"}</small></div></td>
             <td class="num" data-label="금액">₩${fmt(p.total)}</td>
             <td class="num" data-label="운송비(예상)">${p.freight_est ? `<div>₩${fmt(p.freight_est)}${poFreightInactiveOnly(p.id)
@@ -7136,7 +7144,8 @@ function openPODetail(id) {
           <tr><td style="width:110px;color:var(--text-sub)">발주일</td><td>${esc(p.date)}</td>
               <td style="width:110px;color:var(--text-sub)">거래처</td><td>${esc(p.supplier)}${sup?.pay_terms ? ` <span class="chip waiting">${esc(sup.pay_terms)}</span>` : ""}</td></tr>
           <tr><td style="color:var(--text-sub)">입고처</td><td>${p.deliver_to === "쿠팡" ? "쿠팡 (로켓그로스 직송)" : "자사창고"}</td>
-              <td style="color:var(--text-sub)">기안</td><td>${esc(userName(p.drafter_id))}</td></tr>
+              <td style="color:var(--text-sub)">기안</td><td>${esc(poDrafterLabel(p))}</td></tr>
+          ${p.due_date ? `<tr><td style="color:var(--text-sub)">납품희망일</td><td colspan="3">${esc(p.due_date)}</td></tr>` : ""}
           <tr><td style="color:var(--text-sub)">예상 운송비</td><td>${p.freight_est ? "₩" + fmt(p.freight_est) + (poFreightRecord(p.id) ? " <small>(VAT 포함)</small>" : "") + poFreightInactiveTag(p) : "—"}<span id="po-freight-review"></span></td>
               <td style="color:var(--text-sub)">메모</td><td>${esc(p.memo) || "—"}</td></tr>
         </tbody></table></div>
