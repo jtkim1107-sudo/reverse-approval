@@ -7209,8 +7209,13 @@ function openPODetail(id) {
             ? `<button class="btn" onclick="markOrderedFromWingDirect('${p.id}')">매입 기록 확정(이미 WING 으로 입고됨 - 재주문 아님)</button>`
             : canOrder ? `<button class="btn" onclick="markOrdered('${p.id}')">거래처에 발주 완료</button>` : ""}
           ${canReceive ? `<button class="btn" onclick="openReceiveModal('${p.id}')">입고 처리</button>` : ""}
-          ${["progress", "approved"].includes(p.status) && p.drafter_id === me.id
-            ? `<button class="btn danger" onclick="cancelPO('${p.id}')">발주 취소</button>` : ""}
+          ${["progress", "approved"].includes(p.status)
+            ? (p.wing_direct_shipment_id
+                ? ((p.drafter_id === me.id || me?.approver)
+                    ? `<button class="btn danger" onclick="cancelWingDirectPO('${p.id}')">발주 취소(WING 직접입고)</button>` : "")
+                : (p.drafter_id === me.id
+                    ? `<button class="btn danger" onclick="cancelPO('${p.id}')">발주 취소</button>` : ""))
+            : ""}
           ${isWingReview && me?.approver ? `
             <button class="btn" onclick="promoteWingDirectDraft('${p.id}')">검토 초안 승인 (정식 발주로 전환)</button>
             <button class="btn danger" onclick="rejectWingDirectDraft('${p.id}')">이 초안 취소</button>` : ""}
@@ -8584,6 +8589,26 @@ async function cancelPO(id) {
   const { data, error } = await sb.from("purchase_orders").update({ status: "canceled" }).eq("id", id).select("id");
   if (error || !data?.length) return toast("처리에 실패했습니다");
   toast("취소되었습니다");
+  closeModal();
+  route();
+}
+
+// 2026-09-19 [대표 지시 - WING 취소 후 연결 PO 정리] WING 직접입고에서 자동 승인 전환된 발주서는
+// 위 cancelPO() 의 raw update 를 절대 안 쓴다 - 사유·이력을 전혀 안 남기고, WING이 실제로 죽었는지
+// (mirror/manifest 재검증) 서버에서 확인하지도 않는다. 대신 fn_cancel_wing_direct_po(p_po_id,
+// p_reason) RPC(Rebirth-ops 레포 migrations/20260919d_wing_direct_po_cancellation.sql, SECURITY
+// DEFINER)를 부른다 - PO 잠금 + WING mirror·manifest 회차 일치 + 전체 SKU CANCELLED/FAILED + 실제
+// 입고 0 을 서버가 한 트랜잭션 안에서 재검증한 뒤에만 취소하고, 사유와 함께 wing_direct_po_
+// cancellations 에 이력을 남긴다. 사유는 필수(5자 미만이면 RPC 자체가 거부 - decideWingDirectCancellation()
+// 과 동일한 prompt() 패턴, 새 UI 컴포넌트를 안 만듦). 이미 취소된 PO 를 다시 눌러도 RPC 가
+// idempotent 하게 already_cancelled=true 만 반환하고 중복 이력을 안 남긴다.
+async function cancelWingDirectPO(id) {
+  const reason = window.prompt("이 발주서를 취소하는 이유를 입력해 주세요(WING 직접입고 - 서버가 WING 원본을 재검증한 뒤에만 취소됩니다).");
+  if (reason === null) return;
+  if (reason.trim().length < 5) return toast("사유를 5자 이상 입력해 주세요");
+  const { data, error } = await sb.rpc("fn_cancel_wing_direct_po", { p_po_id: id, p_reason: reason.trim() });
+  if (error) return toast(`취소하지 않았어요: ${error.message || error.code}`);
+  toast(data?.already_cancelled ? "이미 취소된 발주서예요" : "취소되었습니다(WING 재검증 통과)");
   closeModal();
   route();
 }
