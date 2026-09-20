@@ -510,6 +510,8 @@ const routes = {
   profit: { title: "공헌이익", render: viewProfit },
   // 2026-09-16 상품별 광고·이익(js/ad_product_profit.js) - 광고센터 보고서 올리기·조회만(광고 조작 없음)
   adprofit: { title: "상품별 광고·이익", render: () => (globalThis.AdProductProfit ? AdProductProfit.view() : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
+  // 2026-09-20 일별 광고비×전체매출(js/ad_sales_daily.js, PR-1) - 계정 단위, 조회 전용
+  adsalesdaily: { title: "일별 광고비 × 전체 매출", render: () => (globalThis.AdSalesDaily ? AdSalesDaily.view() : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   vat: { title: "부가세", render: viewVat },
   report: { title: "월별 리포트", render: viewReport },
   cash: { title: "자금일보", render: viewCash },
