@@ -1727,7 +1727,10 @@ async function dashboardHydrate() {
       const p = base.ok ? erpProducts.find(x => x.id === d.product_id) : null;
       return p ? ErpUi.displayName(p.code, p.name) : (d.product_name || d.vendor_item_id || "-");
     };
-    const model = ErpDashboard.stockModel(inv.v.decisions);
+    // 2026-09-24 공유재고는 대표 1줄 기준으로 세요(서버 display) - 없으면 예전처럼 SKU 기준
+    const invEntries = globalThis.InventoryDisplay ? InventoryDisplay.entries(inv.v.decisions, inv.v.display) : null;
+    const model = ErpDashboard.stockModel(invEntries ? invEntries.map(e => e.d) : inv.v.decisions,
+      invEntries ? { blocked: inv.v.display.automation_blocked_count } : undefined);
     put("dash-stock", ErpDashboard.stockHtml(model, { at, calculatedAt: inv.v.calculatedAt, stockText: inventoryStockText,
       outlookText: inventoryOutlookText, nameOf }));
     return model;
@@ -4090,7 +4093,7 @@ async function fetchInventoryDecisions(forceRefresh = false) {
     });
     const body = await resp.json().catch(() => null);
     if (!resp.ok) return { ok: false, error: body?.detail || body?.error || `HTTP ${resp.status}` };
-    return { ok: true, decisions: body.decisions || [], summary: body.summary || {}, calculatedAt: body.calculated_at,
+    return { ok: true, decisions: body.decisions || [], summary: body.summary || {}, display: body.display || null, calculatedAt: body.calculated_at,
              cacheUpdatedAt: body.cache_updated_at || null, refreshError: body.refresh_error || null };
   } catch (e) {
     return { ok: false, error: e.name === "AbortError" ? "계산 시간 초과(약 95초) - 다시 시도해 주세요." : String(e) };
@@ -4280,17 +4283,23 @@ async function viewInventoryDecisions() {
     </div>`;
   }
   inventoryVatStatus = await ProcurementInput.fetchVatStatus(sb, result.decisions.map(d => d.product_id));
-  const counts = { ORDER_NOW: 0, ORDER_SOON: 0, AWAITING_INBOUND: 0, OK: 0, DATA_CHECK: 0, RESTOCK_EXCLUDED: 0, ...result.summary };
+  // 2026-09-24 공유재고(1개·2개 세트·3개 세트)는 서버 display 기준 대표 1줄 · 요약 숫자도 묶음 기준(서버가 계산).
+  // display 가 없거나 못 쓰면 예전처럼 SKU 마다 한 줄(InventoryDisplay.entries 가 null).
+  const groupEntries = globalThis.InventoryDisplay ? InventoryDisplay.entries(result.decisions, result.display) : null;
+  const entryByDecision = new Map((groupEntries || []).map(e => [e.d, e]));
+  const listDecisions = groupEntries ? groupEntries.map(e => e.d) : result.decisions;
+  const grouped = groupEntries ? InventoryDisplay.counts(result, groupEntries) : { summary: result.summary, blocked: null };
+  const counts = { ORDER_NOW: 0, ORDER_SOON: 0, AWAITING_INBOUND: 0, OK: 0, DATA_CHECK: 0, RESTOCK_EXCLUDED: 0, ...grouped.summary };
   const filtered = inventoryDecisionFilter
-    ? result.decisions.filter(d => d.decision === inventoryDecisionFilter)
-    : result.decisions;
+    ? listDecisions.filter(d => d.decision === inventoryDecisionFilter)
+    : listDecisions;
   // 2026-09-13 [ERP UI 정리] 위쪽 핵심 요약(누르면 그 상태만) · 재고 상태와 자동화 상태 분리 · 구역(재고/입고/상태/추천) ·
   // 상품 열 고정 · 720px 이하 카드. 숫자·판정은 서버 값 그대로(화면이 다시 계산하지 않음).
   const prodIndex = await loadInventoryProductIndex();
   const sorted = sortInventoryDecisionsByBrand(filtered, prodIndex);
   const filterClick = key => `inventoryDecisionFilter = (inventoryDecisionFilter === '${key}' ? null : '${key}'); route()`;
-  const blockedCount = result.decisions.filter(d => d.automation_blocked && d.decision !== "RESTOCK_EXCLUDED").length;
-  const vatCount = result.decisions.filter(d => d.recommended_order_qty_ea && ProcurementInput.vatNeedsAck((invVatOf(d) || {}).status)).length;
+  const blockedCount = grouped.blocked ?? listDecisions.filter(d => d.automation_blocked && d.decision !== "RESTOCK_EXCLUDED").length;
+  const vatCount = listDecisions.filter(d => d.recommended_order_qty_ea && ProcurementInput.vatNeedsAck((invVatOf(d) || {}).status)).length;
   const summaryHtml = ErpUi.summaryHtml([
     ...Object.keys(INVENTORY_DECISION_META).filter(key => key !== "RESTOCK_EXCLUDED" || counts[key]).map(key => ({
       label: { ORDER_NOW: "지금 발주", ORDER_SOON: "곧 발주", AWAITING_INBOUND: "입고대기", OK: "정상", DATA_CHECK: "확인 필요", RESTOCK_EXCLUDED: "재입고 제외" }[key],
@@ -4312,7 +4321,8 @@ async function viewInventoryDecisions() {
     const listing = [d.product_name, d.option_name].filter(Boolean).join(" · ");
     const skus = d.vendor_item_id ? [d.vendor_item_id] : [];
     const open = `openInventoryDecisionDetail('${esc(d.product_id || "")}','${esc(d.vendor_item_id || "")}')`;
-    const detailBtn = `<div class="erp-inline-act"><button type="button" class="erp-linkbtn" onclick="event.stopPropagation();${open}">상세 보기 ›</button></div>`;
+    const membersLine = globalThis.InventoryDisplay ? InventoryDisplay.membersLineHtml(entryByDecision.get(d)) : "";
+    const detailBtn = `${membersLine}<div class="erp-inline-act"><button type="button" class="erp-linkbtn" onclick="event.stopPropagation();${open}">상세 보기 ›</button></div>`;
     const nameCell = p
       ? ErpUi.nameCellHtml({ code: p.code, name: p.name, option: d.option_name, skus, extra: ErpUi.relationHtml(rel) + detailBtn,
           title: `쿠팡 상품: ${listing}${ErpUi.displayName(p.code, p.name) !== p.name ? ` · DB 상품명: ${p.name}` : ""}` })
@@ -4432,6 +4442,7 @@ function openInventoryDecisionDetail(productId, vendorItemId = "") {
             <a onclick="closeModal();openInventoryDecisionDetail('${d.shared_inventory.base_product_id}')" style="color:var(--brand);cursor:pointer;font-weight:600">기준 상품 보기 →</a>
           </p>` : ""}
         ${isBase ? `<p style="font-size:12.5px;color:var(--text-sub);margin:0 0 8px">📦 이 상품은 다른 구성(세트)과 재고를 나누는 공유재고 기준상품이에요.</p>` : ""}
+        ${isBase && globalThis.InventoryDisplay ? InventoryDisplay.membersDetailHtml(InventoryDisplay.entryForDecision(inventoryDecisionsCache, d)) : ""}
         ${typeof ResaleReturn !== "undefined" ? ResaleReturn.resaleNoticeHtml(d) : ""}
         <p style="font-size:13px">${esc(globalThis.ErpUi?.reasonText ? ErpUi.reasonText(d.decision_reason) : (d.decision_reason || ""))}</p>
         ${d.decision === "RESTOCK_EXCLUDED" ? `<p style="font-size:12.5px;background:var(--gray-bg);border-radius:8px;padding:8px 10px;margin:0 0 8px">
