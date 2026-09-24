@@ -383,14 +383,15 @@
 
   // ── E. 재고·발주 ──────────────────────────────────────────────────────────
   const RISK_ORDER = { ORDER_NOW: 0, ORDER_SOON: 1, DATA_CHECK: 2 };
-  function stockModel(decisions) {
+  // opts.blocked: 서버가 공유재고 묶음 기준으로 센 자동화 막힘 수(있으면 그 값 - 세트만 막힌 묶음도 셈)
+  function stockModel(decisions, opts = {}) {
     const list = decisions || [];
     const c = k => list.filter(d => d.decision === k).length;
     const blocked = list.filter(d => d.automation_blocked && d.decision !== "RESTOCK_EXCLUDED");
     const risk = list.filter(d => d.decision in RISK_ORDER)
       .sort((a, b) => (RISK_ORDER[a.decision] - RISK_ORDER[b.decision]) || ((a.days_of_stock_now ?? 999) - (b.days_of_stock_now ?? 999)) || ((a.live_stock ?? 1e9) - (b.live_stock ?? 1e9)));
     return { total: list.length, orderNow: c("ORDER_NOW"), awaiting: c("AWAITING_INBOUND"), soon: c("ORDER_SOON"), dataCheck: c("DATA_CHECK"),
-      blocked: blocked.length, logistics: blocked.filter(d => /물류정보/.test(d.automation_label || "")).length, top: risk.slice(0, 5), riskTotal: risk.length };
+      blocked: typeof opts.blocked === "number" ? opts.blocked : blocked.length, logistics: blocked.filter(d => /물류정보/.test(d.automation_label || "")).length, top: risk.slice(0, 5), riskTotal: risk.length };
   }
 
   function stockHtml(m, { at, calculatedAt, stockText, outlookText, nameOf } = {}) {
