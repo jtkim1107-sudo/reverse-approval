@@ -8,6 +8,7 @@
 //   5) 저장: 변경 확인 창 → rpc fn_save_product_procurement 만(테이블 직접 쓰기 0건), 원가는 payload 에 없음, updated_at 문자열 그대로
 //   6) 승인 권한자가 아니면 입력칸 잠김·저장 호출 0건 · 오류 문구 해석 · 세트 원가 미리보기(부모 × 구성수량)
 //   7) app.js 라우트·메뉴·index.html 스크립트 연결
+//   9) 2026-09-26 일반 규칙: BOX·박스 입수·발주 배수(박스)가 유효하면 MOQ 없어도 물류정보 완성(백엔드 moq_covered_by_order_multiple 과 같음)
 //   8) 2026-09-13 부분 저장(VAT 만 필수, 물류정보 입력 필요 표시·탭) · [편집]·[저장]·[취소] · 재입고 제외·SKU 사용 보류 관리(rpc 만, 사유 필수, 중복 클릭·실패 시 서버 재조회, 보기 전용 잠김)
 import { readFileSync } from "fs";
 import vm from "vm";
@@ -73,7 +74,7 @@ const exclusionEvents = [{ id: 2, vendor_item_id: "95936822310", kind: "RESTOCK_
                            actor_name: "팀장", created_at: "2026-09-13T02:00:00+00:00" }];
 const mappings = [{ product_id: "dh12", external_id: "95928560701", channel: "rocket_growth" },
                   { product_id: "mat", external_id: "96020412319", channel: "rocket_growth" }];
-const FAKE = { exclusionFail: false, rpcError: null, rpcDelay: 0, loads: 0 };
+const FAKE = { exclusionFail: false, rpcError: null, rpcDelay: 0, loads: 0, oldDbRule: false };
 function fakeSb() {
   const tables = { products, product_procurement: procurements, purchase_recommendations: reco, suppliers: [{ name: "리파코 주식회사", active: true }],
                    purchase_order_items: poItems, product_procurement_audit: audits, procurement_sync_state: [],
@@ -98,7 +99,10 @@ function fakeSb() {
       if (fn === "fn_release_vendor_item_exclusion" && FAKE.alreadyReleased) return { data: { status: "ALREADY_RELEASED" }, error: null };
       if (args.p_product_id === "dh12") return { data: null, error: { message: "NOT_INTEGER:min_order_quantity 소수는 입력할 수 없어요(1.5)" } };
       if (fn !== "fn_save_product_procurement") return { data: { status: fn === "fn_set_vendor_item_exclusion" ? "EXCLUDED" : "RELEASED" }, error: null };
-      return { data: { status: "SAVED", logistics_missing: PI.logisticsMissing(args.p_values) }, error: null };
+      // 20260926c 저장 RPC 처럼: 보낸 값 + 저장된 발주 배수(이 RPC 는 배수를 바꾸지 않음)로 판정. FAKE.oldDbRule 이면 적용 전 DB(MOQ 만 봄)
+      const stored = procurements.find(r => r.product_id === args.p_product_id) || {};
+      return { data: { status: "SAVED", logistics_missing: PI.logisticsMissing({ ...args.p_values,
+        order_multiple_boxes: FAKE.oldDbRule ? null : stored.order_multiple_boxes ?? null }) }, error: null };
     },
   };
 }
@@ -342,6 +346,48 @@ const f8 = await PI.view(fakeSb(), { id: "u1", name: "팀장", approver: true })
 FAKE.exclusionFail = false;
 check([f8.includes("재입고 제외·SKU 사용 보류 목록을 불러오지 못했어요"), f8.includes("pi-ex-vid"), f8.includes("발주·물류 정보")], [true, false, true],
       "제외 목록 조회 실패 → 안내만, 등록칸 없음(발주정보 화면은 그대로)");
+
+console.log("\n=== 9. MOQ 없어도 발주 배수로 완성(2026-09-26 일반 규칙 - 상품 이름·SKU 분기 없음) ===");
+const G = { supplier_name: "공급처A", orderable_unit: "BOX", units_per_box: 20, units_per_plt: 800, min_order_quantity: null, lead_time_days: 14, order_multiple_boxes: 10 };
+check(PI.logisticsMissing(G), [], "[핵심] BOX · 박스 입수 20 · 발주 배수 10 · MOQ 없음 -> 빠진 칸 없음");
+check(PI.logisticsMissing({ ...G, order_multiple_boxes: null }), ["min_order_quantity"], "[핵심] 발주 배수·MOQ 둘 다 없음 -> 최소발주 필요");
+check([0, -1, 10.5, "10", true].map(m => PI.logisticsMissing({ ...G, order_multiple_boxes: m })),
+      [["min_order_quantity"], ["min_order_quantity"], ["min_order_quantity"], ["min_order_quantity"], ["min_order_quantity"]], "배수 0·음수·소수·문자·bool 은 무효 -> 최소발주 필요");
+check(PI.logisticsMissing({ ...G, units_per_box: null }), ["min_order_quantity", "units_per_box"], "박스 입수 없음 -> 최소발주·BOX 입수 필요");
+check(PI.logisticsMissing({ ...G, orderable_unit: "PLT" }), ["min_order_quantity"], "PLT 발주는 발주 배수(BOX 전용) 면제 없음");
+check(PI.logisticsMissing({ ...G, orderable_unit: "UNIT" }), ["min_order_quantity"], "UNIT 발주도 면제 없음");
+check(PI.logisticsMissing({ ...G, order_multiple_boxes: null, min_order_quantity: 200 }), [], "MOQ 가 있으면 예전처럼 완성");
+products.push(P("gen", "9Z9Z-000-01", 6500));
+procurements.push({ product_id: "gen", ...G, cost_vat_basis: "VAT_EXCLUDED", updated_at: "2026-09-26T03:55:45.123456+00:00" });
+const bt9 = PI.buildTargets({ products, procurements, recoRows: reco });
+check(bt9.incomplete.map(v => v.product.code), ["1K1A-018-01"], "[핵심] '물류정보 입력 필요' 탭에 발주 배수 상품 없음(배수 없는 기존 행만 남음)");
+const f9 = PI.formFromRow(procurements.at(-1), products.at(-1), 6500);
+const v9 = PI.validateRow(f9, products.at(-1));
+check([f9.order_multiple_boxes, v9.ok, v9.complete, v9.missing, "order_multiple_boxes" in v9.payload], [10, true, true, [], false],
+      "[핵심] 편집 중에도 완성 · 발주 배수는 저장 RPC 값에 넣지 않음(읽기 전용)");
+check(PI.validateRow({ ...f9, order_multiple_boxes: null }, products.at(-1)).missing, ["min_order_quantity"], "배수 없는 폼은 여전히 최소발주 필요");
+calls.length = 0;
+const h9 = await PI.view(fakeSb(), { id: "u1", name: "팀장", approver: true });
+check(h9.includes("물류정보 입력 필요 1"), true, "[핵심] 화면 탭 숫자도 1(발주 배수 상품은 세지 않음)");
+PI.edit();
+PI.onInput("gen", "lead_time_days", "15");
+PI.onInput("gen", "cost_vat_basis", "VAT_EXCLUDED");   // 감사 이력 없는 가짜 행이라 VAT 는 다시 고름
+PI.review();
+await PI.saveAll();
+const r9 = calls.filter(c => c[0] === "rpc" && c[2].p_product_id === "gen");
+check([r9.length, r9[0] && "order_multiple_boxes" in r9[0][2].p_values], [1, false], "저장은 rpc 1건 · 배수는 보내지 않음");
+const m9 = doc.getElementById("modal-root").innerHTML;
+check([m9.includes("9Z9Z-000-01"), m9.includes("물류정보 입력 필요")], [true, false],
+      "[핵심] 저장 결과 창 = 서버(20260926c 저장 RPC) 판정 그대로 - 발주 배수 상품은 '물류정보 입력 필요' 없음");
+// 화면이 서버 판정을 숨기지 않는지: 적용 전 DB 처럼 서버가 최소발주 누락을 돌려주면 그대로 보여줌
+FAKE.oldDbRule = true;
+PI.edit(); PI.onInput("gen", "lead_time_days", "16"); PI.onInput("gen", "cost_vat_basis", "VAT_EXCLUDED"); PI.review(); await PI.saveAll();
+FAKE.oldDbRule = false;
+check(doc.getElementById("modal-root").innerHTML.includes("물류정보 입력 필요"), true,
+      "[핵심] 서버가 최소발주 누락이라고 답하면 화면이 걸러 숨기지 않고 그대로 표시");
+procurements.pop(); products.pop();
+check(/from\("product_procurement"\)\.select\("[^"]*\border_multiple_boxes\b/.test(read("./js/procurement_input.js")), true,
+      "화면이 저장된 발주 배수를 읽어 옴(가짜 DB 는 컬럼을 거르지 않아 코드로 확인)");
 
 console.log(`\n=== 결과: ${fails ? `실패 ${fails}건` : "전체 통과"} ===`);
 process.exit(fails ? 1 : 0);
