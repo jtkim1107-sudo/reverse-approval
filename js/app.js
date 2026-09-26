@@ -501,6 +501,8 @@ const routes = {
   suppliers: { title: "매입 거래처", render: viewSuppliers },
   procurement: { title: "발주·물류 정보", render: viewProcurementInput },
   // 2026-09-27 재입고 WING 복구(js/restock_wing_recovery.js) - 재입고 택배 입고신청 취소 승인·대체 후보(승인 권한자만). WING 직접입고 취소와 별개
+  // 2026-09-27 재입고 후보 승인(js/restock_candidate_approval.js) - 예약 파이프라인이 만든 PENDING_APPROVAL 후보 승인·거절(승인 권한자만, 택배만 승인)
+  restockapproval: { title: "재입고 후보 승인", render: () => (globalThis.RestockCandidateApproval ? RestockCandidateApproval.view(sb, me) : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   restockrecovery: { title: "재입고 WING 복구", render: () => (globalThis.RestockWingRecovery ? RestockWingRecovery.view(sb, me) : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   sales: { title: "매출 입력", render: viewSales, after: () => addSaleRow() },
   po: { title: "발주서", render: viewPurchaseOrders },
