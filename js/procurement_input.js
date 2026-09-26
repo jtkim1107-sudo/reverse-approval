@@ -864,7 +864,6 @@
     const rows = changedRows().filter(r => r.val.ok);
     const results = [];
     for (const { v, val } of rows) {
-      const covered = moqCoveredByOrderMultiple({ ...val.payload, order_multiple_boxes: S.forms[v.product.id] && S.forms[v.product.id].order_multiple_boxes });
       const p = v.product;
       let data = null, error = null;
       try {
@@ -875,9 +874,8 @@
         }));
       } catch (e) { error = e; }
       results.push({ p, ok: !error, status: data && data.status, err: error ? errorMessage(error) : null,
-                     // 저장 RPC 는 발주 배수를 모름 - 같은 일반 규칙으로 MOQ 면제분만 뺌(다른 칸은 서버 판정 그대로)
-                     missing: (data && Array.isArray(data.logistics_missing) ? data.logistics_missing : [])
-                       .filter(f => !(f === "min_order_quantity" && covered)) });
+                     // 서버(fn_save_product_procurement, 20260926c 부터 같은 일반 규칙) 판정을 그대로 표시 - 화면이 고치거나 숨기지 않음
+                     missing: data && Array.isArray(data.logistics_missing) ? data.logistics_missing : [] });
     }
     const ok = results.filter(r => r.ok), bad = results.filter(r => !r.ok);
     root.document.getElementById("modal-root").innerHTML = `

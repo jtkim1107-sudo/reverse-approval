@@ -74,7 +74,7 @@ const exclusionEvents = [{ id: 2, vendor_item_id: "95936822310", kind: "RESTOCK_
                            actor_name: "팀장", created_at: "2026-09-13T02:00:00+00:00" }];
 const mappings = [{ product_id: "dh12", external_id: "95928560701", channel: "rocket_growth" },
                   { product_id: "mat", external_id: "96020412319", channel: "rocket_growth" }];
-const FAKE = { exclusionFail: false, rpcError: null, rpcDelay: 0, loads: 0 };
+const FAKE = { exclusionFail: false, rpcError: null, rpcDelay: 0, loads: 0, oldDbRule: false };
 function fakeSb() {
   const tables = { products, product_procurement: procurements, purchase_recommendations: reco, suppliers: [{ name: "리파코 주식회사", active: true }],
                    purchase_order_items: poItems, product_procurement_audit: audits, procurement_sync_state: [],
@@ -99,7 +99,10 @@ function fakeSb() {
       if (fn === "fn_release_vendor_item_exclusion" && FAKE.alreadyReleased) return { data: { status: "ALREADY_RELEASED" }, error: null };
       if (args.p_product_id === "dh12") return { data: null, error: { message: "NOT_INTEGER:min_order_quantity 소수는 입력할 수 없어요(1.5)" } };
       if (fn !== "fn_save_product_procurement") return { data: { status: fn === "fn_set_vendor_item_exclusion" ? "EXCLUDED" : "RELEASED" }, error: null };
-      return { data: { status: "SAVED", logistics_missing: PI.logisticsMissing(args.p_values) }, error: null };
+      // 20260926c 저장 RPC 처럼: 보낸 값 + 저장된 발주 배수(이 RPC 는 배수를 바꾸지 않음)로 판정. FAKE.oldDbRule 이면 적용 전 DB(MOQ 만 봄)
+      const stored = procurements.find(r => r.product_id === args.p_product_id) || {};
+      return { data: { status: "SAVED", logistics_missing: PI.logisticsMissing({ ...args.p_values,
+        order_multiple_boxes: FAKE.oldDbRule ? null : stored.order_multiple_boxes ?? null }) }, error: null };
     },
   };
 }
@@ -375,7 +378,13 @@ const r9 = calls.filter(c => c[0] === "rpc" && c[2].p_product_id === "gen");
 check([r9.length, r9[0] && "order_multiple_boxes" in r9[0][2].p_values], [1, false], "저장은 rpc 1건 · 배수는 보내지 않음");
 const m9 = doc.getElementById("modal-root").innerHTML;
 check([m9.includes("9Z9Z-000-01"), m9.includes("물류정보 입력 필요")], [true, false],
-      "[핵심] 저장 RPC 가 최소발주를 빠졌다고 돌려줘도(발주 배수 모름) 결과 창에 '물류정보 입력 필요' 없음");
+      "[핵심] 저장 결과 창 = 서버(20260926c 저장 RPC) 판정 그대로 - 발주 배수 상품은 '물류정보 입력 필요' 없음");
+// 화면이 서버 판정을 숨기지 않는지: 적용 전 DB 처럼 서버가 최소발주 누락을 돌려주면 그대로 보여줌
+FAKE.oldDbRule = true;
+PI.edit(); PI.onInput("gen", "lead_time_days", "16"); PI.onInput("gen", "cost_vat_basis", "VAT_EXCLUDED"); PI.review(); await PI.saveAll();
+FAKE.oldDbRule = false;
+check(doc.getElementById("modal-root").innerHTML.includes("물류정보 입력 필요"), true,
+      "[핵심] 서버가 최소발주 누락이라고 답하면 화면이 걸러 숨기지 않고 그대로 표시");
 procurements.pop(); products.pop();
 check(/from\("product_procurement"\)\.select\("[^"]*\border_multiple_boxes\b/.test(read("./js/procurement_input.js")), true,
       "화면이 저장된 발주 배수를 읽어 옴(가짜 DB 는 컬럼을 거르지 않아 코드로 확인)");
