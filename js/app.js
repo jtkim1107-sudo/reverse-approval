@@ -500,6 +500,8 @@ const routes = {
   channels: { title: "판매채널·SCM 계정", render: viewChannels },
   suppliers: { title: "매입 거래처", render: viewSuppliers },
   procurement: { title: "발주·물류 정보", render: viewProcurementInput },
+  // 2026-09-27 재입고 WING 복구(js/restock_wing_recovery.js) - 재입고 택배 입고신청 취소 승인·대체 후보(승인 권한자만). WING 직접입고 취소와 별개
+  restockrecovery: { title: "재입고 WING 복구", render: () => (globalThis.RestockWingRecovery ? RestockWingRecovery.view(sb, me) : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   sales: { title: "매출 입력", render: viewSales, after: () => addSaleRow() },
   po: { title: "발주서", render: viewPurchaseOrders },
   podoc: { title: "발주서", render: viewPODoc },
