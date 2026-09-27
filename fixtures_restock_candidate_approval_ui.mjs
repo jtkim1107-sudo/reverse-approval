@@ -145,7 +145,7 @@ console.log("\n=== 5. 연결 ===");
 const app = read("./js/app.js"), index = read("./index.html");
 check([/restockapproval: \{ title: "재입고 후보 승인", render: \(\) => \(globalThis\.RestockCandidateApproval \? RestockCandidateApproval\.view\(sb, me\)/.test(app),
        index.includes('<script src="js/restock_candidate_approval.js?v=1"></script>'), index.includes('href="#/restockapproval" data-route="restockapproval"'),
-       index.indexOf("restock_candidate_approval.js") < index.indexOf("js/app.js"), index.includes('js/app.js?v=145')],
-      [true, true, true, true, true], "[핵심] 라우트·스크립트(app.js 앞)·메뉴·app.js?v=145");
+       index.indexOf("restock_candidate_approval.js") < index.indexOf("js/app.js"), /js\/app\.js\?v=(14[5-9]|1[5-9]\d)\b/.test(index)],
+      [true, true, true, true, true], "[핵심] 라우트·스크립트(app.js 앞)·메뉴·app.js?v=145 이상");
 console.log(`\n${fails ? "FAIL" : "ALL PASS"} ${passes} / FAIL ${fails}`);
 process.exit(fails ? 1 : 0);
