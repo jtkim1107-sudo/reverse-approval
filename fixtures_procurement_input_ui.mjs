@@ -246,26 +246,31 @@ console.log("\n=== 8. 부분 저장 · 재입고·동기화 제외(2026-09-13) =
 const vo = PI.validateRow({ supplier_name: "", orderable_unit: "", min_order_quantity: "", units_per_box: "", units_per_plt: "", lead_time_days: "",
                             cost_vat_basis: "VAT_EXCLUDED" }, spray);
 check([vo.ok, vo.complete, vo.missing, vo.payload.supplier_name, vo.payload.orderable_unit, vo.payload.min_order_quantity],
-      [true, false, ["supplier_name", "orderable_unit", "min_order_quantity", "lead_time_days"], null, null, null],
-      "[핵심] 원가 VAT 기준만으로 저장 가능 · 빠진 물류 칸 4개를 알려줌 · 빈 칸은 null 로 보냄");
+      [true, false, ["supplier_name", "orderable_unit", "lead_time_days"], null, null, null],
+      "[핵심] 원가 VAT 기준만으로 저장 가능 · 빠진 물류 칸 3개를 알려줌(최소발주는 선택 - 20260927j) · 빈 칸은 null 로 보냄");
 check(Object.keys(PI.validateRow({ ...vo.payload, orderable_unit: "PLT", units_per_plt: "", cost_vat_basis: "VAT_EXCLUDED" }, spray).errors), ["units_per_plt"],
       "발주단위를 PLT 로 고르면 PLT 입수는 여전히 필수");
 check([PI.logisticsMissing(procurements[0]), PI.logisticsMissing(procurements[1]), PI.logisticsMissing(null).length],
-      [["min_order_quantity"], [], 4], "저장된 행의 빈 물류 칸(아가드 1개: 최소발주 없음)");
-check(bt.incomplete.map(v => v.product.code), ["1K1A-018-01"], "[핵심] '물류정보 입력 필요' 탭 대상 = 저장됐지만 물류 칸이 빈 상품");
+      [[], [], 3], "[핵심] 저장된 행의 빈 물류 칸 - 아가드(최소발주만 빔)는 누락 아님(20260927j MOQ 는 선택)");
+check(bt.incomplete.map(v => v.product.code), [], "[핵심] 최소발주만 빈 상품은 '물류정보 입력 필요' 탭에 들어가지 않음");
+// 물류정보 미완성 탭 동작은 진짜 필수 칸(공급처)이 빈 행으로 확인
+const agadSupplier = procurements[0].supplier_name;
+procurements[0].supplier_name = null;
+check([PI.logisticsMissing(procurements[0]), PI.buildTargets({ products, procurements, recoRows: reco }).incomplete.map(v => v.product.code)],
+      [["supplier_name"], ["1K1A-018-01"]], "[핵심] '물류정보 입력 필요' 탭 대상 = 저장됐지만 필수 물류 칸(공급처)이 빈 상품");
 calls.length = 0;
 const h8 = await PI.view(fakeSb(), { id: "u1", name: "팀장", approver: true });
 PI.edit();
 check(h8.includes("물류정보 입력 필요 1") && h8.includes("나중에 입력 가능"), true, "탭 숫자 · 물류 칸은 '나중에 입력 가능' 표시");
 PI.tab("logistics");
 const lh = PI.render();
-check(lh.includes("1K1A-018-01") && lh.includes("최소발주 없음 - 채울 때까지 BigQuery 반영·추천 발주수량·자동 발주·WING 입고 초안이 막혀요"), true,
+check(lh.includes("1K1A-018-01") && lh.includes("공급처 없음 - 채울 때까지 BigQuery 반영·추천 발주수량·자동 발주·WING 입고 초안이 막혀요"), true,
       "[핵심] 물류정보 입력 필요 탭: 빠진 칸과 막히는 것을 함께 안내");
 PI.tab("targets");
 PI.onInput("spray", "cost_vat_basis", "VAT_EXCLUDED");
 PI.review();
 const m8 = doc.getElementById("modal-root").innerHTML;
-check(m8.includes("변경 내용 확인 · 1개 상품") && m8.includes("물류정보 입력 필요 - 공급처·발주단위·최소발주·리드타임 없음"), true,
+check(m8.includes("변경 내용 확인 · 1개 상품") && m8.includes("물류정보 입력 필요 - 공급처·발주단위·리드타임 없음"), true,
       "[핵심] VAT 만 고르고 저장 → 확인 창에 물류정보 입력 필요 경고");
 await PI.saveAll();
 const r8 = calls.filter(c => c[0] === "rpc");
@@ -345,27 +350,30 @@ FAKE.exclusionFail = false;
 check([f8.includes("재입고 제외·SKU 사용 보류 목록을 불러오지 못했어요"), f8.includes("pi-ex-vid"), f8.includes("발주·물류 정보")], [true, false, true],
       "제외 목록 조회 실패 → 안내만, 등록칸 없음(발주정보 화면은 그대로)");
 
-console.log("\n=== 9. 발주 배수는 무시 - MOQ 항상 필수(2026-09-27 대표 최종 규칙) ===");
+procurements[0].supplier_name = agadSupplier;
+
+console.log("\n=== 9. 발주 배수는 무시 · MOQ 는 있을 때만(2026-09-27 대표 최종 규칙 + 20260927j 사용자 확정) ===");
 const G = { supplier_name: "공급처A", orderable_unit: "BOX", units_per_box: 20, units_per_plt: null, min_order_quantity: null, lead_time_days: 14, order_multiple_boxes: 10 };
-check(PI.logisticsMissing(G), ["min_order_quantity"], "[핵심] BOX · 박스 입수 20 · 발주 배수 10 · MOQ 없음 -> 최소발주 필요(배수로 대신하지 않음)");
-check([null, 0, 1, 10, "10", true].map(m => PI.logisticsMissing({ ...G, order_multiple_boxes: m })), Array(6).fill(["min_order_quantity"]),
+check(PI.logisticsMissing(G), [], "[핵심] BOX · 박스 입수 20 · 발주 배수 10 · MOQ 없음 -> 완성(MOQ 는 선택 · 배수는 무시)");
+check([null, 0, 1, 10, "10", true].map(m => PI.logisticsMissing({ ...G, order_multiple_boxes: m })), Array(6).fill([]),
       "발주 배수 값과 무관하게 같은 결과");
+check(PI.logisticsMissing({ ...G, orderable_unit: "PLT", units_per_plt: 60 }), [], "[핵심] 트롤리 3단 모양(PLT · 팔레트입수 60 · MOQ 없음) -> 완성");
 check(PI.logisticsMissing({ ...G, min_order_quantity: 40 }), [], "[핵심] 스프레이건 모양(BOX 20 · MOQ 40 · 팔레트입수 없음) -> 완성");
 check(PI.logisticsMissing({ ...G, orderable_unit: "PLT", min_order_quantity: 60 }), ["units_per_plt"], "PLT 발주만 팔레트입수 필수");
 check("moqCoveredByOrderMultiple" in PI, false, "배수로 MOQ 를 대신하는 함수 없음");
 products.push(P("gen", "9Z9Z-000-01", 6500));
 procurements.push({ product_id: "gen", ...G, cost_vat_basis: "VAT_EXCLUDED", updated_at: "2026-09-26T03:55:45.123456+00:00" });
 const bt9 = PI.buildTargets({ products, procurements, recoRows: reco });
-check(bt9.incomplete.map(v => v.product.code), ["1K1A-018-01", "9Z9Z-000-01"], "[핵심] '물류정보 입력 필요' 탭에 배수만 있고 MOQ 없는 상품도 들어감");
+check(bt9.incomplete.map(v => v.product.code), [], "[핵심] 배수만 있고 MOQ 없는 상품은 '물류정보 입력 필요' 탭에 들어가지 않음");
 const f9 = PI.formFromRow(procurements.at(-1), products.at(-1), 6500);
 const v9 = PI.validateRow(f9, products.at(-1));
-check(["order_multiple_boxes" in f9, v9.complete, v9.missing, "order_multiple_boxes" in v9.payload], [false, false, ["min_order_quantity"], false],
-      "[핵심] 편집 폼·저장 값에 발주 배수 없음 · MOQ 필요");
+check(["order_multiple_boxes" in f9, v9.complete, v9.missing, "order_multiple_boxes" in v9.payload, v9.payload.min_order_quantity],
+      [false, true, [], false, null], "[핵심] 편집 폼·저장 값에 발주 배수 없음 · MOQ 비어도 완성(null 그대로 보냄)");
 const v9b = PI.validateRow({ ...f9, min_order_quantity: "40" }, products.at(-1));
 check([v9b.ok, v9b.complete, v9b.missing], [true, true, []], "MOQ 40 을 넣으면 완성");
 calls.length = 0;
 const h9 = await PI.view(fakeSb(), { id: "u1", name: "팀장", approver: true });
-check(h9.includes("물류정보 입력 필요 2"), true, "[핵심] 화면 탭 숫자 2(배수만 있는 상품도 셈)");
+check(/물류정보 입력 필요 [1-9]/.test(h9), false, "[핵심] 화면 탭 숫자에 MOQ 만 빈 상품을 세지 않음");
 PI.edit();
 PI.onInput("gen", "min_order_quantity", "40");
 PI.onInput("gen", "cost_vat_basis", "VAT_EXCLUDED");   // 감사 이력 없는 가짜 행이라 VAT 는 다시 고름
@@ -381,7 +389,7 @@ FAKE.serverMissing = ["min_order_quantity"];
 PI.edit(); PI.onInput("gen", "lead_time_days", "16"); PI.onInput("gen", "cost_vat_basis", "VAT_EXCLUDED"); PI.review(); await PI.saveAll();
 FAKE.serverMissing = null;
 check(doc.getElementById("modal-root").innerHTML.includes("물류정보 입력 필요"), true,
-      "[핵심] 서버가 최소발주 누락이라고 답하면 화면이 걸러 숨기지 않고 그대로 표시");
+      "[핵심] 서버가 누락이라고 답하면 화면이 걸러 숨기지 않고 그대로 표시");
 procurements.pop(); products.pop();
 check(/from\("product_procurement"\)\.select\("[^"]*\border_multiple_boxes\b/.test(read("./js/procurement_input.js")), false,
       "화면이 발주 배수를 읽지 않음");

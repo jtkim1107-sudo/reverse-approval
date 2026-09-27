@@ -9,7 +9,7 @@
      검사하고 감사 이력을 남겨요. 화면 검사는 같은 규칙을 저장 전에 먼저 보여주는 용도예요.
    - 운송비 요율은 이 화면에 없어요(읽지도 쓰지도 않음).
    2026-09-13 [사용자 확정]
-   - 부분 저장: 원가 VAT 기준만 있으면 저장돼요. 공급처·발주단위·최소발주·리드타임(BOX 면 BOX 입수, PLT 면 PLT 입수)이
+   - 부분 저장: 원가 VAT 기준만 있으면 저장돼요. 공급처·발주단위·리드타임(BOX 면 BOX 입수, PLT 면 PLT 입수)이
      비어 있으면 "물류정보 입력 필요" - 채울 때까지 BigQuery 반영·정식 추천 발주수량·자동 발주·WING 입고 초안이 막혀요.
    - 재입고 제외·SKU 사용 보류 관리(승인 권한자만 등록·해제, 사유 필수, 이력 보존) - vendor_item_exclusions.
      연결 ERP 상품은 DB 함수가 쿠팡 SKU 연결(product_channel_mapping - 화면 계정은 못 읽음)에서 찾아 기록해요.
@@ -30,7 +30,8 @@
   const MAX_INT = 1000000;
   const PO_INACTIVE = new Set(["rejected", "canceled"]);
   // 물류정보 필수 칸(백엔드 erp_procurement_sync.logistics_missing_fields · DB fn_save_product_procurement 와 같은 규칙)
-  const LOGISTICS_FIELDS = ["supplier_name", "orderable_unit", "min_order_quantity", "lead_time_days"];
+  // 2026-09-27(20260927j) [사용자 확정] 최소발주(MOQ)는 공급처가 실제로 정한 상품에만 - 비어 있어도 물류정보 누락 아님(있으면 발주 수량에 적용)
+  const LOGISTICS_FIELDS = ["supplier_name", "orderable_unit", "lead_time_days"];
   const EXCLUSION_KIND = {
     RESTOCK_EXCLUDED: { label: "재입고 제외", chip: "rejected", badge: "excluded", note: "추천 발주수량 없음 · 자동 발주·WING 입고 초안 대상 아님 · 원가·과거 이력은 그대로" },
     CANDIDATE_EXCLUDED: { label: "SKU 사용 보류", chip: "waiting", badge: "hold", note: "연결은 그대로 두고 발주정보 동기화·발주·WING 입고 SKU 후보에서만 뺌(같은 상품의 정상 SKU 로 진행)" },
@@ -452,7 +453,7 @@
       <thead><tr class="erp-grp"><th class="erp-sticky"></th><th class="erp-grp-sep">원가·VAT</th><th colspan="3" class="erp-grp-sep">발주정보</th>
           <th colspan="3" class="erp-grp-sep">물류정보</th></tr>
         <tr><th class="erp-sticky">상품명 · SKU · ERP 코드</th><th class="erp-sep">현재 cost_price<div class="pi-sub">VAT 기준 *</div></th><th class="erp-sep">공급처${later}</th><th>발주단위${later}</th>
-        <th>최소발주${later}</th><th class="erp-sep">BOX 입수<div class="pi-sub">BOX면 필수</div></th><th>PLT 입수<div class="pi-sub">PLT면 필수</div></th><th>리드타임${later}</th></tr></thead>
+        <th>최소발주<div class="pi-sub">있을 때만</div></th><th class="erp-sep">BOX 입수<div class="pi-sub">BOX면 필수</div></th><th>PLT 입수<div class="pi-sub">PLT면 필수</div></th><th>리드타임${later}</th></tr></thead>
       <tbody>${list.map(v => rowHtml(v, S.touched && S.touched.has(v.product.id))).join("")}</tbody></table></div>`;
   }
 
@@ -540,8 +541,9 @@
           원가·발주정보가 없어 재고판단이 <b>데이터확인</b>에 머문 상품이에요. 매입원가는 <b>제품 마스터 값</b>을 그대로 쓰고 여기서는 바꾸지 않아요 -
           대신 그 금액이 <b>VAT 별도 공급가액</b>인지 <b>VAT 포함 금액</b>인지 꼭 골라 주세요. 고르기 전에는 저장도, BigQuery 반영도 안 돼요.
           BigQuery·공헌이익에는 VAT 를 뺀 공급가액이 들어가요(VAT 포함이면 ÷1.1, 나누어떨어지지 않으면 반영하지 않고 멈춤).
-          공급처·발주단위·최소발주·리드타임은 나중에 채워도 저장돼요 - 다 채울 때까지는 <b>물류정보 입력 필요</b>로 두고
-          BigQuery 반영·추천 발주수량·자동 발주·WING 입고 초안을 막아요. 회색 글씨는 참고용 제안이고 저장되지 않아요.</details>
+          공급처·발주단위·리드타임(BOX 면 BOX 입수, PLT 면 PLT 입수)은 나중에 채워도 저장돼요 - 다 채울 때까지는 <b>물류정보 입력 필요</b>로 두고
+          BigQuery 반영·추천 발주수량·자동 발주·WING 입고 초안을 막아요. <b>최소발주</b>는 공급처가 실제로 정한 상품에만 입력해요 -
+          비워 두면 발주 단위 올림만 하고, 입력하면 추천 수량이 그 수량 이상이 돼요. 회색 글씨는 참고용 제안이고 저장되지 않아요.</details>
         ${banner}
         ${tableHtml(list, S.tab === "entered" ? "아직 입력된 상품이 없어요." : S.tab === "logistics" ? "물류정보가 빈 상품이 없어요." : "입력이 필요한 상품이 없어요.")}
         <datalist id="pi-suppliers">${(c.suppliers || []).filter(s => s.active !== false).map(s => `<option value="${escHtml(s.name)}">`).join("")}</datalist>
