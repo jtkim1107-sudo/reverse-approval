@@ -67,8 +67,13 @@
   /** 미리보기 + 입력 → SKU 별 계획(차이·확정 상태·발주 조정·금액). 판단은 서버가 다시 해요. */
   function buildPlan(preview, inputs) {
     const rows = ((preview && preview.rows) || []).map(r => {
-      const q = parseQty((inputs || {})[r.vendor_item_id]);
       const ac = r.active_confirmation || null;
+      // 입력칸이 비어 있으면(화면을 다시 연 경우 등) 서버의 유효 확정값을 그대로 써요 - 빈칸을 '다른 값'으로 보지 않음.
+      // 사용자가 실제로 값을 넣었을 때만 그 값과 확정값을 비교해요.
+      const raw = (inputs || {})[r.vendor_item_id];
+      const typed = String(raw ?? "").replace(/[,\s]/g, "") !== "";
+      const q = !typed && ac ? { value: ac.confirmed_received_qty, error: null } : parseQty(raw);
+      const qtySource = typed ? "INPUT" : ac ? "CONFIRMED" : null;
       let confState = "NEW";
       if (ac) {
         if (ac.fingerprint_matches === false) confState = "DRIFT";
@@ -86,7 +91,7 @@
       return {
         vid: String(r.vendor_item_id), code: r.product_code || "", name: r.product_name || "", productId: r.product_id,
         requested: r.requested_qty, mirrorReceived: r.received_qty, stowed: r.stowed_qty, wingStatus: r.wing_status,
-        checkedAt: r.source_checked_at, fingerprint: r.fingerprint, qty: q.value, qtyError: q.error,
+        checkedAt: r.source_checked_at, fingerprint: r.fingerprint, qty: q.value, qtyError: q.error, qtySource,
         diff: q.value === null ? null : q.value - (r.received_qty || 0), activeConfirmation: ac, confState,
         poItem: pi, poOriginal: pi ? pi.received_qty : null, poAdjusted: pi ? adjusted : null, poDelta: delta,
         unitCost: unit, amountDelta: delta !== null && unit !== null ? delta * unit : null, activeAdjustment: aa, adjState,
@@ -237,14 +242,14 @@
   function tableHtml(plan) {
     const confLabel = r => {
       const q = num((r.activeConfirmation || {}).confirmed_received_qty);
-      return { NEW: "미확정", SAME: `확정됨 ${q}`, CONFLICT: `다른 값 확정 ${q}`, DRIFT: "확정 뒤 WING 값 바뀜" }[r.confState];
+      return { NEW: "미확정", SAME: `확정 완료 ${q}`, CONFLICT: `⚠ 확정값과 다름(확정 ${q} · 입력 ${num(r.qty)})`, DRIFT: "확정 뒤 WING 값 바뀜" }[r.confState];
     };
-    const adjLabel = r => ({ NEW: "", SAME: "조정됨", CONFLICT: "다른 값 조정", NO_PO_ITEM: "발주 품목 없음", MULTIPLE_PO_ITEMS: "발주 품목 여러 개" }[r.adjState]);
+    const adjLabel = r => ({ NEW: "", SAME: "조정 완료", CONFLICT: `⚠ 조정값과 다름(조정 ${num((r.activeAdjustment || {}).adjusted_received_qty)})`, NO_PO_ITEM: "발주 품목 없음", MULTIPLE_PO_ITEMS: "발주 품목 여러 개" }[r.adjState]);
     const body = plan.rows.map(r => `<tr data-vid="${esc(r.vid)}">
       <td><b>${esc(r.code)}</b><div style="font-size:11px">${esc(r.name)}</div><code style="font-size:11px">${esc(r.vid)}</code></td>
       <td class="num">${num(r.requested)}</td><td class="num">${num(r.mirrorReceived)}</td><td class="num">${num(r.stowed)}</td>
       <td style="font-size:11px">${esc(r.wingStatus)}<br>확인 ${esc(fmtKst(r.checkedAt))}</td>
-      <td><input class="pi-in" style="width:64px" inputmode="numeric" data-erp-key="wrf-qty-${esc(r.vid)}" value="${esc((S.inputs || {})[r.vid] ?? "")}"
+      <td><input class="pi-in" style="width:64px" inputmode="numeric" data-erp-key="wrf-qty-${esc(r.vid)}" value="${esc((S.inputs || {})[r.vid] ?? (r.qtySource === "CONFIRMED" ? String(r.qty) : ""))}"
           onchange="WingReceiptFix.setQty('${esc(r.vid)}', this.value)" aria-label="확정 수량 ${esc(r.vid)}">
           ${r.qtyError ? `<div style="color:var(--red);font-size:11px">${esc(r.qtyError)}</div>` : ""}</td>
       <td class="num">${r.diff === null ? "—" : (r.diff > 0 ? "+" : "") + num(r.diff)}</td>
