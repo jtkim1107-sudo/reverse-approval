@@ -142,7 +142,7 @@ console.log("\n=== 4. 연결 ===");
 const app = read("./js/app.js"), index = read("./index.html");
 check([/restockinquiryclose: \{ title: "재입고 문의 테스트 종료", render: \(\) => \(globalThis\.RestockInquiryClose \? RestockInquiryClose\.view\(sb, me\)/.test(app),
        index.includes('<script src="js/restock_inquiry_close.js?v=1"></script>'), index.includes('href="#/restockinquiryclose" data-route="restockinquiryclose"'),
-       index.indexOf("restock_inquiry_close.js") < index.indexOf("js/app.js"), index.includes("js/app.js?v=146")],
-      [true, true, true, true, true], "[핵심] 라우트·스크립트(app.js 앞)·메뉴·app.js?v=146");
+       index.indexOf("restock_inquiry_close.js") < index.indexOf("js/app.js"), /js\/app\.js\?v=(14[6-9]|1[5-9]\d)\b/.test(index)],
+      [true, true, true, true, true], "[핵심] 라우트·스크립트(app.js 앞)·메뉴·app.js?v=146 이상");
 console.log(`\n${fails ? "FAIL" : "ALL PASS"} ${passes} / FAIL ${fails}`);
 process.exit(fails ? 1 : 0);
