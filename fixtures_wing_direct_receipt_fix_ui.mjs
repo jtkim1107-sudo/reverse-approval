@@ -236,7 +236,7 @@ check([sent.p_wing_inbound_id, sent.p_items.map(i => [i.vendor_item_id, i.confir
 check([r.opened.includes("확정 <b>48</b>"), r.opened.includes("원본 WING 기록은 바꾸지 않고")], [true, true], "확인창: 원본→확정·원본 보존 안내");
 check(Object.values(t.W._state.lastConfirm).map(x => x.state), Array(6).fill("APPLIED"), "[핵심] 결과: SKU 별 '적용' + 확정 ID");
 html = await t.W.view(t.sb, t.me);
-check([html.includes("확정됨 48"), (html.match(/data-erp-key="wrf-adjust" disabled/g) || []).length], [true, 0], "새로고침 뒤 확정됨 표시 · 조정 버튼 열림");
+check([html.includes("확정 완료 48"), (html.match(/data-erp-key="wrf-adjust" disabled/g) || []).length], [true, 0], "새로고침 뒤 확정됨 표시 · 조정 버튼 열림");
 // 탭 2개: 두 번째 탭이 같은 내용(같은 키)을 확정 전 미리보기로 보냄 → 이미 적용
 resetServer(); calls.length = 0;
 const tabA = makeCtx("ap"), tabB = makeCtx("ap");
@@ -407,10 +407,58 @@ const st4 = makeCtx("st"); await st4.W.view(st4.sb, st4.me); calls.length = 0;
 rv = await st4.W.revokeAdjustments();
 check([rv.status, rpcs().length], ["DENIED", 0], "[핵심] 권한 없는 세션의 취소는 DENIED(RPC 0)");
 
+console.log("\n=== 6-2. 화면 다시 열기(빈 입력칸) - 서버 확정값 기준 표시 ===");
+resetServer(); t = makeCtx("ap"); await t.W.view(t.sb, t.me); fill(t);
+await withConfirm(t, () => t.W.confirm(), REASON);
+await withConfirm(t, () => t.W.adjust(), "WING 확정 기준 발주 입고수량 조정 - 청구 대조 전");
+const re = makeCtx("ap");                     // 새 탭 = 입력칸 비어 있음
+html = await re.W.view(re.sb, re.me);
+let rp = re.W.buildPlan(re.W._state.preview, re.W._state.inputs);
+check([rp.rows.map(r => r.confState), rp.rows.map(r => r.adjState), rp.rows.map(r => r.qtySource), rp.inputErrors.length, rp.amountTotal],
+      [Array(6).fill("SAME"), Array(6).fill("SAME"), Array(6).fill("CONFIRMED"), 0, 0],
+      "[핵심] 빈 입력칸 + 유효 확정 → 확정 완료(SAME)·조정 완료 · 입력 오류 0 · 새 금액 0");
+check([(html.match(/확정 완료 /g) || []).length, html.includes("확정값과 다름"), html.includes("다른 값 확정"), (html.match(/조정 완료/g) || []).length,
+       html.includes('value="48"'), html.includes("확정 수량을 넣어 주세요")],
+      [6, false, false, 6, true, false], "[핵심] 표시: 확정 완료 6 · '다름' 경고 없음 · 입력칸에 확정값 표시 · 빈칸 오류 없음");
+check([html.includes('data-erp-key="wrf-confirm" disabled'), html.includes('data-erp-key="wrf-adjust" disabled'),
+       html.includes('data-erp-key="wrf-revoke-adj" disabled'), html.includes('data-erp-key="wrf-revoke-conf" disabled'),
+       html.includes("모두 이미 같은 값으로 확정됨"), html.includes("모두 이미 조정됨")],
+      [true, true, false, true, true, true], "[핵심] 버튼: 확정·조정 막힘(할 일 없음) · 조정 취소 열림 · 확정 취소 순서상 막힘");
+calls.length = 0;
+const rr0 = await re.W.confirm();
+check([rr0.status, rpcs("fn_confirm_wing_direct_receipts").length], ["STALE", 0], "다시 연 화면에서 확정 눌러도 새로 쓸 것 없음(RPC 0)");
+// 사용자가 한 SKU 를 실제로 다른 값으로 바꿨을 때만 경고
+re.W._state.inputs["95981694044"] = "24";
+html = await re.W.view(re.sb, re.me);
+rp = re.W.buildPlan(re.W._state.preview, re.W._state.inputs);
+check([rp.rows.find(r => r.vid === "95981694044").confState, html.includes("⚠ 확정값과 다름(확정 48 · 입력 24)"), (html.match(/확정 완료 /g) || []).length,
+       rp.rows.find(r => r.vid === "95981694044").adjState],
+      ["CONFLICT", true, 5, "CONFLICT"], "[핵심] 실제로 다른 값(48→24) 입력 → 그 행만 '확정값과 다름' 경고");
+calls.length = 0;
+const rr1 = await re.W.confirm();
+check([rr1.status, rpcs("fn_confirm_wing_direct_receipts").length, String(rr1.message).includes("95981694044")], ["STALE", 0, true], "다른 값 입력 상태로는 확정 실행 막힘(RPC 0)");
+re.W._state.inputs["95981694044"] = "48";     // 같은 값을 직접 넣으면 경고 없음
+rp = re.W.buildPlan(re.W._state.preview, re.W._state.inputs);
+check([rp.rows.find(r => r.vid === "95981694044").confState, rp.rows.find(r => r.vid === "95981694044").qtySource], ["SAME", "INPUT"], "같은 값 입력 → 확정 완료");
+re.W._state.inputs["95981694044"] = "  ";     // 지우면 다시 서버 확정값 기준
+rp = re.W.buildPlan(re.W._state.preview, re.W._state.inputs);
+check([rp.rows.find(r => r.vid === "95981694044").confState, rp.rows.find(r => r.vid === "95981694044").qtySource], ["SAME", "CONFIRMED"], "입력을 지우면 다시 서버 확정값 기준");
+// 확정이 없는 SKU 는 여전히 빈칸 = 입력 필요(확정 일부만 있는 경우)
+resetServer(); t = makeCtx("ap"); await t.W.view(t.sb, t.me);
+SV.conf["95981694044"] = { id: "conf-95981694044", batch: "batch-x", qty: 48, fp: SV.mirror["95981694044"].fp };
+const part = makeCtx("ap"); html = await part.W.view(part.sb, part.me);
+rp = part.W.buildPlan(part.W._state.preview, part.W._state.inputs);
+check([rp.rows.find(r => r.vid === "95981694044").confState, rp.inputErrors.length, html.includes('data-erp-key="wrf-confirm" disabled')], ["SAME", 5, true],
+      "확정 1개만 있을 때: 그 행은 확정 완료 · 나머지 5개는 입력 필요 · 실행 막힘");
+// WING 값이 바뀐 확정은 빈칸이어도 drift 표시
+SV.mirror["95981694044"].fp = "fp-changed";
+html = await part.W.view(part.sb, part.me);
+check([html.includes("확정 뒤 WING 값 바뀜"), html.includes("확정 완료 48")], [true, false], "지문이 바뀐 확정은 빈칸이어도 drift 표시(확정 완료 아님)");
+
 console.log("\n=== 7. 연결 ===");
 const app = read("./js/app.js"), index = read("./index.html");
 check([/wingreceiptfix: \{ title: "WING 직접입고 최종수량 정정", render: \(\) => \(globalThis\.WingReceiptFix \? WingReceiptFix\.view\(sb, me\)/.test(app),
-       index.includes('<script src="js/wing_direct_receipt_fix.js?v=1"></script>'), index.includes('href="#/wingreceiptfix" data-route="wingreceiptfix"'),
+       index.includes('<script src="js/wing_direct_receipt_fix.js?v=2"></script>'), index.includes('href="#/wingreceiptfix" data-route="wingreceiptfix"'),
        index.indexOf("wing_direct_receipt_fix.js") < index.indexOf("js/app.js"), /js\/app\.js\?v=(14[7-9]|1[5-9]\d)/.test(index)],
       [true, true, true, true, true], "[핵심] 라우트·스크립트(app.js 앞)·메뉴·app.js?v=147 이상");
 console.log(`\n${fails ? "FAIL" : "ALL PASS"} ${passes} / FAIL ${fails}`);
