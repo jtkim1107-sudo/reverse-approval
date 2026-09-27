@@ -580,7 +580,9 @@ async function route() {
     history.replaceState(null, "", "#/stockflow/stock");
     hash = "stockflow/stock";
   }
-  const [name, param] = hash.split("/");
+  // 2026-09-27 deep link 의 쿼리(#/wingreceiptfix?id=…)는 라우트 이름·param 에서 떼요 - 쿼리까지 이름으로 보면
+  // 라우트를 못 찾아 대시보드로 떨어졌어요. location.hash 는 그대로 두므로 화면이 id·po 를 계속 읽어요.
+  const [name, param] = hash.split("?")[0].split("/");
   const r = routes[name] || routes.dashboard;
   syncTodayState(); // 앱을 켜둔 채 자정을 넘겨도 '오늘'이 어제로 굳지 않도록
   document.getElementById("page-title").textContent = r.title;
