@@ -69,18 +69,13 @@
     return { value: n, error: null };
   }
 
-  const posInt = x => typeof x === "number" && Number.isInteger(x) && x > 0;
-  /** 2026-09-26 일반 규칙(백엔드 erp_procurement_sync.moq_covered_by_order_multiple 와 같음): BOX 발주이고 박스 입수·발주 배수(박스)가
-      둘 다 양의 정수면 발주 배수가 최소 단위를 정하므로 MOQ 가 비어 있어도 물류정보 완성. MOQ·발주 배수 둘 다 없을 때만 MOQ 필요. */
-  function moqCoveredByOrderMultiple(v) {
-    return !!v && v.orderable_unit === "BOX" && posInt(v.units_per_box) && posInt(v.order_multiple_boxes);
-  }
-
-  /** 비어 있는 필수 물류 칸(저장된 행이든 입력 중인 값이든). BOX·PLT 면 입수도 필수. */
+  /** 비어 있는 필수 물류 칸(저장된 행이든 입력 중인 값이든). BOX·PLT 면 입수도 필수.
+      2026-09-27 [대표 최종 규칙 - 백엔드 erp_procurement_sync.logistics_missing_fields·DB 20260927f 와 같음] 발주 배수는 모든 상품에
+      없음 - 저장된 값이 있어도 보지 않고 MOQ 는 항상 필수. 팔레트입수는 PLT 발주만 필수(BOX 는 박스입수·MOQ 만). */
   function logisticsMissing(v) {
     if (!v) return [...LOGISTICS_FIELDS];
     const empty = x => x === null || x === undefined || String(x).trim() === "";
-    const out = LOGISTICS_FIELDS.filter(f => empty(v[f]) && !(f === "min_order_quantity" && moqCoveredByOrderMultiple(v)));
+    const out = LOGISTICS_FIELDS.filter(f => empty(v[f]));
     if (v.orderable_unit === "BOX" && empty(v.units_per_box)) out.push("units_per_box");
     if (v.orderable_unit === "PLT" && empty(v.units_per_plt)) out.push("units_per_plt");
     return out;
@@ -116,7 +111,7 @@
       cost_vat_basis: form.cost_vat_basis || null,
     };
     // 발주 배수는 이 화면에서 고치지 않음(저장 RPC 로도 안 보냄) - 저장된 값을 완성 판정에만 씀
-    const missing = logisticsMissing({ ...payload, order_multiple_boxes: form.order_multiple_boxes ?? null }).filter(f => !errors[f]);
+    const missing = logisticsMissing(payload).filter(f => !errors[f]);
     return { errors, warnings, payload, ok: Object.keys(errors).length === 0, missing, complete: missing.length === 0 };
   }
 
@@ -130,7 +125,6 @@
       min_order_quantity: s(pp && pp.min_order_quantity), units_per_box: s(pp && pp.units_per_box),
       units_per_plt: s(pp && pp.units_per_plt), lead_time_days: s(pp && pp.lead_time_days),
       cost_vat_basis: vatStillValid ? pp.cost_vat_basis : "",
-      order_multiple_boxes: pp && posInt(pp.order_multiple_boxes) ? pp.order_multiple_boxes : null,   // 읽기 전용(편집 칸 아님)
     };
   }
 
@@ -309,7 +303,7 @@
     const q = (p) => p.then(r => { if (r.error) throw r.error; return r.data || []; });
     const [products, procurements, recoRows, suppliers] = await Promise.all([
       q(sb.from("products").select("id,code,name,cost_price,tax_type,is_set,set_parent_id,set_qty,box_qty,spec")),
-      q(sb.from("product_procurement").select("product_id,supplier_name,orderable_unit,min_order_quantity,units_per_box,units_per_plt,lead_time_days,order_multiple_boxes,cost_vat_basis,cost_vat_confirmed_at,updated_at")),
+      q(sb.from("product_procurement").select("product_id,supplier_name,orderable_unit,min_order_quantity,units_per_box,units_per_plt,lead_time_days,cost_vat_basis,cost_vat_confirmed_at,updated_at")),
       q(sb.from("purchase_recommendations").select("vendor_item_id,product_id,product_name,option_name,status,is_active,lead_time_days")),
       q(sb.from("suppliers").select("name,active").order("name")),
     ]);
@@ -946,7 +940,7 @@
     VAT_LABEL, UNIT_LABEL, FIELD_LABEL,
     parseIntField, validateRow, formFromRow, diffRow, buildTargets, suggestionsFor, errorMessage, setPreview, supplyPreview,
     VAT_STATUS, vatNeedsAck, computeVatStatus, fetchVatStatus, vatChipHtml,
-    LOGISTICS_FIELDS, EXCLUSION_KIND, logisticsMissing, moqCoveredByOrderMultiple,
+    LOGISTICS_FIELDS, EXCLUSION_KIND, logisticsMissing,
     view, render, onInput, fill, tab: setTab, edit, cancel, reset: cancel, review, saveAll, history, approveCost,
     addExclusion, confirmExclusion, releaseExclusion, confirmRelease, exclusionHistory, exclusionDetail, refreshExclusions, exKindChanged,
     _state: S,
