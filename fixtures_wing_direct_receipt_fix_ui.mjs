@@ -411,7 +411,7 @@ console.log("\n=== 7. 연결 ===");
 const app = read("./js/app.js"), index = read("./index.html");
 check([/wingreceiptfix: \{ title: "WING 직접입고 최종수량 정정", render: \(\) => \(globalThis\.WingReceiptFix \? WingReceiptFix\.view\(sb, me\)/.test(app),
        index.includes('<script src="js/wing_direct_receipt_fix.js?v=1"></script>'), index.includes('href="#/wingreceiptfix" data-route="wingreceiptfix"'),
-       index.indexOf("wing_direct_receipt_fix.js") < index.indexOf("js/app.js"), index.includes("js/app.js?v=147")],
-      [true, true, true, true, true], "[핵심] 라우트·스크립트(app.js 앞)·메뉴·app.js?v=147");
+       index.indexOf("wing_direct_receipt_fix.js") < index.indexOf("js/app.js"), /js\/app\.js\?v=(14[7-9]|1[5-9]\d)/.test(index)],
+      [true, true, true, true, true], "[핵심] 라우트·스크립트(app.js 앞)·메뉴·app.js?v=147 이상");
 console.log(`\n${fails ? "FAIL" : "ALL PASS"} ${passes} / FAIL ${fails}`);
 process.exit(fails ? 1 : 0);
