@@ -4,7 +4,7 @@
 // 가짜 서버는 Rebirth-ops PR #85(20260927e) RPC 규칙을 그대로 흉내 냄: 승인자만 · 미러 지문 CAS · 요청 키 멱등(같은 내용=ALREADY,
 // 다른 내용=오류) · 한 SKU 라도 막히면 전부 안 씀 · 이미 활성 확정/조정이면 막음.
 // 입고 1096696429834932224 · 발주 리버스-발주-2026-010 · 대표 확정 011-01=24 011-02=24 012-01=24 012-02=24 013-01=48 013-02=24
-//   1) 순수 함수: 수량 검사 · 계획(차이·확정 상태·발주 조정·VAT 별도 금액 -108,000) · 문의메일 후보 가능성
+//   1) 순수 함수: 수량 검사 · 계획(차이·확정 상태·발주 조정·VAT 별도 금액 -108,000) · 문의메일 스냅샷 게이트·보류 해제 조건 · 되돌리기 대상
 //   2) 화면: 승인자 아니면 조회 0·버튼 0 · 미리보기 표 · 메일 경고 · 입력 전엔 실행 버튼 막힘
 //   3) 확정 실행: 6개 적용 · 탭 2개(같은 내용) 두 번째 = 이미 적용 · 한 SKU drift = 전부 안 씀(SKU 별 표시) · 세션 만료 · 중복 클릭 BUSY · 권한 없음 DENIED
 //   4) 조정 실행: 확정 뒤에만 · 6개 적용 · 재실행 = 이미 적용 · 부분 실패(한 품목 원본 drift) = 전부 안 씀
@@ -41,8 +41,16 @@ function resetServer() {
   SV.conf = {}; SV.adj = {}; SV.batches = {}; SV.adjKeys = {}; SV.decisions = SKUS.map(([code]) => ({ product_id: "p-" + code, decision: "DATA_CHECK",
     logistics_status: "INCOMPLETE", automation_blocked: true, automation_label: "발주정보 없음", auto_po_allowed: false }));
   SV.procurements = []; SV.errorNext = null; SV.delay = 0; SV.approvers = new Set(["ap"]);
+  SV.snapshots = [snap(0, Date.now() - 5 * 60000, Date.now() - 60 * 60000)]; SV.holds = []; SV.revokeKeys = {}; SV.releases = [];
 }
 const calls = [];
+function snap(n, computedMs, cacheMs, gate = null) {
+  return { id: "snap-" + Math.random().toString(16).slice(2, 8), source: "MAIL_STAGE", computed_at: new Date(computedMs).toISOString(),
+           cache_calculated_at: new Date(cacheMs).toISOString(), gate, gate_reason: gate ? "x" : null, candidate_count: n, blocked_count: 13,
+           candidates: Array.from({ length: n }, (_, i) => ({ product_id: "px" + i, product_code: "ZZ-" + i, supplier_name: "리파코 주식회사", recommended_order_qty_ea: 20 })),
+           candidates_fp: "fp" + n };
+}
+function addHold(kind) { const h = { id: "hold-" + (SV.holds.length + 1), source_kind: kind, reason: kind + " 보류", created_at: new Date().toISOString(), status: "ACTIVE" }; SV.holds.push(h); return h.id; }
 function fakeSb(user) {
   const builder = t => {
     const b = { _f: [], select() { calls.push(["select", t]); return b; }, in(c, v) { b._f.push([c, v]); return b; }, eq() { return b; },
@@ -65,6 +73,42 @@ function fakeSb(user) {
             po_items: po ? [{ id: pi.id, qty: pi.qty, received_qty: pi.received_qty, unit_cost: pi.unit_cost,
               active_adjustment: aj ? { id: aj.id, adjusted_received_qty: aj.adjusted } : null }] : [] }; }) }, error: null };
     }
+    if (fn === "fn_preview_restock_inquiry_mail_state") {
+      return { data: { active_holds: SV.holds.filter(h => h.status === "ACTIVE"), snapshots: [...SV.snapshots].reverse().slice(0, 5) }, error: null };
+    }
+    if (fn === "fn_release_restock_inquiry_mail_hold") {
+      const h = SV.holds.find(x => x.id === a.p_hold_id);
+      if (!h) return { data: { status: "BLOCKED", reason: "HOLD_NOT_FOUND" }, error: null };
+      if (h.status === "RELEASED") return { data: { status: "ALREADY_RELEASED" }, error: null };
+      const sn = SV.snapshots.find(x => x.id === a.p_snapshot_id), latest = SV.snapshots[SV.snapshots.length - 1];
+      if (!sn) return { data: { status: "BLOCKED", reason: "SNAPSHOT_NOT_FOUND" }, error: null };
+      if (sn.gate) return { data: { status: "BLOCKED", reason: "SNAPSHOT_GATE_BLOCKED" }, error: null };
+      if (!(sn.computed_at > h.created_at && sn.cache_calculated_at > h.created_at)) return { data: { status: "BLOCKED", reason: "SNAPSHOT_NOT_AFTER_HOLD" }, error: null };
+      if (sn !== latest) return { data: { status: "BLOCKED", reason: "SNAPSHOT_NOT_LATEST" }, error: null };
+      if (sn.candidate_count > 0 && a.p_acknowledged_candidates_fp !== sn.candidates_fp) return { data: { status: "BLOCKED", reason: "CANDIDATES_NOT_ACKNOWLEDGED" }, error: null };
+      h.status = "RELEASED"; SV.releases.push([h.id, sn.id, a.p_acknowledged_candidates_fp]);
+      return { data: { status: "RELEASED", hold_id: h.id, snapshot_id: sn.id }, error: null };
+    }
+    if (fn === "fn_revoke_po_receipt_adjustments" || fn === "fn_revoke_wing_direct_receipt_confirmations") {
+      const adj = fn === "fn_revoke_po_receipt_adjustments";
+      const hash = JSON.stringify([fn, a.p_items.map(i => [i.id, i.expected_qty]).sort(), a.p_reason]);
+      const ex = SV.revokeKeys[a.p_idempotency_key];
+      if (ex) return ex.hash === hash ? { data: { status: "ALREADY_REVOKED", revocation_batch_id: ex.id }, error: null } : { data: null, error: { message: "IDEMPOTENCY_PAYLOAD_MISMATCH" } };
+      const findRec = id => adj ? Object.entries(SV.adj).find(([, v]) => v.id === id) : Object.entries(SV.conf).find(([, v]) => v.id === id);
+      const blockers = [];
+      for (const it of a.p_items) {
+        const f = findRec(it.id);
+        if (!f) { blockers.push({ id: it.id, reason: "ALREADY_REVOKED" }); continue; }
+        const [k, v] = f;
+        if ((adj ? v.adjusted : v.qty) !== it.expected_qty) blockers.push({ id: it.id, reason: "VALUE_DRIFT" });
+        else if (!adj && SV.adj["poi-" + k]) blockers.push({ id: it.id, reason: "ACTIVE_PO_ADJUSTMENT_EXISTS" });
+      }
+      if (blockers.length) return { data: { status: "BLOCKED", blockers }, error: null };
+      const id = "rv-" + (Object.keys(SV.revokeKeys).length + 1);
+      SV.revokeKeys[a.p_idempotency_key] = { id, hash };
+      for (const it of a.p_items) { const [k] = findRec(it.id); delete (adj ? SV.adj : SV.conf)[k]; }
+      return { data: { status: "REVOKED", revocation_batch_id: id, inquiry_mail_hold_id: addHold("REVOCATION"), items: a.p_items.map(i => ({ id: i.id })) }, error: null };
+    }
     if (fn === "fn_confirm_wing_direct_receipts") {
       const hash = JSON.stringify([a.p_items.map(i => [i.vendor_item_id, i.expected_fingerprint, i.confirmed_received_qty]).sort(), a.p_reason]);
       const ex = SV.batches[a.p_idempotency_key];
@@ -82,7 +126,7 @@ function fakeSb(user) {
       SV.batches[a.p_idempotency_key] = { id, hash };
       const items = a.p_items.map(it => { SV.conf[it.vendor_item_id] = { id: "conf-" + it.vendor_item_id, batch: id, qty: it.confirmed_received_qty, fp: SV.mirror[it.vendor_item_id].fp };
         return { vendor_item_id: it.vendor_item_id, confirmation_id: "conf-" + it.vendor_item_id, confirmed_received_qty: it.confirmed_received_qty }; });
-      return { data: { status: "CONFIRMED", batch_id: id, items }, error: null };
+      return { data: { status: "CONFIRMED", batch_id: id, items, inquiry_mail_hold_id: addHold("CONFIRMATION") }, error: null };
     }
     if (fn === "fn_record_po_receipt_adjustments") {
       if (SV.adjKeys[a.p_idempotency_key]) return { data: { status: "ALREADY_RECORDED" }, error: null };
@@ -99,7 +143,7 @@ function fakeSb(user) {
       const items = a.p_items.map(it => { const pi = SV.poi[it.po_item_id]; const vid = it.po_item_id.slice(4); const adjusted = SV.conf[vid].qty;
         const d = (adjusted - pi.received_qty) * pi.unit_cost; total += d; SV.adj[pi.id] = { id: "adj-" + vid, adjusted };
         return { po_item_id: pi.id, original: pi.received_qty, adjusted, amount_delta: d }; });
-      return { data: { status: "RECORDED", items, amount_delta_total: total }, error: null };
+      return { data: { status: "RECORDED", items, amount_delta_total: total, inquiry_mail_hold_id: addHold("PO_ADJUSTMENT") }, error: null };
     }
     return { data: null, error: { message: "unknown rpc" } };
   };
@@ -117,6 +161,7 @@ function makeCtx(user) {
   return { ctx, doc, W: ctx.WingReceiptFix, sb: fakeSb(user), me: { id: user, approver: user === "ap" } };
 }
 async function withConfirm(t, fn, reason, ans = true) {
+  t.doc.els.delete("erp-confirm-go");
   const p = fn();
   for (let i = 0; i < 80; i++) { await tick(); if (t.doc.els.has("erp-confirm-go")) break; }
   const opened = t.doc.getElementById("modal-root").innerHTML;
@@ -141,13 +186,17 @@ check(plan.rows.map(r => [r.vid, r.mirrorReceived, r.qty, r.diff, r.poOriginal, 
       "[핵심] SKU 별 원본 WING 입고 · 확정 · 차이 · 발주 원본→조정 · 금액 영향");
 check(plan.amountTotal, -108000, "[핵심] VAT 별도 금액 영향 합계 -108,000원");
 check([t.W.confirmItems(plan).items.length, t.W.adjustItems(plan).why.startsWith("확정 기록이 먼저")], [6, true], "확정 6개 준비 · 조정은 확정 먼저");
-check([t.W.mailCheck(SV.decisions[0], null).possible, t.W.mailCheck(null, null).possible,
-       t.W.mailCheck({ decision: "ORDER_NOW", logistics_status: "COMPLETE", automation_blocked: false, auto_po_allowed: true }, { supplier_name: "공급처" }).possible],
-      [false, null, true], "[핵심] 문의메일 후보 가능성: 필수 조건 하나라도 아니면 불가 · 판단 행 없으면 판단 불가 · 모두 충족이면 가능");
-const OKD = { decision: "ORDER_NOW", logistics_status: "COMPLETE", automation_blocked: false, auto_po_allowed: true }, OKP = { supplier_name: "공급처" };
-check([t.W.mailCheck({ ...OKD, automation_blocked: true }, OKP).possible, t.W.mailCheck({ ...OKD, logistics_status: "INCOMPLETE" }, OKP).possible,
-       t.W.mailCheck({ ...OKD, auto_po_allowed: false }, OKP).possible, t.W.mailCheck({ ...OKD, decision: "OK" }, OKP).possible, t.W.mailCheck(OKD, { supplier_name: " " }).possible],
-      [false, false, false, false, false], "[핵심] 필수 조건 하나씩만 어긋나도 후보 불가(막힘·물류·자동 발주·지금 발주·공급처)");
+const NOW = Date.now();
+check([t.W.mailGate({ snapshots: [snap(0, NOW + 60000, NOW)] }, NOW).ok, t.W.mailGate({ snapshots: [snap(0, NOW + 10 * 60000, NOW)] }, NOW).ok], [true, false],
+      "PC 시계가 서버보다 조금 늦어도(1분) 통과 · 10분 미래 시각은 거부");
+check([t.W.mailGate(null, NOW).ok, t.W.mailGate({ snapshots: [] }, NOW).ok, t.W.mailGate({ snapshots: [snap(0, NOW - 40 * 60000, NOW - 50 * 60000)] }, NOW).ok,
+       t.W.mailGate({ snapshots: [snap(0, NOW - 5 * 60000, NOW, "C_CACHE")] }, NOW).ok, t.W.mailGate({ snapshots: [snap(2, NOW - 5 * 60000, NOW)] }, NOW).ok],
+      [false, false, false, false, true], "[핵심] 실행 전 문의메일 게이트: 상태 없음·스냅샷 없음·30분 넘음·게이트 막힘 → 실행 막힘, 30분 안 정확한 스냅샷이면 열림");
+const HOLD = { id: "h", created_at: new Date(NOW - 10 * 60000).toISOString() };
+check([t.W.holdReleaseState(HOLD, snap(0, NOW - 20 * 60000, NOW)).enabled, t.W.holdReleaseState(HOLD, snap(0, NOW, NOW - 20 * 60000)).enabled,
+       t.W.holdReleaseState(HOLD, snap(0, NOW, NOW, "C_CACHE")).enabled, t.W.holdReleaseState(HOLD, snap(0, NOW, NOW)), t.W.holdReleaseState(HOLD, snap(3, NOW, NOW)).needsAck],
+      [false, false, false, { enabled: true, needsAck: false, why: "" }, true],
+      "[핵심] 보류 해제: 보류 뒤 스냅샷·보류 뒤 재계산 캐시·게이트 통과만 · 후보 있으면 목록 확인 필요");
 const k1 = await t.W.idemKey("wdr", SHIP, { items: [{ a: 1 }], reason: "x" }), k2 = await t.W.idemKey("wdr", SHIP, { items: [{ a: 1 }], reason: "x" });
 check([k1 === k2, /^[A-Za-z0-9:_.-]{8,120}$/.test(k1), k1 !== await t.W.idemKey("wdr", SHIP, { items: [{ a: 2 }], reason: "x" })], [true, true, true],
       "[핵심] 요청 키 = 내용 지문(같은 내용 같은 키, 서버 키 형식)");
@@ -159,10 +208,20 @@ const staffHtml = await staff.W.view(staff.sb, staff.me);
 check([calls.length, staffHtml.includes("<button"), staffHtml.includes("95981694043")], [0, false, false], "[핵심] 승인 권한자 아니면 조회 0·버튼 0·데이터 0");
 t = makeCtx("ap");
 let html = await t.W.view(t.sb, t.me);
-check([html.includes("95981694043"), html.includes("리버스-발주-2026-010"), html.includes("실행 직후 공급처 메일이 나갈 수 있어요"),
-       html.includes("후보 불가"), (html.match(/data-erp-key="wrf-confirm" disabled/g) || []).length],
-      [true, true, true, true, 1], "[핵심] 미리보기 표 · 발주 · 메일 경고 · 후보 불가 표시 · 확정 수량 입력 전엔 실행 막힘");
-check(rpcs().every(c => c[1] === "fn_preview_wing_direct_receipts"), true, "화면 진입은 읽기 RPC 만");
+check([html.includes("95981694043"), html.includes("리버스-발주-2026-010"), html.includes("운영 문의메일 단계의 정확한 후보"),
+       html.includes("후보 <b>0</b>건"), (html.match(/data-erp-key="wrf-confirm" disabled/g) || []).length],
+      [true, true, true, true, 1], "[핵심] 미리보기 표 · 발주 · 운영 스냅샷(후보 0건) 표시 · 확정 수량 입력 전엔 실행 막힘");
+check(rpcs().every(c => ["fn_preview_wing_direct_receipts", "fn_preview_restock_inquiry_mail_state"].includes(c[1])), true, "화면 진입은 읽기 RPC 만");
+// 스냅샷이 오래되면 실행 자체가 막힘
+SV.snapshots = [snap(0, Date.now() - 45 * 60000, Date.now() - 60 * 60000)];
+fill(t); calls.length = 0;
+let rs = await t.W.confirm();
+check([rs.status, rpcs("fn_confirm_wing_direct_receipts").length, String(rs.message).includes("30분")], ["STALE", 0, true],
+      "[핵심] 정확한 운영 후보 스냅샷이 30분 넘으면 확정 실행 막힘(RPC 0)");
+SV.snapshots = [];
+rs = await t.W.confirm();
+check([rs.status, String(rs.message).includes("--preview-only")], ["STALE", true], "[핵심] 스냅샷이 없으면 막힘 + VM 미리보기 안내");
+SV.snapshots = [snap(0, Date.now() - 5 * 60000, Date.now() - 60 * 60000)];
 const mod = read("./js/wing_direct_receipt_fix.js");
 check([/1096696429834932224|리버스-발주-2026-010|1M1D-0/.test(mod), /from\([^)]*\)\.(insert|update|delete|upsert)/.test(mod), /\bfetch\(|XMLHttpRequest|sendMail|smtp_send|wing\.coupang/i.test(mod), /p_(user|actor|approver)_id/.test(mod)],
       [false, false, false, false], "[핵심] 입고·발주·상품 상수 없음 · 표 직접 쓰기 없음 · SMTP/WING 호출 없음 · 사용자 ID 파라미터 없음");
@@ -187,7 +246,7 @@ r = await pa;
 // 탭 B 는 확정 전 화면(미리보기 재조회 없이) - 서버 쪽 규칙 확인을 위해 같은 키·같은 내용을 직접 보냄
 const planB = tabB.W.buildPlan(tabB.W._state.preview, tabB.W._state.inputs);
 const itemsB = tabB.W.confirmItems(planB).items;
-const keyB = await tabB.W.idemKey("wdr", SHIP, { items: itemsB, reason: REASON });
+const keyB = await tabB.W.idemKey("wdr", SHIP, { kind: "confirm", items: itemsB, reason: REASON });
 const rb = await tabB.sb.rpc("fn_confirm_wing_direct_receipts", { p_wing_inbound_id: SHIP, p_items: itemsB, p_reason: REASON, p_idempotency_key: keyB });
 check([r.res.status, rb.data.status, Object.keys(SV.batches).length], ["DONE", "ALREADY_CONFIRMED", 1], "[핵심] 탭 2개 같은 내용 → 두 번째는 '이미 적용'(서버 묶음 1개)");
 check(tabB.W.interpretResult("confirm", itemsB.map(i => i.vendor_item_id), rb.data, null).perKey["95981694044"].state, "ALREADY", "탭 B 결과 SKU 별 '이미 적용'");
@@ -259,7 +318,96 @@ check([r.res.status, Object.keys(SV.adj).length, t.W._state.lastAdjust["poi-9598
 t.sb.rpc = orig3;
 check(calls.filter(c => ["insert", "update", "delete"].includes(c[0])).length, 0, "[핵심] 표 직접 쓰기 0건");
 
-console.log("\n=== 5. 연결 ===");
+console.log("\n=== 5. 문의메일 보류 해제 ===");
+resetServer(); t = makeCtx("ap"); await t.W.view(t.sb, t.me); fill(t);
+await withConfirm(t, () => t.W.confirm(), REASON);
+check(SV.holds.filter(h => h.status === "ACTIVE").length, 1, "[핵심] 확정 실행과 함께 서버가 문의메일 보류를 걺");
+const hid = SV.holds[0].id;
+html = await t.W.view(t.sb, t.me);
+check([html.includes(`data-erp-key="wrf-release-${hid}" disabled`), html.includes("보류 뒤에 계산된 스냅샷이 아직 없어요")], [true, true],
+      "[핵심] 보류 뒤 스냅샷이 없으면 해제 버튼 막힘");
+calls.length = 0;
+let rr = await t.W.release(hid);
+check([rr.status, rpcs("fn_release_restock_inquiry_mail_hold").length], ["STALE", 0], "해제 직접 호출도 재조회 뒤 막힘(RPC 0)");
+SV.snapshots.push(snap(2, Date.now() + 1000, Date.now() + 1000));
+html = await t.W.view(t.sb, t.me);
+check([html.includes(`data-erp-key="wrf-release-${hid}" disabled`), html.includes("후보 2건에 문의 메일이 나가도 됨을 확인"), html.includes("ZZ-0")], [true, true, true],
+      "[핵심] 보류 뒤 스냅샷에 후보 2건 → 후보 목록 표시 · 확인 체크 전엔 해제 막힘");
+calls.length = 0;
+rr = await t.W.release(hid);
+check([rr.status, String(rr.message).includes("확인 체크"), rpcs("fn_release_restock_inquiry_mail_hold").length], ["STALE", true, 0], "[핵심] 후보 확인 체크 없이 해제 직접 호출 → 막힘(RPC 0)");
+t.W.setAck(hid, true); calls.length = 0;
+rr = await withConfirm(t, () => t.W.release(hid), "후보 2건 확인 후 해제");
+const rel = rpcs("fn_release_restock_inquiry_mail_hold")[0][2];
+check([rr.res.status, rel.p_acknowledged_candidates_fp, SV.holds[0].status, rr.opened.includes("실제 메일이 나갈 수 있어요")], ["DONE", "fp2", "RELEASED", true],
+      "[핵심] 확인 체크 뒤 해제: 후보 목록 지문 전송 · 확인창 경고");
+resetServer(); t = makeCtx("ap"); await t.W.view(t.sb, t.me); fill(t);
+await withConfirm(t, () => t.W.confirm(), REASON);
+SV.snapshots.push(snap(0, Date.now() + 1000, Date.now() + 1000));
+await t.W.view(t.sb, t.me);
+rr = await withConfirm(t, () => t.W.release(SV.holds[0].id), "정정 뒤 후보 0건 확인");
+check([rr.res.status, rpcs("fn_release_restock_inquiry_mail_hold").slice(-1)[0][2].p_acknowledged_candidates_fp], ["DONE", null], "후보 0건 스냅샷이면 확인 없이 해제");
+const st3 = makeCtx("st"); await st3.W.view(st3.sb, st3.me); calls.length = 0;
+rr = await st3.W.release("hold-1");
+check([rr.status, rpcs().length], ["DENIED", 0], "[핵심] 권한 없는 세션의 해제는 DENIED(RPC 0)");
+
+console.log("\n=== 6. 되돌리기(조정 취소 → 확정 취소) ===");
+resetServer(); t = makeCtx("ap"); await t.W.view(t.sb, t.me); fill(t);
+await withConfirm(t, () => t.W.confirm(), REASON);
+await withConfirm(t, () => t.W.adjust(), "WING 확정 기준 발주 입고수량 조정 - 청구 대조 전");
+html = await t.W.view(t.sb, t.me);
+check([html.includes('data-erp-key="wrf-revoke-conf" disabled'), html.includes("발주 조정 6건을 먼저 취소해야"), html.includes("조정 24→48 → 취소 시 원본 24"), html.includes("B. 확정 취소 (6건)")],
+      [true, true, true, true], "[핵심] 읽기 전용 되돌리기 미리보기 · 조정이 있으면 확정 취소 막힘(순서)");
+calls.length = 0;
+let rv = await t.W.revokeConfirmations();
+check([rv.status, rpcs("fn_revoke_wing_direct_receipt_confirmations").length], ["STALE", 0], "[핵심] 순서 위반 직접 호출도 막힘(RPC 0)");
+// 서버에 순서 위반을 그대로 보내면 서버가 막는지(화면 우회 대비)
+const convs = Object.values(SV.conf).map(c => ({ id: c.id, expected_qty: c.qty }));
+const srv = await t.sb.rpc("fn_revoke_wing_direct_receipt_confirmations", { p_items: convs, p_reason: "순서 위반 우회 시도", p_idempotency_key: "rvc-bypass-0001" });
+check([srv.data.status, srv.data.blockers[0].reason, Object.keys(SV.conf).length], ["BLOCKED", "ACTIVE_PO_ADJUSTMENT_EXISTS", 6], "서버도 순서 위반 거부(아무것도 안 바뀜)");
+// 조정 취소: 한 품목 값이 그 사이 바뀌면(drift) 전부 안 함
+const orig4 = t.sb.rpc;
+t.sb.rpc = async (fn, a) => { if (fn === "fn_revoke_po_receipt_adjustments") SV.adj["poi-95981694045"].adjusted = 99; return orig4(fn, a); };
+rv = await withConfirm(t, () => t.W.revokeAdjustments(), "공급처 청구 확인 결과 수량 재검토 필요");
+check([rv.res.status, Object.keys(SV.adj).length, t.W._state.lastRevoke["95981694045"].state, t.W._state.lastRevoke["95981694043"].state], ["FAILED", 6, "DRIFT", "FAILED"],
+      "[핵심] 조정 취소 중 한 품목 drift → 전부 안 함 · SKU 별 drift/적용 안 됨 표시");
+t.sb.rpc = orig4; SV.adj["poi-95981694045"].adjusted = 24;
+// 세션 만료
+t.sb.rpc = async (fn, a) => fn === "fn_revoke_po_receipt_adjustments" ? { data: null, error: { message: "JWT expired" } } : orig4(fn, a);
+rv = await withConfirm(t, () => t.W.revokeAdjustments(), "공급처 청구 확인 결과 수량 재검토 필요");
+check([rv.res.status, t.W._state.lastRevoke["95981694043"].text.includes("세션이 만료"), Object.keys(SV.adj).length], ["FAILED", true, 6], "[핵심] 취소 중 세션 만료 → 실패 표시·변경 0");
+t.sb.rpc = orig4;
+// 정상 조정 취소 + 두 탭
+const tab2 = makeCtx("ap"); await tab2.W.view(tab2.sb, tab2.me);
+const planT2 = tab2.W.buildPlan(tab2.W._state.preview, tab2.W._state.inputs);
+calls.length = 0;
+rv = await withConfirm(t, () => t.W.revokeAdjustments(), "공급처 청구 확인 결과 수량 재검토 필요");
+const revSent = rpcs("fn_revoke_po_receipt_adjustments")[0][2];
+check([rv.res.status, Object.keys(SV.adj).length, Object.values(t.W._state.lastRevoke).map(x => x.state), revSent.p_items.length],
+      ["DONE", 0, Array(6).fill("APPLIED"), 6], "[핵심] 조정 취소 6건 적용 · SKU 별 결과 · 취소 묶음 ID");
+check(/취소 묶음 rv-1/.test(t.W._state.lastRevokeMeta) && /요청 키 rva-/.test(t.W._state.lastRevokeMeta), true, "감사 식별자(취소 묶음·요청 키) 표시");
+const it2 = tab2.W.revokeItems(planT2, "revoke_adj").items;
+const kT2 = await tab2.W.idemKey("rva", SHIP, { kind: "revoke_adj", items: it2, reason: "공급처 청구 확인 결과 수량 재검토 필요" });
+const r2 = await tab2.sb.rpc("fn_revoke_po_receipt_adjustments", { p_items: it2, p_reason: "공급처 청구 확인 결과 수량 재검토 필요", p_idempotency_key: kT2 });
+check([r2.data.status, tab2.W.interpretResult("revoke_adj", it2.map(i => i.id), r2.data, null).perKey[it2[0].id].state], ["ALREADY_REVOKED", "ALREADY"],
+      "[핵심] 두 번째 탭이 같은 내용으로 취소 → 이미 취소됨(서버 1번만)");
+calls.length = 0;
+rv = await t.W.revokeAdjustments();
+check([rv.status, rpcs("fn_revoke_po_receipt_adjustments").length], ["STALE", 0], "이미 취소된 뒤 다시 누르면 '취소할 조정 없음'(RPC 0)");
+// 확정 취소(조정 취소 뒤)
+SV.delay = 20; calls.length = 0;
+const pc1 = withConfirm(t, () => t.W.revokeConfirmations(), "공급처 청구 확인 결과 수량 재검토 필요");
+await tick();
+const dup = await t.W.revokeConfirmations();
+rv = await pc1; SV.delay = 0;
+check([dup.status, rv.res.status, rpcs("fn_revoke_wing_direct_receipt_confirmations").length, Object.keys(SV.conf).length], ["BUSY", "DONE", 1, 0],
+      "[핵심] 조정 취소 뒤 확정 취소 6건 · 중복 클릭 BUSY(RPC 1번)");
+check(SV.holds.filter(h => h.status === "ACTIVE").length, 4, "확정·조정·조정 취소·확정 취소마다 문의메일 보류");
+const st4 = makeCtx("st"); await st4.W.view(st4.sb, st4.me); calls.length = 0;
+rv = await st4.W.revokeAdjustments();
+check([rv.status, rpcs().length], ["DENIED", 0], "[핵심] 권한 없는 세션의 취소는 DENIED(RPC 0)");
+
+console.log("\n=== 7. 연결 ===");
 const app = read("./js/app.js"), index = read("./index.html");
 check([/wingreceiptfix: \{ title: "WING 직접입고 최종수량 정정", render: \(\) => \(globalThis\.WingReceiptFix \? WingReceiptFix\.view\(sb, me\)/.test(app),
        index.includes('<script src="js/wing_direct_receipt_fix.js?v=1"></script>'), index.includes('href="#/wingreceiptfix" data-route="wingreceiptfix"'),
