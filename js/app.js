@@ -1739,8 +1739,10 @@ async function dashboardHydrate() {
     };
     // 2026-09-24 공유재고는 대표 1줄 기준으로 세요(서버 display) - 없으면 예전처럼 SKU 기준
     const invEntries = globalThis.InventoryDisplay ? InventoryDisplay.entries(inv.v.decisions, inv.v.display) : null;
+    // 2026-09-28 대시보드 '자동화 차단'도 의도적 보류를 빼고 실제 조치 필요만(보류는 따로 표시)
+    const dashSplit = invEntries ? InventoryDisplay.blockedSplit(invEntries.map(e => e.d), inv.v.display.automation_blocked_count) : null;
     const model = ErpDashboard.stockModel(invEntries ? invEntries.map(e => e.d) : inv.v.decisions,
-      invEntries ? { blocked: inv.v.display.automation_blocked_count } : undefined);
+      dashSplit ? { blocked: dashSplit.actionable, held: dashSplit.held } : undefined);
     put("dash-stock", ErpDashboard.stockHtml(model, { at, calculatedAt: inv.v.calculatedAt, stockText: inventoryStockText,
       outlookText: inventoryOutlookText, nameOf }));
     return model;
@@ -4308,15 +4310,20 @@ async function viewInventoryDecisions() {
   const prodIndex = await loadInventoryProductIndex();
   const sorted = sortInventoryDecisionsByBrand(filtered, prodIndex);
   const filterClick = key => `inventoryDecisionFilter = (inventoryDecisionFilter === '${key}' ? null : '${key}'); route()`;
-  const blockedCount = grouped.blocked ?? listDecisions.filter(d => d.automation_blocked && d.decision !== "RESTOCK_EXCLUDED").length;
+  // 2026-09-28 [대표 지시] 의도적 보류(계절·입고 미정)는 '자동화 막힘'과 분리해서 센다 - 실제 조치 필요만 '자동화 막힘'.
+  const blockedSplit = InventoryDisplay.blockedSplit(listDecisions, grouped.blocked);
+  const heldCount = blockedSplit.held;
+  const blockedCount = blockedSplit.actionable;
   const vatCount = listDecisions.filter(d => d.recommended_order_qty_ea && ProcurementInput.vatNeedsAck((invVatOf(d) || {}).status)).length;
   const summaryHtml = ErpUi.summaryHtml([
     ...Object.keys(INVENTORY_DECISION_META).filter(key => key !== "RESTOCK_EXCLUDED" || counts[key]).map(key => ({
       label: { ORDER_NOW: "지금 발주", ORDER_SOON: "곧 발주", AWAITING_INBOUND: "입고대기", OK: "정상", DATA_CHECK: "확인 필요", RESTOCK_EXCLUDED: "재입고 제외" }[key],
       value: counts[key] ?? 0, kind: ErpUi.DECISION_KIND[key], active: inventoryDecisionFilter === key, onclick: filterClick(key),
       title: "누르면 이 상태만 보여요(다시 누르면 전체)" })),
-    { label: "자동화 막힘", value: blockedCount, kind: "logistics", sub: "물류정보·SKU 보류 등", hidden: !blockedCount,
-      title: "재고 판단과 별개로 정식 추천·자동 발주·WING 초안이 막힌 상품" },
+    { label: "보류", value: heldCount, kind: "hold", sub: "계절·입고 미정 - 의도적 보류", hidden: !heldCount,
+      title: "사람이 계절 보류·입고 미정으로 정해 자동화에서 뺀 상품이에요 - 지금 조치할 필요는 없어요" },
+    { label: "자동화 막힘", value: blockedCount, kind: "logistics", sub: "발주정보·물류정보 등 조치 필요", hidden: !blockedCount,
+      title: "재고 판단과 별개로 정식 추천·자동 발주·WING 초안이 막힌 상품(의도적 보류는 제외한 실제 조치 필요분)" },
     { label: "VAT 미확인 추천", value: vatCount, kind: "check", sub: "참고용 · 자동 발주안 제외", hidden: !vatCount },
   ], { label: "재고 판단 요약" });
 

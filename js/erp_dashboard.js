@@ -391,7 +391,9 @@
     const risk = list.filter(d => d.decision in RISK_ORDER)
       .sort((a, b) => (RISK_ORDER[a.decision] - RISK_ORDER[b.decision]) || ((a.days_of_stock_now ?? 999) - (b.days_of_stock_now ?? 999)) || ((a.live_stock ?? 1e9) - (b.live_stock ?? 1e9)));
     return { total: list.length, orderNow: c("ORDER_NOW"), awaiting: c("AWAITING_INBOUND"), soon: c("ORDER_SOON"), dataCheck: c("DATA_CHECK"),
-      blocked: typeof opts.blocked === "number" ? opts.blocked : blocked.length, logistics: blocked.filter(d => /물류정보/.test(d.automation_label || "")).length, top: risk.slice(0, 5), riskTotal: risk.length };
+      blocked: typeof opts.blocked === "number" ? opts.blocked : blocked.length,
+      held: typeof opts.held === "number" ? opts.held : blocked.filter(d => (root.InventoryDisplay && root.InventoryDisplay.isDeliberateHold) ? root.InventoryDisplay.isDeliberateHold(d) : false).length,
+      logistics: blocked.filter(d => /물류정보/.test(d.automation_label || "")).length, top: risk.slice(0, 5), riskTotal: risk.length };
   }
 
   function stockHtml(m, { at, calculatedAt, stockText, outlookText, nameOf } = {}) {
@@ -401,7 +403,8 @@
         ${stat(m.orderNow ? "error" : "none", "품절·임박", m.orderNow, "지금 발주")}
         ${stat(m.awaiting ? "awaiting" : "none", "입고대기", m.awaiting)}
         ${stat(m.soon ? "check" : "none", "발주 검토", m.soon, "곧 발주")}
-        ${stat(m.blocked ? "check" : "none", "자동화 차단", m.blocked, m.logistics ? "물류정보 입력 필요 포함" : "")}
+        ${stat(m.blocked ? "check" : "none", "자동화 차단", m.blocked, m.logistics ? "물류정보 입력 필요 포함" : "조치 필요")}
+        ${m.held ? stat("hold", "보류", m.held, "계절·입고 미정") : ""}
       </div>
       ${m.top.length ? `<ol class="dash-risk">${m.top.map(d => `<li><a href="#/stockflow/stock">
           <span class="dash-risk-name">${esc(nameOf(d))}${d.option_name ? `<small>${esc(d.option_name)}</small>` : ""}</span>
