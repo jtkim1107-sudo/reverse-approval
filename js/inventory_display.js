@@ -34,6 +34,22 @@
     return out;
   }
 
+  // 2026-09-28 [대표 지시] 사람이 정한 의도적 보류(계절 상품 보류·입고 미정)는 실제 조치가 필요한 '자동화 막힘'과 다르다.
+  // 서버 automation_status(inventory_decision) / automation_label 로 구분한다(둘 중 하나만 있어도 인식).
+  const HOLD_AUTOMATION_STATUSES = { SEASONAL_HOLD: 1, INBOUND_UNDECIDED: 1 };
+  const HOLD_LABELS = { "계절 상품 보류": 1, "입고 미정": 1 };
+  function isDeliberateHold(d) {
+    return !!(d && (HOLD_AUTOMATION_STATUSES[d.automation_status] || HOLD_LABELS[d.automation_label]));
+  }
+  /** 자동화 막힘 행을 의도적 보류(held)와 실제 조치 필요(actionable)로 나눔.
+   * rows = 표시용 대표 행 목록, totalBlocked = 서버가 센 묶음 기준 자동화 막힘 수(있으면 그 값을 total 로). */
+  function blockedSplit(rows, totalBlocked) {
+    const blocked = (rows || []).filter(d => d && d.automation_blocked && d.decision !== "RESTOCK_EXCLUDED");
+    const held = blocked.filter(isDeliberateHold).length;
+    const total = (typeof totalBlocked === "number") ? totalBlocked : blocked.length;
+    return { held, actionable: Math.max(0, total - held), total };
+  }
+
   /** 요약 숫자·자동화 막힘 - display 가 쓸 수 있으면 묶음 기준, 아니면 서버 SKU 기준 summary 그대로 */
   function counts(result, list) {
     if (list) return { summary: result.display.summary, blocked: result.display.automation_blocked_count };
@@ -74,5 +90,5 @@
     return (list && d && list.find(e => e.d === d)) || null;
   }
 
-  global.InventoryDisplay = { valid, entries, counts, membersLineHtml, membersDetailHtml, entryForDecision };
+  global.InventoryDisplay = { valid, entries, counts, blockedSplit, isDeliberateHold, membersLineHtml, membersDetailHtml, entryForDecision };
 })(typeof window !== "undefined" ? window : globalThis);
