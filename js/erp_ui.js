@@ -53,13 +53,43 @@
   function decisionBadge(d, opts = {}) {
     const kind = DECISION_KIND[d.decision] || "info";
     const text = d.decision === "DATA_CHECK" ? "확인 필요" : (KINDS[kind] || {}).label || d.decision;
-    const reason = d.decision === "DATA_CHECK" && d.decision_check_label
-      ? String(d.decision_check_label).replace(/^⚠️?\s*/, "") : "";
+    const reason = d.decision === "DATA_CHECK" ? checkReasonShort(d) : "";
     return badge(kind, { text, reason: opts.noReason ? "" : reason, title: reasonText(d.decision_reason) });
   }
 
-  /** 2026-09-15 서버 사유 문구에서 기계용 코드 접두어(MISSING_PROCUREMENT_DATA: 등)만 떼요 - 사람이 읽을 원인 문구는 그대로. */
+  /** 2026-09-28 서버가 코드만 준 확인 사유 → 사람이 읽을 문구(표시 전용 - 판정·발주량·후보·WING 제출은 서버 값 그대로).
+   *  short 는 배지 옆 짧은 문구, detail 은 상세(모달·툴팁·데이터 품질 줄). */
+  const REASON_LABELS = {
+    WING_DIRECT_CONFIRMATION_DRIFT: {
+      short: "WING 확정 후 수량 변동 – 재확정 필요",
+      detail: "WING 직접입고 최종수량을 사람이 확정한 뒤 WING 값이 바뀌었어요(확정 지문 불일치). 안전하게 확정을 쓰지 않고 다시 사람 확인으로 두었어요. 시스템·관리자 도구 › WING 직접입고 최종수량 정정에서 다시 확정하면 재고 판단이 풀려요.",
+    },
+  };
+  const stripIcon = s => String(s || "").replace(/^⚠️?\s*/, "");
+  // 서버 QUALITY_FLAG 기본 문구 - 구체 사유가 아니라서 알려진 코드가 있으면 그 문구를 대신 보여줘요.
+  const GENERIC_CHECK = /^데이터\s*확인(\s*필요)?$/;
+  /** 이 행의 알려진 사유 코드(decision_reason 이 코드 그대로일 때, 아니면 data_quality_flags). 없으면 null. */
+  function knownReasonCode(d) {
+    const r = String(d.decision_reason || "").trim();
+    if (REASON_LABELS[r]) return r;
+    return (d.decision_reason_code === "QUALITY_FLAG" || r === "" || /^[A-Z0-9_]+$/.test(r))
+      ? (d.data_quality_flags || []).map(f => String(f || "").trim()).find(f => REASON_LABELS[f]) || null : null;
+  }
+  /** DATA_CHECK 짧은 사유: 서버 사람 문구(human label·구체 decision_check_label) → 알려진 코드 매핑 → 기존(decision_check_label). */
+  function checkReasonShort(d) {
+    const human = d.decision_reason_human_label || d.human_label;
+    if (human) return stripIcon(human);
+    const label = stripIcon(d.decision_check_label);
+    if (label && !GENERIC_CHECK.test(label)) return label;
+    const code = knownReasonCode(d);
+    return code ? REASON_LABELS[code].short : label;
+  }
+
+  /** 2026-09-15 서버 사유 문구에서 기계용 코드 접두어(MISSING_PROCUREMENT_DATA: 등)만 떼요 - 사람이 읽을 원인 문구는 그대로.
+   *  2026-09-28 문구 전체가 알려진 코드 하나뿐이면(REASON_LABELS) 상세 문구로 바꿔요. */
   function reasonText(s) {
+    const code = String(s || "").trim();
+    if (REASON_LABELS[code]) return REASON_LABELS[code].detail;
     return String(s || "").replace(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?:\([A-Z0-9_]+\))?:\s*/g, "");
   }
 
@@ -281,7 +311,7 @@
   const isBusy = key => inflight.has(key);
 
   root.ErpUi = {
-    KINDS, DECISION_KIND, esc, badge, decisionBadge, automationBadge, reasonText, summaryHtml, displayName, nameCellHtml,
+    KINDS, DECISION_KIND, REASON_LABELS, esc, badge, decisionBadge, checkReasonShort, automationBadge, reasonText, summaryHtml, displayName, nameCellHtml,
     relationHtml, toggleRow, toggleCard, run, confirmModal, infoModal, isBusy, _answer,
   };
 })(typeof window !== "undefined" ? window : globalThis);

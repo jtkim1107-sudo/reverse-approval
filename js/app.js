@@ -420,11 +420,20 @@ async function changePassword() {
   btn.disabled = false;
 }
 
+function applyAdminNav() {
+  // 2026-09-28 관리자 전용 도구(재입고 WING 복구·재입고 문의 테스트 종료·WING 직접입고 최종수량 정정)는
+  // 승인 권한자(me.approver)에게만 사이드바에 노출한다. UI 숨김일 뿐이며, 최종 접근은 각 화면의 me.approver
+  // 게이트('승인 권한자만 볼 수 있는 화면')와 서버 RPC(auth.uid())가 강제한다 - 기존 권한보다 넓히지 않는다.
+  const admin = !!(me && me.approver);
+  document.querySelectorAll(".nav-admin").forEach(el => el.classList.toggle("hidden", !admin));
+}
+
 function renderUserBox() {
   document.getElementById("user-avatar").textContent = me.name[0];
   document.getElementById("user-name").textContent = me.name;
   document.getElementById("user-role").textContent = `${me.dept} · ${me.role}`;
   document.getElementById("topbar-user").textContent = `${me.name} (${me.role})`;
+  applyAdminNav();
 }
 
 /* ---------- 데이터 조회 ---------- */

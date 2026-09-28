@@ -73,13 +73,16 @@
       <a href="#/suppliers" data-route="suppliers" class="nav-item"><span class="nav-ico">🏭</span>매입 거래처</a>
       <a href="#/procurement" data-route="procurement" class="nav-item"><span class="nav-ico">🚚</span>발주·물류 정보</a>
       <a href="#/restockapproval" data-route="restockapproval" class="nav-item"><span class="nav-ico">✅</span>재입고 후보 승인</a>
-      <a href="#/restockrecovery" data-route="restockrecovery" class="nav-item"><span class="nav-ico">🔁</span>재입고 WING 복구</a>
-      <a href="#/restockinquiryclose" data-route="restockinquiryclose" class="nav-item"><span class="nav-ico">🧹</span>재입고 문의 테스트 종료</a>
-      <a href="#/wingreceiptfix" data-route="wingreceiptfix" class="nav-item"><span class="nav-ico">🧮</span>WING 직접입고 최종수량 정정</a>
       <a href="#/channels" data-route="channels" class="nav-item"><span class="nav-ico">🔑</span>판매채널·SCM 계정</a>
 
       <div class="nav-label">시스템</div>
       <a href="#/settings" data-route="settings" class="nav-item"><span class="nav-ico">⚙️</span>설정 · 알림</a>
+
+      <!-- 2026-09-28 관리자 전용 도구: 승인 권한자(profiles.approver)만 노출. app.js applyAdminNav()가 me.approver 로 hidden 토글. 라우트/기능은 유지, 노출만 강화(축소). -->
+      <div class="nav-label nav-admin nav-admin-label hidden">🔧 시스템 · 관리자 도구</div>
+      <a href="#/restockrecovery" data-route="restockrecovery" class="nav-item nav-admin hidden"><span class="nav-ico">🔁</span>재입고 WING 복구</a>
+      <a href="#/restockinquiryclose" data-route="restockinquiryclose" class="nav-item nav-admin hidden"><span class="nav-ico">🧹</span>재입고 문의 테스트 종료</a>
+      <a href="#/wingreceiptfix" data-route="wingreceiptfix" class="nav-item nav-admin hidden"><span class="nav-ico">🧮</span>WING 직접입고 최종수량 정정</a>
     </nav>
     <div class="sidebar-user">
       <div class="avatar" id="user-avatar">?</div>
@@ -108,7 +111,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" defer></script>
-<script src="js/erp_ui.js?v=4"></script>
+<script src="js/erp_ui.js?v=5"></script>
 <script src="js/erp_dashboard.js?v=8"></script>
 <script src="js/sales_monthly_summary.js?v=4"></script>
 <script src="js/sales_refresh.js?v=5"></script>
@@ -127,7 +130,7 @@
 <script src="js/cm_settlement.js?v=11"></script>
 <script src="js/cm_recovery.js?v=2"></script>
 <script src="js/ad_product_profit.js?v=2"></script>
-<script src="js/app.js?v=149"></script>
+<script src="js/app.js?v=150"></script>
 <script src="js/sales_statistics_panel.js?v=4"></script>
 </body>
 </html>
