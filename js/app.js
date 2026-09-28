@@ -515,6 +515,8 @@ const routes = {
   // 2026-09-27 재입고 문의 테스트 종료(js/restock_inquiry_close.js) - 보낸 재입고 문의가 테스트였을 때 문의·대기 재확인을 함께 닫음(승인 권한자만, SMTP·WING 0)
   // 2026-09-27 WING 직접입고 최종수량 정정(js/wing_direct_receipt_fix.js) - SKU 별 확정 기록·발주 입고수량 조정 기록(승인 권한자만, SMTP·WING 0)
   wingreceiptfix: { title: "WING 직접입고 최종수량 정정", render: () => (globalThis.WingReceiptFix ? WingReceiptFix.view(sb, me) : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
+  // 2026-09-28 공급처 메일 발송 승인(js/supplier_mail_approval.js, migration 20260928b) - 승인 필요 공급처 메일 초안 미리보기·승인·거부(승인 권한자만, SMTP 0)
+  suppliermailapproval: { title: "공급처 메일 발송 승인", render: () => (globalThis.SupplierMailApproval ? SupplierMailApproval.view(sb, me) : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   restockinquiryclose: { title: "재입고 문의 테스트 종료", render: () => (globalThis.RestockInquiryClose ? RestockInquiryClose.view(sb, me) : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   restockrecovery: { title: "재입고 WING 복구", render: () => (globalThis.RestockWingRecovery ? RestockWingRecovery.view(sb, me) : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   sales: { title: "매출 입력", render: viewSales, after: () => addSaleRow() },
