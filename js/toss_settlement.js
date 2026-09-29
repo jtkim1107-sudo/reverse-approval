@@ -149,7 +149,7 @@
       row("배송·포장비", "상품 마스터 · 주문당 · VAT 포함", shipPre, settled ? shipPre : dash),
       row("정산 예정액 / 지급액", "지급일", "정산 전", post(`${won(paid)}${payoutText ? sm(payoutText) : ""}`)),
     ].join("");
-    const cmRow = `<tr><th scope="row" ${th}><b>공헌이익</b></th><td ${td}><b>확인 필요</b>${sm("원가·수수료 확인 전")}</td>`
+    const cmRow = `<tr><th scope="row" ${th}><b>공헌이익</b></th><td ${td}><b>합계 미포함</b>${sm("구매확정 전 - 실제 수수료 정산 없음")}</td>`
       + `<td ${td}>${settled ? `<a href="#/profit">공헌이익 화면에 반영</a>` : dash}</td></tr>`;
     const notes = [
       refunded ? "환불 단계 포함(음수)" : "",
