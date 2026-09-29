@@ -68,7 +68,31 @@
   }
 
   /** 상세 창 아래 표 - 주문일(잠정) | 토스 정산(확정) */
-  function feeTableHtml(group, data, { fmt, taxable = true, today = "" } = {}) {
+  const ORDER_RE = /토스쇼핑 주문 (\S+)/;
+  function orderIdOf(row) { const m = ORDER_RE.exec(String(row && row.memo || "")); return m ? m[1] : null; }
+
+  /** 이 달 토스 주문별 줄 수(여러 상품 주문 판단용) - 매출 내역 전체 토스 행에서 */
+  function orderLineCounts(groups) {
+    const out = {};
+    (groups || []).filter(isToss).forEach(g => (g.ledger_rows || []).forEach(r => {
+      const o = orderIdOf(r); if (o) out[o] = (out[o] || 0) + 1;
+    }));
+    return out;
+  }
+
+  /** 배송·포장비(상품 마스터 ship_fee · 주문당 · VAT 포함) - 입력양식 규칙 '그 상품 단독 주문 1건' 밖이면 확인 필요 */
+  function shipCost(group, { shipFee = null, orderLines = {} } = {}) {
+    const rows = group.ledger_rows || [];
+    let n = 0, review = 0;
+    rows.forEach(r => {
+      const single = Number(r.qty) === 1 && (orderLines[orderIdOf(r)] || 1) === 1;
+      if (!single || shipFee === null || shipFee === undefined || shipFee === "") review += 1; else n += 1;
+    });
+    const missing = shipFee === null || shipFee === undefined || shipFee === "";
+    return { perOrder: missing ? null : Number(shipFee), orders: n, review, missing, total: missing ? null : Number(shipFee) * n };
+  }
+
+  function feeTableHtml(group, data, { fmt, taxable = true, today = "", shipFee = null, orderLines = {} } = {}) {
     if (!isToss(group)) return "";
     const won = v => `₩${fmt(v)}`;
     const dash = `<span style="color:var(--text-sub)">—</span>`;
@@ -95,9 +119,9 @@
     const tossFunded = sum(steps, "shopping_discount_toss") + sum(steps, "toss_pay_discount") + sum(steps, "toss_pay_point");
     const productFee = sum(steps, "product_fee"), productVat = sum(steps, "product_vat");
     const payFee = sum(steps, "pay_fee"), payVat = sum(steps, "pay_vat");
-    const shipFee = sum(ship, "delivery_fee_amount"), shipPayFee = sum(ship, "pay_fee") + sum(ship, "product_fee");
+    const custShip = sum(ship, "delivery_fee_amount"), shipPayFee = sum(ship, "pay_fee") + sum(ship, "product_fee");
     const shipVat = sum(ship, "pay_vat") + sum(ship, "product_vat");
-    const expected = price - merchant - productFee - productVat - payFee - payVat + (shipFee - sum(ship, "shopping_discount_merchant") - shipPayFee - shipVat);
+    const expected = price - merchant - productFee - productVat - payFee - payVat + (custShip - sum(ship, "shopping_discount_merchant") - shipPayFee - shipVat);
     const paid = sum(steps, "settlement_amount") + sum(ship, "settlement_amount");
     const other = expected - paid;
     const payStep = steps.find(s => s.step_type === "PAY") || {};
@@ -105,6 +129,10 @@
     const payoutText = payout ? `${payout.slice(5)} ${today && payout <= today ? "지급" : "지급 예정"}` : "";
 
     const post = v => (settled ? v : dash);
+    const sc = shipCost(group, { shipFee, orderLines });
+    const shipPre = sc.missing ? `<b>미입력</b>${sm("확인 필요")}`
+      : !sc.orders ? `<b>확인 필요</b>${sm(`여러 상품·여러 개 ${fmt(sc.review)}건 · 주문당 ${won(sc.perOrder)} 기준 밖`)}`
+      : `${won(sc.total)}${sm(`주문당 ${won(sc.perOrder)} × ${fmt(sc.orders)}건`)}${sc.review ? sm(`여러 상품·여러 개 ${fmt(sc.review)}건 확인 필요`) : ""}`;
     const body = [
       row("판매가", "판매가 × 수량", won(gross), post(won(price))),
       row("판매자 부담 할인", "셀러 쿠폰 · 매출에서 차감", "확인 전", post(won(merchant))),
@@ -115,9 +143,10 @@
       row("결제 수수료", "요율·금액 · 부가세 별도", "정산 전",
           post(`${won(payFee)}${sm(`${rate(payStep.pay_fee_rate)} · VAT ${won(payVat)}`)}`)),
       row("배송비", "고객 결제 배송비 · 결제 수수료만", "정산 전",
-          post(ship.length ? `${won(shipFee)}${sm(`수수료 ${won(shipPayFee)}`)}` : "없음")),
+          post(ship.length ? `${won(custShip)}${sm(`수수료 ${won(shipPayFee)}`)}` : "없음")),
       row("기타 차감", "계산값과 정산 금액 차이", dash, post(Math.abs(other) >= 1 ? `<b>${won(other)}</b>${sm("확인 필요")}` : won(0))),
       row("상품원가", "원가 × 수량", "공헌이익 화면 기준", dash),
+      row("배송·포장비", "상품 마스터 · 주문당 · VAT 포함", shipPre, settled ? shipPre : dash),
       row("정산 예정액 / 지급액", "지급일", "정산 전", post(`${won(paid)}${payoutText ? sm(payoutText) : ""}`)),
     ].join("");
     const cmRow = `<tr><th scope="row" ${th}><b>공헌이익</b></th><td ${td}><b>확인 필요</b>${sm("원가·수수료 확인 전")}</td>`
@@ -134,5 +163,5 @@
         <th ${th} style="text-align:right">토스 정산(확정)</th></tr></thead><tbody>${body}${cmRow}</tbody></table></div></div>`;
   }
 
-  root.TossSettlement = { CHANNEL, opidOf, isToss, load, groupStatus, badgeHtml, feeTableHtml };
+  root.TossSettlement = { CHANNEL, opidOf, isToss, load, groupStatus, badgeHtml, feeTableHtml, shipCost, orderLineCounts, orderIdOf };
 })(typeof window !== "undefined" ? window : globalThis);

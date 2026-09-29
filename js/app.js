@@ -3149,7 +3149,9 @@ function openMonthlySalesLedger(encodedKey) {
           </tr>`).join("")}</tbody>
         </table></div>
         ${globalThis.TossSettlement ? TossSettlement.feeTableHtml(group, tossSettlementData,
-          { fmt, taxable: isTaxable(erpProducts.find(p => p.id === group.product_id)), today: today() }) : ""}
+          { fmt, taxable: isTaxable(erpProducts.find(p => p.id === group.product_id)), today: today(),
+            shipFee: (erpProducts.find(p => p.id === group.product_id) || {}).ship_fee ?? null,
+            orderLines: TossSettlement.orderLineCounts(Object.values(monthlySalesLedgerGroups)) }) : ""}
         <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">닫기</button></div>
       </div>
     </div>`;

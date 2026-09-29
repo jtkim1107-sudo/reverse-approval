@@ -539,14 +539,19 @@
     if (!t) return "";
     const parts = [];
     let amount;
+    const rv = (t.needs_review && t.needs_review.rows) || 0;
     if (t.in_total) {
       parts.push(`기여 ${fmt(t.settled.rows)}건`, t.final ? "정산 완료 · 확정" : "정산 완료");
+      if (t.settled.ship_cost) parts.push(`배송·포장비 ${won(t.settled.ship_cost)}`);
       if (t.pending && t.pending.rows) parts.push(`정산 대기 ${fmt(t.pending.rows)}건 합계 미포함`);
+      if (rv) parts.push(`확인 필요 ${fmt(rv)}건`);
       const ad = t.ads || {};
       parts.push(ad.amount !== null && ad.amount !== undefined ? `광고비 ${won(ad.amount)} 차감` : "광고비 확인 필요");
       amount = won(t.contribution);
     } else {
-      parts.push(`매출 ${fmt(t.pending ? t.pending.rows : 0)}건`, t.cost_missing_rows ? `원가 미등록 ${fmt(t.cost_missing_rows)}건` : "원가·수수료 확인 전", "합계 미포함");
+      parts.push(`매출 ${fmt(t.pending ? t.pending.rows : 0)}건`, "원가·수수료 확인 전");
+      if (rv) parts.push(`확인 필요 ${fmt(rv)}건`);
+      parts.push("합계 미포함");
       amount = won(t.pending ? t.pending.revenue_sup : 0);
     }
     return `<div class="cmv2-dtoss"><span>토스쇼핑 <small>${esc(parts.join(" · "))}</small></span><b>${amount}</b></div>`;
