@@ -1618,7 +1618,7 @@ async function viewDashboard() {
       <div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
       <p style="color:var(--text-sub);font-size:13px">오늘 아침 보고 이미지 한 장을 확인하는 중입니다.</p>
     </section>
-    <div id="dash-live-slot">${_dashLast["dash-live"] ? _dashLast["dash-live"].html : ErpDashboard.loadingHtml("dash-live", "실시간 매출")}</div>
+    <div id="dash-live-slot" style="min-width:0">${_dashLast["dash-live"] ? _dashLast["dash-live"].html : ErpDashboard.loadingHtml("dash-live", "실시간 매출")}</div>
     <div class="dash-grid">${DASH_SECTIONS.map(([id, t]) => `<div class="dash-slot" id="${id}-slot">${ErpDashboard.loadingHtml(id, t)}</div>`).join("")}</div>
     <nav class="dash-more" aria-label="다른 화면">
       <a href="#/team">우리 팀 목표 ›</a><a href="#/inbox">결재 대기함 ›</a><a href="#/docs">전체 문서함 ›</a>

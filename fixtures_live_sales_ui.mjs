@@ -107,7 +107,9 @@ check([hyd.length > 300, /\.(insert|update|upsert|delete|rpc)\s*\(/.test(hyd), /
   "[핵심] 대시보드 실시간 매출 블록은 읽기만(쓰기·수집 호출 없음)");
 check([hyd.includes("salesP"), hyd.includes("buildMonthlyNetSales"), hyd.includes("SalesMonthlySummary.forDate"), hyd.includes("loadDayState"), hyd.includes("SalesRefresh.buttonHtml")],
   [true, true, true, true, true], "매출 요약과 같은 salesP·공통 집계 · 전일이 지난달이면 같은 경로로 그 달만");
-check(/<div id="dash-live-slot">/.test(appSrc) && appSrc.indexOf('id="dash-live-slot"') < appSrc.indexOf('<div class="dash-grid">'), true, "대시보드 슬롯: 운영 상태 아래 · 그리드 위(전체 폭)");
+check([/<div id="dash-live-slot" style="min-width:0">/.test(appSrc), /id="dash-live" style="[^"]*min-width:0/.test(liveSrc)], [true, true],
+  "[핵심] 모바일 가로 넘침 방지: 대시보드 grid 안 슬롯·카드 min-width:0(09-29 390px 실측 623px 넘침)");
+check(/<div id="dash-live-slot"/.test(appSrc) && appSrc.indexOf('id="dash-live-slot"') < appSrc.indexOf('<div class="dash-grid">'), true, "대시보드 슬롯: 운영 상태 아래 · 그리드 위(전체 폭)");
 check([/livesales:\s*\{/.test(appSrc), appSrc.includes("async function viewLiveSales")], [false, false], "별도 라우트·화면 함수 제거");
 check(/hash === "livesales"[\s\S]{0,160}history\.replaceState\(null, "", "#\/dashboard"\)/.test(appSrc), true, "[핵심] 예전 #/livesales 주소는 대시보드로 replaceState(뒤로가기 루프 없음)");
 check(indexSrc.includes('data-route="livesales"') || indexSrc.includes("실시간 매출 현황"), false, "[핵심] 사이드바 메뉴 제거");
@@ -116,7 +118,7 @@ check(pos("js/sales_monthly_summary.js") < pos("js/live_sales.js") && pos("js/sa
   true, "스크립트 순서: 공통 집계·새로고침 → live_sales → app");
 const v = Number((indexSrc.match(/app\.js\?v=(\d+)/) || [])[1]);
 const lv = Number((indexSrc.match(/live_sales\.js\?v=(\d+)/) || [])[1]);
-check([v >= 153, lv >= 2], [true, true], "캐시 버전 올림(app 153·live_sales 2 이상)");
+check([v >= 154, lv >= 3], [true, true], "캐시 버전 올림(app 154·live_sales 3 이상)");
 
 console.log(failures ? `\nFAIL ${failures}` : "\nALL PASS");
 process.exit(failures ? 1 : 0);
