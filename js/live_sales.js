@@ -188,7 +188,8 @@
       ? `<b>${won(yt.net_amount)}</b> <span class="dash-sub">(로켓그로스 ${won(y.rg.net_amount)} · 그 외 ${won(y.mp.net_amount)})</span>
          · ${ea(yt.net_qty)} · 주문 ${y.mp.has_rows ? cnt(y.mp.order_count) : "—"}(판매자배송 등) · 취소·반품 ${won(yt.cancel_amount)} (${ea(yt.cancel_qty)})`
       : `<b>미수집</b> <span class="dash-sub">0원 아님</span>`;
-    return `<section class="card" id="dash-live" style="margin:0 0 14px">
+    // min-width:0 - .dash 는 grid 라 없으면 채널 표 최소 폭(약 590px)이 대시보드 열 전체를 넓혀 모바일에서 가로 넘침(09-29 실측)
+    return `<section class="card" id="dash-live" style="margin:0 0 14px;min-width:0">
       <div class="card-head"><h2>실시간 매출 <span style="font-size:12px;font-weight:400;color:var(--text-sub)">오늘 ${esc(today)} · 진행 중 · 잠정${hm ? ` · 화면 ${esc(hm)}` : ""}</span></h2>
         <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${refreshButton}${reread}</div></div>
       ${statusLine}
