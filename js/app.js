@@ -542,6 +542,8 @@ const routes = {
   stockflow: { title: "재고 · 발주 · 입고", render: viewStockFlow },
   voc: { title: "리뷰 · 고객문의", render: viewVoc },
   unmatched: { title: "누락 매출", render: viewUnmatchedSales },
+  // 2026-09-29 실시간 매출 현황(js/live_sales.js) - 09-13 대시보드 정리로 빠진 '오늘 로켓그로스 판매현황' 복원 + 전일 확정 분리(읽기 전용)
+  livesales: { title: "실시간 매출 현황", render: viewLiveSales },
 };
 
 // 날짜가 바뀌면 화면 기본 날짜도 따라 옮김 (PWA는 며칠씩 안 닫고 쓰기 때문)
@@ -11094,6 +11096,47 @@ const UNMATCHED_BASIS_NOTE = `<div style="background:#f5f7fb;border:1px solid va
   여기는 <b>주문 원장</b>(재고·원가 계산용)에 상품 매핑이 없어 들어가지 못한 판매건입니다.
   <b>로켓그로스 매출 총계</b>는 쿠팡 판매통계 순매출 기준이라 미매핑 옵션도 <b>이미 포함</b>돼 있어요 —
   아래 금액을 총계에 다시 더하거나 빼지 마세요. 매핑을 등록하면 다음 동기화에서 원장에 반영되고 '해결됨'으로 바뀝니다.</div>`;
+
+// 2026-09-29 [사용자 지시: "예전에 보이던 실시간 매출 현황 화면 복구"] 원래 화면은 09-11 대시보드
+// '오늘 로켓그로스 판매현황' 카드(0f045d2). 같은 원천(loadErpBase·buildMonthlyNetSales·SalesMonthlySummary.forDate)과
+// 같은 수집 이력(SalesRefresh.loadDayState)만 읽어요. 이 화면은 DB 에 쓰지 않아요 - 오늘 값 수집은 기존
+// 'WING 판매데이터 다시 수집' 버튼(확인창 → GCP)만, '화면 새로고침'은 다시 읽기만.
+async function viewLiveSales() {
+  if (!globalThis.LiveSales || !globalThis.SalesMonthlySummary || !globalThis.SalesRefresh) {
+    return "<div class='card'>화면 파일을 불러오지 못했어요</div>";
+  }
+  const td = today();
+  const yd = yesterday();
+  const months = [...new Set([td.slice(0, 7), yd.slice(0, 7)])];
+  const base = await loadErpBase();
+  const nameOf = id => erpProducts.find(p => p.id === id)?.name || id;
+  const built = {};
+  const errors = [];
+  await Promise.all(months.map(async mo => {
+    const r = await buildMonthlyNetSales(mo, base.sales, nameOf);
+    if (r.error) errors.push(`${mo}: ${r.error.message || r.error}`);
+    built[mo] = r.summary || null;
+  }));
+  const [todayState, yesterdayState, health] = await Promise.all([
+    SalesRefresh.loadDayState(td).catch(() => null),
+    SalesRefresh.loadDayState(yd).catch(() => null),
+    SalesRefresh.loadHealth().catch(() => null),
+  ]);
+  const model = LiveSales.model({
+    todaySummary: built[td.slice(0, 7)], yesterdaySummary: built[yd.slice(0, 7)], today: td, yesterday: yd,
+    todayState, yesterdayState, forDate: SalesMonthlySummary.forDate,
+  });
+  const statusLine = SalesRefresh.statusLineHtml({ date: td, state: todayState, hasData: model.today.rgCollected, today: td, health });
+  const openedAt = new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()) + " KST";
+  const errHtml = errors.length ? `<div role="alert" style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:12px;margin:0 0 14px">
+      <b>판매통계를 불러오지 못한 달이 있어요.</b> 그 달의 값은 0원이 아니라 확인 불가입니다.
+      <div style="font-size:12px;color:var(--text-sub);margin-top:4px">${esc(errors.join(" · "))}</div></div>` : "";
+  return errHtml + LiveSales.viewHtml(model, {
+    today: td, yesterday: yd, statusLine, openedAt,
+    refreshButton: SalesRefresh.buttonHtml({ date: td, source: "dashboard" }),
+  });
+}
 
 async function viewUnmatchedSales() {
   const { data, error } = await sb.from("sales_sync_unmatched")
