@@ -1611,9 +1611,8 @@ let _dashHealth = null;        // WING 로그인 갱신 방법 보기용(서버�
 
 async function viewDashboard() {
   const statusLast = _dashLast["dash-status"];
+  // 2026-09-30 [사용자 지시] '운영 상태 / 운영 확인 필요' 카드는 대시보드 맨 아래(다른 모든 카드·섹션 뒤) - 렌더 순서만, 내용·판정·버튼 그대로
   return `<div class="dash" id="dash-root">
-    <div id="dash-status-slot">${statusLast ? statusLast.html
-      : `<section class="dash-status dash-status--ok" id="dash-status" aria-busy="true">${ErpUi.badge("muted", { text: "운영 상태 불러오는 중…", small: true })}</section>`}</div>
     <section class="card" id="kakao-report-slot" style="margin:14px 0">
       <div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
       <p style="color:var(--text-sub);font-size:13px">오늘 아침 보고 이미지 한 장을 확인하는 중입니다.</p>
@@ -1623,6 +1622,8 @@ async function viewDashboard() {
     <nav class="dash-more" aria-label="다른 화면">
       <a href="#/team">우리 팀 목표 ›</a><a href="#/inbox">결재 대기함 ›</a><a href="#/docs">전체 문서함 ›</a>
       <a href="#/tasks">업무 지시 ›</a><a href="#/products">제품 마스터 ›</a><a href="#/voc/inquiries">고객문의 ›</a></nav>
+    <div id="dash-status-slot">${statusLast ? statusLast.html
+      : `<section class="dash-status dash-status--ok" id="dash-status" aria-busy="true">${ErpUi.badge("muted", { text: "운영 상태 불러오는 중…", small: true })}</section>`}</div>
   </div>`;
 }
 
