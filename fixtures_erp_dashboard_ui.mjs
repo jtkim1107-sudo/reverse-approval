@@ -177,7 +177,12 @@ check(/dashboard: \{ title: "대시보드", render: viewDashboard, after: \(\) =
 check(dashSrc.includes("_dashLast[id]") && dashSrc.includes("ErpDashboard.errorHtml(id, title"), true, "새로고침 실패 시 마지막 정상값 사용");
 const handlers = [...(dashSrc + modSrc).matchAll(/onclick="([^"(]+)\(/g)].map(x => x[1]);
 check([...new Set(handlers)].sort(), ["dashboardRefresh", "dashboardWingGuide", "downloadKakaoReport"], "[핵심] 대시보드 버튼은 화면 새로고침 · WING 안내 · 보고서 PNG 다운로드뿐");
-hasNot(dashSrc, "SalesRefresh.buttonHtml", "대시보드에 WING 판매데이터 수집 버튼 없음");
+// 2026-09-29 [사용자 지시: "실시간 매출 별도 탭을 대시보드로 - 'WING 판매데이터 다시 수집'도 대시보드 안에서"] 09-13 규칙('대시보드엔
+// 수집 버튼 없음')을 좁혀요: 수집 버튼은 '실시간 매출' 블록 안 1개뿐, 기존 SalesRefresh(확인창 → GCP)로만. 다른 영역엔 여전히 없음.
+const liveBlock = dashSrc.slice(dashSrc.indexOf("// H. 실시간 매출"), dashSrc.indexOf("// D+G. 공헌이익"));
+check([liveBlock.length > 300, (liveBlock.match(/SalesRefresh\.buttonHtml/g) || []).length, (dashSrc.match(/SalesRefresh\.buttonHtml/g) || []).length,
+       /SalesRefresh\.buttonHtml\(\{ date: td, source: "dashboard" \}\)/.test(liveBlock)], [true, 1, 1, true],
+      "[핵심] WING 판매데이터 수집 버튼은 대시보드 '실시간 매출' 카드 안 1개뿐(기존 확인창 흐름) · 다른 영역엔 없음");
 for (const bad of ["team_milestones", "claimMilestones", "teamCardHtml", "loadTeamMonth"]) hasNot(dashSrc, bad, `대시보드 영역에 '${bad}' 없음(팀 목표 기록 쓰기 없음)`);
 const srSrc = read("./js/sales_refresh.js");
 check([/async function click\(btn\)[\s\S]{0,400}confirmCollect\(date\)/.test(srSrc), srSrc.includes('label = "WING 판매데이터 다시 수집"')], [true, true],
