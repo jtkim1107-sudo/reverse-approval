@@ -532,6 +532,31 @@
     </section>`;
   }
 
+  /** 2026-09-29 토스쇼핑 한 줄(승인 PNG ①) - 기존 목록과 같은 모양 한 줄만. 토스 매출이 없는 달(t 없음)은 아무것도 안 그려요.
+   *  정산 전: 매출 공급가액 + '합계 미포함' · 정산 완료분이 있으면: 토스 기여(합계 포함) + 광고비 상태를 작은 글씨로.
+   *  광고비는 실제 자료가 있을 때만 금액, 없으면 '광고비 확인 필요'(추정 금액을 그리지 않음). */
+  function tossLineHtml(t) {
+    if (!t) return "";
+    const parts = [];
+    let amount;
+    const rv = (t.needs_review && t.needs_review.rows) || 0;
+    if (t.in_total) {
+      parts.push(`기여 ${fmt(t.settled.rows)}건`, t.final ? "정산 완료 · 확정" : "정산 완료");
+      if (t.settled.ship_cost) parts.push(`배송·포장비 ${won(t.settled.ship_cost)}`);
+      if (t.pending && t.pending.rows) parts.push(`정산 대기 ${fmt(t.pending.rows)}건 합계 미포함`);
+      if (rv) parts.push(`확인 필요 ${fmt(rv)}건`);
+      const ad = t.ads || {};
+      parts.push(ad.amount !== null && ad.amount !== undefined ? `광고비 ${won(ad.amount)} 차감` : "광고비 확인 필요");
+      amount = won(t.contribution);
+    } else {
+      parts.push(`매출 ${fmt(t.pending ? t.pending.rows : 0)}건`, "원가·수수료 확인 전");
+      if (rv) parts.push(`확인 필요 ${fmt(rv)}건`);
+      parts.push("합계 미포함");
+      amount = won(t.pending ? t.pending.revenue_sup : 0);
+    }
+    return `<div class="cmv2-dtoss"><span>토스쇼핑 <small>${esc(parts.join(" · "))}</small></span><b>${amount}</b></div>`;
+  }
+
   /** 대시보드 공헌이익 칸 - 최신 잠정 결과와 차감 항목을 같은 기준일로 표시 */
   function dashboardContributionHtml(c) {
     if (!c) return "";
@@ -555,6 +580,7 @@
         </details>
         <div><span>판매분 입고 운반비 <small>리파코 → 쿠팡창고</small></span><b>${p ? won(p.inbound_freight || 0) : "확인 필요"}</b></div>
         <div><span>기여액 <small>월 공통비·입고 운반비 차감 전</small></span><b>${won(p ? p.subtotal_before_monthly : d.subtotal_before_monthly)}</b></div>
+        ${tossLineHtml(d.toss)}
         <div><span>갱신</span><b>${esc(kstTime(c.lastSuccessAt)) || "확인 필요"}</b></div>
       </div>
       ${!p && !m.available ? `<p class="cmv2-note">${esc(MISSING_TEXT[m.status] || m.status || "")}</p>` : ""}
