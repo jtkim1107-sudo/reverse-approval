@@ -3074,11 +3074,23 @@ function monthlySalesSummaryHtml(summary, error) {
     <p style="color:var(--text-sub);font-size:13px;margin-bottom:6px">
       로켓그로스 순매출 ₩${fmt(rg.net_amount)} (${fmt(rg.net_qty)}개)
       · 반품·취소 ₩${fmt(rg.cancel_amount)} (${fmt(rg.cancel_qty)}개)
-      · 판매자배송 순매출 ₩${fmt(mp.net_amount)} (${fmt(mp.net_qty)}개)
+      ${otherChannelsSummaryText(summary, mp)}
     </p>
     <p style="color:var(--text-sub);font-size:12px;margin:0 0 12px">
-      기준: 로켓그로스는 쿠팡 판매통계 NET, 판매자배송은 주문 − 취소·반품 · 판매통계 반영기간 ${esc(coverage)}
+      기준: 로켓그로스는 쿠팡 판매통계 NET, 판매자배송·토스쇼핑 등은 주문 − 취소·반품 · 판매통계 반영기간 ${esc(coverage)}
     </p>`;
+}
+
+// 2026-09-29 '그 외' 순매출을 채널별로(쿠팡 판매자배송 먼저) - 같은 entries 를 채널로만 묶어 합이 mp 합계와 같아요
+function otherChannelsSummaryText(summary, mp) {
+  const by = {};
+  (summary.entries || []).filter(e => e.source === "ORDER_MINUS_ADJUSTMENT").forEach(e => {
+    const c = by[e.channel] || (by[e.channel] = { net_amount: 0, net_qty: 0 });
+    c.net_amount += Number(e.net_amount) || 0; c.net_qty += Number(e.net_qty) || 0;
+  });
+  const names = Object.keys(by).sort((a, b) => (a === "쿠팡 판매자배송" ? -1 : b === "쿠팡 판매자배송" ? 1 : a.localeCompare(b, "ko")));
+  if (!names.length) return `· 판매자배송 순매출 ₩${fmt(mp.net_amount)} (${fmt(mp.net_qty)}개)`;
+  return names.map(n => `· ${esc(n === "쿠팡 판매자배송" ? "판매자배송" : n)} 순매출 ₩${fmt(by[n].net_amount)} (${fmt(by[n].net_qty)}개)`).join(" ");
 }
 
 function monthlySalesRowsHtml(summary) {
@@ -3093,7 +3105,7 @@ function monthlySalesRowsHtml(summary) {
       : `<button class="btn sm secondary" onclick="openMonthlySalesLedger('${encodeURIComponent(group.key)}')">주문 ${group.order_count}건</button>`;
     return `<tr${isNegative ? ` style="background:#fff7f7"` : ""}>
       <td>${esc(group.date)}</td>
-      <td><b>${esc(group.product_name)}</b></td>
+      <td><b>${esc(salesRowTitle(group))}</b></td>
       <td>${esc(group.channel)}</td>
       <td class="num">${fmt(group.gross_qty)}</td>
       <td class="num" style="color:${group.cancel_qty ? "#b26a00" : "inherit"}">${fmt(group.cancel_qty)}</td>
@@ -3104,14 +3116,20 @@ function monthlySalesRowsHtml(summary) {
   }).join("");
 }
 
+// 2026-09-29 토스쇼핑 연결: 쿠팡 외 채널(토스쇼핑 등) 매출 행은 '채널 · 상품명'으로 한눈에(쿠팡 두 채널은 기존 그대로)
+const COUPANG_SALES_CHANNELS = new Set(["쿠팡 로켓그로스", "쿠팡 판매자배송"]);
+function salesRowTitle(group) {
+  return COUPANG_SALES_CHANNELS.has(group.channel) ? group.product_name : `${group.channel} · ${group.product_name}`;
+}
+
 function openMonthlySalesLedger(encodedKey) {
   const group = monthlySalesLedgerGroups[decodeURIComponent(encodedKey)];
   if (!group || !group.ledger_rows?.length) return;
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:1000px">
-        <h3>${esc(group.date)} · ${esc(group.product_name)}</h3>
-        <p style="font-size:12px;color:var(--text-sub)">상품별 집계의 원 주문 ${group.ledger_rows.length}건입니다.</p>
+        <h3>${esc(group.date)} · ${esc(salesRowTitle(group))}</h3>
+        <p style="font-size:12px;color:var(--text-sub)">상품별 집계의 원 주문 ${group.ledger_rows.length}건입니다.${COUPANG_SALES_CHANNELS.has(group.channel) ? "" : " 적요에 주문번호·주문결제 시각(KST)·현재 상태(취소·반품 포함)가 자동 동기화로 갱신돼요."}</p>
         <div class="table-wrap"><table>
           <thead><tr><th>수량</th><th>단가</th><th>금액</th><th>적요</th><th>입력자</th><th></th></tr></thead>
           <tbody>${group.ledger_rows.map(r => `<tr>

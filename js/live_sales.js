@@ -29,6 +29,7 @@
   const ea = (n) => (n == null ? "—" : `${Number(n).toLocaleString("ko-KR")}개`);
   const cnt = (n) => (n == null ? "—" : `${Number(n).toLocaleString("ko-KR")}건`);
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const MP_CHANNEL = "쿠팡 판매자배송";
 
   function nextDate(date) {
     const [y, m, d] = String(date).split("-").map(Number);
@@ -54,6 +55,12 @@
       cancel_amount: mpSum("cancel_amount"), cancel_qty: mpSum("cancel_qty"),
       order_count: mpEntries.reduce((t, e) => t + num(e.order_count), 0),
       has_rows: mpEntries.length > 0,
+      // 2026-09-29 토스쇼핑 연결: '그 외' 합계는 그대로, 상세는 채널별(쿠팡 판매자배송·토스쇼핑…) - 같은 entries 를 채널로만 묶음
+      channels: mpEntries.reduce((acc, e) => {
+        const c = acc[e.channel] || (acc[e.channel] = { net_amount: 0, net_qty: 0, cancel_amount: 0, cancel_qty: 0, order_count: 0 });
+        ["net_amount", "net_qty", "cancel_amount", "cancel_qty", "order_count"].forEach(k => { c[k] += num(e[k]); });
+        return acc;
+      }, {}),
     };
     const rgv = rgCollected ? {
       net_amount: rg.net_amount, net_qty: rg.net_qty, gross_amount: rg.gross_amount, gross_qty: rg.gross_qty,
@@ -106,7 +113,9 @@
         <th class="num">취소·반품</th><th>기준</th></tr></thead>
       <tbody>
         ${row("쿠팡 로켓그로스", rg, "판매통계 미제공", rg ? "쿠팡 판매통계(전체 거래 − 취소·반품)" : "<b>미수집</b> · 0원 아님")}
-        ${row("판매자배송 등", mp.has_rows ? mp : null, mp.has_rows ? cnt(mp.order_count) : "—", mp.has_rows ? "주문 원장 − 조정" : "주문 없음 또는 아직 동기화 전")}
+        ${mp.has_rows ? Object.keys(mp.channels).sort((a, b) => (a === MP_CHANNEL ? -1 : b === MP_CHANNEL ? 1 : a.localeCompare(b, "ko")))
+            .map(ch => row(esc(ch), mp.channels[ch], cnt(mp.channels[ch].order_count), "주문 원장 − 조정")).join("")
+          : row("판매자배송 등", null, "—", "주문 없음 또는 아직 동기화 전")}
       </tbody></table></div>`;
   }
 
@@ -175,7 +184,7 @@
     const todayBody = d.rgCollected ? `<div class="grid-stats">
         ${stat("오늘 누적 순매출", won(t.net_amount), `로켓그로스 ${won(d.rg.net_amount)} · 그 외 ${won(d.mp.net_amount)}`, "blue")}
         ${stat("판매 수량", ea(t.net_qty), "순 판매수량(취소·반품 제외)")}
-        ${stat("주문 건수", d.mp.has_rows ? cnt(d.mp.order_count) : "—", "판매자배송 등만 · 로켓그로스 미제공")}
+        ${stat("주문 건수", d.mp.has_rows ? cnt(d.mp.order_count) : "—", "판매자배송·토스쇼핑 등 · 로켓그로스 미제공")}
         ${stat("취소·반품", won(t.cancel_amount), ea(t.cancel_qty), "amber")}
         ${stat("마지막 수집", esc(lastCollectedText(m.todayState)), "로켓그로스 판매통계")}
       </div>`
