@@ -1372,3 +1372,61 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
   .adp-missing small { max-width: none; margin-left: 0; }
   .adp-kv { grid-template-columns: 1fr; }
 }
+
+/* 2026-09-30 공헌이익 단순 보기(js/cm_simple.js · 사용자 승인 목업) - 4칸 + 한 줄 흐름 + 확인할 일, 나머지는 접기 */
+.cms-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.cms-head h2 { font-size: 20px; margin: 0; }
+.cms-period { color: var(--text-sub); font-size: 13px; margin-top: 4px; }
+details.cms-set { position: relative; flex: none; }
+details.cms-set > summary { list-style: none; white-space: nowrap; cursor: pointer; }
+details.cms-set > summary::-webkit-details-marker { display: none; }
+.cms-menu { position: absolute; right: 0; top: 38px; background: #fff; border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(20, 24, 60, .14); padding: 8px; width: 260px; z-index: 30; display: flex; flex-direction: column; gap: 2px; }
+.cms-mi { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 8px;
+  font-size: 14px; color: var(--text); background: none; border: 0; text-align: left; cursor: pointer; font-family: inherit; }
+button.cms-mi:hover { background: var(--brand-light); }
+.cms-mi input[type=month] { padding: 4px 8px !important; font-size: 13px; }
+.cms-kpi .stat small { display: block; color: var(--text-sub); font-size: 12px; margin-top: 4px; }
+.cms-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; background: var(--brand-light); border-radius: 12px;
+  padding: 12px 14px; margin: 2px 0 18px; font-size: 14px; }
+.cms-t { display: inline-flex; flex-direction: column; align-items: center; line-height: 1.25; padding: 2px 6px; }
+.cms-t b { font-variant-numeric: tabular-nums; }
+.cms-t span { font-size: 12px; color: var(--text-sub); }
+.cms-op { color: var(--text-sub); font-weight: 700; }
+.cms-res b { font-size: 16px; }
+.cms-res.neg b { color: var(--red); }
+.cms-h3 { font-size: 15px; margin: 4px 0 6px; }
+.cms-todo { list-style: none; margin: 0; padding: 0; }
+.cms-todo li { display: grid; grid-template-columns: 1fr 170px 1.3fr; gap: 12px; align-items: center; padding: 12px 4px;
+  border-top: 1px solid var(--line); font-size: 14px; }
+.cms-todo li:first-child { border-top: 0; }
+.cms-ti b { display: block; }
+.cms-ti small { color: var(--text-sub); }
+.cms-imp { font-variant-numeric: tabular-nums; font-weight: 700; }
+.cms-auto { color: var(--text-sub); }
+details.cms-more { border: 1px solid var(--line); border-radius: 12px; padding: 0 14px; margin-top: 12px; background: #fff; }
+details.cms-more > summary { cursor: pointer; padding: 13px 0; font-weight: 700; list-style: none; display: flex;
+  justify-content: space-between; gap: 10px; }
+details.cms-more > summary::-webkit-details-marker { display: none; }
+details.cms-more > summary small { font-weight: 400; color: var(--text-sub); font-size: 12.5px; margin-left: 6px; }
+details.cms-more > summary::after { content: "펼치기 ▾"; font-weight: 400; color: var(--text-sub); font-size: 13px; flex: none; }
+details.cms-more[open] > summary::after { content: "접기 ▴"; }
+details.cms-sub { border-top: 1px solid var(--line); }
+details.cms-sub > summary { cursor: pointer; padding: 11px 0; font-weight: 600; font-size: 14px; }
+details.cms-sub .card { box-shadow: none; border: 1px solid var(--line); }
+.cms-tbl { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 12px; }
+.cms-tbl td, .cms-tbl th { padding: 6px; border-bottom: 1px solid var(--line); text-align: left; }
+.cms-tbl td.num, .cms-tbl th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cms-tbl tr.tot td { font-weight: 800; border-top: 2px solid var(--text); }
+.cms-muted { color: var(--text-sub); font-size: 12px; }
+.cms-src { margin: 0 0 12px; line-height: 1.7; overflow-wrap: anywhere; }
+@media (max-width: 720px) {
+  .cms-todo li { grid-template-columns: 1fr; gap: 4px; }
+  .cms-flow { font-size: 13px; }
+  .cms-kpi { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 10px !important; }
+  .cms-kpi .stat { padding: 12px !important; }
+  .cms-kpi .stat-value { font-size: 19px !important; }
+  .cms-kpi .stat small { font-size: 11px; }
+  .cms-head h2 { font-size: 18px; }
+  details.cms-more > summary small { display: none; }
+}
