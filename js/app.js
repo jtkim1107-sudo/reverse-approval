@@ -1796,8 +1796,9 @@ async function dashboardHydrate() {
     return model;
   }).catch(e => { fail("dash-inbound", "입고·운송", e); return null; });
 
-  // C. 매출 요약 - 이번 달 순매출은 buildMonthlyNetSales(공통 집계) 의 total, 일 매출은 forDate(로켓그로스)
-  settled([salesP, csP]).then(async ([sm, cs]) => {
+  // C. 매출 요약 - 이번 달 순매출은 buildMonthlyNetSales(공통 집계), 일 매출은 forDate(로켓그로스)
+  // 2026-09-29 [사용자 지시] 어제 확정 vs 그제 확정만(오늘 진행 중 값은 H. 실시간 매출에서만). 매월 1·2일엔 지난달 집계도 같은 함수로.
+  settled([salesP, csP, baseP]).then(async ([sm, cs, base]) => {
     const csData = cs.ok ? cs.v : { error: cs.e };
     let briefingHtml = "";
     try { briefingHtml = briefingCardHtml(await loadDailySalesBriefing(yd), yd, { detailed: false }); } catch (e) { console.error("매출 브리핑 카드:", e); }
@@ -1805,16 +1806,29 @@ async function dashboardHydrate() {
       <div id="rg-sales-statistics-mount">${briefingHtml}</div>
       <div class="cs-brief-card" style="padding:8px 2px 0"><b style="font-size:13px">오전 브리핑 · 고객문의</b>${CsInquiries.briefingLineHtml(csData)}</div></details>`;
     if (!sm.ok) throw sm.e;
-    const model = ErpDashboard.salesModel(sm.v, td, globalThis.SalesMonthlySummary.forDate);
+    let prevMonthSummary = null;
+    const d2 = addDaysStr(td, -2);
+    if (d2.slice(0, 7) !== month && base.ok) {
+      const r = await buildMonthlyNetSales(d2.slice(0, 7), base.v.sales, id => erpProducts.find(p => p.id === id)?.name || id);
+      if (r.error) console.error("지난달 매출 요약 집계:", r.error);
+      else prevMonthSummary = r.summary;
+    }
+    const model = ErpDashboard.salesModel(sm.v, td, globalThis.SalesMonthlySummary.forDate, { prevMonthSummary });
     let statusLine = "";
+    let confirmed = null, prevConfirmed = null;
     if (!model.empty) {
-      const state = model.shown === yd ? await dayStateP.catch(() => null) : await globalThis.SalesRefresh.loadDayState(model.shown).catch(() => null);
+      const stateOf = d => (d === yd ? dayStateP : globalThis.SalesRefresh.loadDayState(d)).catch(() => null);
+      const [state, prevState] = await Promise.all([stateOf(model.shown), model.prevDate ? stateOf(model.prevDate) : null]);
+      // 확정 = 그날이 끝난 뒤(다음 날 00:00 KST 이후) 받은 판매통계 - 실시간 매출 카드와 같은 규칙(LiveSales.confirmState)
+      const conf = (d, st) => (st ? LiveSales.confirmState({ date: d, rgCollected: true }, st) === "CONFIRMED" : null);
+      confirmed = conf(model.shown, state);
+      prevConfirmed = model.prevDate ? conf(model.prevDate, prevState) : null;
       // 기준일·마지막 수집은 위 운영 상태에 있어요 - 수집이 실패했을 때만 원인 줄을 붙여요(WING 줄은 빼고 health 없이)
       if (state && state.latest && state.latest.status !== "OK") {
         statusLine = globalThis.SalesRefresh.statusLineHtml({ date: model.shown, state, hasData: true, today: td, health: null });
       }
     }
-    put("dash-sales", ErpDashboard.salesHtml(model, { fmt, at, statusLine, detail }));
+    put("dash-sales", ErpDashboard.salesHtml(model, { fmt, at, statusLine, detail, confirmed, prevConfirmed }));
   }).catch(e => fail("dash-sales", "매출 요약", e));
 
   // H. 실시간 매출(오늘 누적·전일) - 2026-09-29 [사용자 지시] 별도 탭(#/livesales)을 대시보드로 합침(js/live_sales.js).

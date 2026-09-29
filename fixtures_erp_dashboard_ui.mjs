@@ -103,17 +103,41 @@ has(read("./css/style.css"), ".erp-badge--approval, .erp-badge--reinbound", "승
 console.log("\n=== 4. C. 매출 요약 (공통 집계 값 그대로) ===");
 const calls = [];
 const forDate = (summary, date, opts) => { calls.push([date, opts]); return { date, net_amount: date === "2026-09-12" ? 289800 : 460730, net_qty: 12, gross_amount: 311700, gross_qty: 13, cancel_amount: 21900, cancel_qty: 1, collected: true }; };
-const summary = { has_rg_statistics: true, collected_dates: ["2026-09-10", "2026-09-11", "2026-09-12"], total: { net_amount: 5716230 }, rocket_growth: { net_amount: 5018730 }, marketplace: { net_amount: 697500 } };
+// 2026-09-29 [사용자 지시] 매출 요약 = 어제 확정 vs 그제 확정(오늘 진행 중 값 제외). 이번 달 순매출도 오늘 전 날짜만(같은 공통 집계 entries).
+const entry = (date, net) => ({ date, net_amount: net, net_qty: 1 });
+const summary = { has_rg_statistics: true, collected_dates: ["2026-09-10", "2026-09-11", "2026-09-12"], total: { net_amount: 5716230 },
+  rocket_growth: { net_amount: 5018730 }, marketplace: { net_amount: 697500 },
+  entries: [entry("2026-09-10", 4965700), entry("2026-09-11", 460730), entry("2026-09-12", 289800)] };
 let s = D.salesModel(summary, "2026-09-13", forDate);
-check([s.shown, s.isToday, s.prevDate, s.dod.toFixed(1)], ["2026-09-12", false, "2026-09-11", "-37.1"], "오늘 값이 없으면 최신 확정일 · 전일 = 바로 앞 수집일");
+check([s.shown, s.isToday, s.isYesterday, s.prevDate, s.dod.toFixed(1)], ["2026-09-12", false, true, "2026-09-11", "-37.1"], "어제(09-12) vs 그제(09-11) · 전일 대비");
 check(calls.every(c => c[1] && c[1].rgOnly === true), true, "일 매출은 forDate(로켓그로스) - 기존 오늘 카드와 같은 호출");
-h = plain(D.salesHtml(s, { fmt, at: NOW }));
-check(["최신 확정일 기준 09-12", "₩289,800", "₩311,700", "₩21,900", "13개", "▼ 37.1%", "이번 달 순매출 ₩5,716,230"].every(x => h.includes(x)) && !h.includes("로켓그로스 ₩5,018,730") && !h.includes("판매자배송 ₩697,500"), true,
-      "순매출·전체 거래액·취소반품·주문 수량·전일 대비·이번 달 누적(최신 확정일 기준 표시)");
-s = D.salesModel({ ...summary, collected_dates: [...summary.collected_dates, "2026-09-13"] }, "2026-09-13", forDate);
-check([s.shown, s.isToday], ["2026-09-13", true], "오늘 값이 있으면 오늘");
+h = plain(D.salesHtml(s, { fmt, at: NOW, confirmed: true, prevConfirmed: true }));
+check(["어제 확정 09-12", "₩289,800", "₩311,700", "₩21,900", "13개", "▼ 37.1%", "09-11 ₩460,730", "이번 달 순매출 (09-12까지 · 오늘 제외) ₩5,716,230"].every(x => h.includes(x)) && !h.includes("로켓그로스 ₩5,018,730") && !h.includes("판매자배송 ₩697,500"), true,
+      "순매출·전체 거래액·취소반품·주문 수량·전일 대비·이번 달 누적(오늘 제외)");
+const withToday = { ...summary, collected_dates: [...summary.collected_dates, "2026-09-13"], entries: [...summary.entries, entry("2026-09-13", 327310)] };
+calls.length = 0;
+s = D.salesModel(withToday, "2026-09-13", forDate);
+check([s.shown, s.isToday, s.prevDate, s.month.net_amount, calls.some(c => c[0] === "2026-09-13")], ["2026-09-12", false, "2026-09-11", 5716230, false],
+      "[핵심] 오늘 값이 수집돼 있어도 매출 요약은 어제 vs 그제 · 이번 달 합계에서 오늘 제외 · 오늘은 조회조차 안 함");
+check(plain(D.salesHtml(s, { fmt, at: NOW })).includes("▼ 37.1%"), true, "[핵심] 부분일(오늘) vs 전일 비교가 사라짐(예전: 오늘 ₩327,310 vs 어제 → ▼ 65.7% 같은 값)");
+s = D.salesModel({ ...summary, collected_dates: ["2026-09-10", "2026-09-11"] }, "2026-09-13", forDate);
+check([s.shown, s.isYesterday, plain(D.salesHtml(s, { fmt, at: NOW })).includes("최신 확정일 기준 09-11")], ["2026-09-11", false, true], "어제 미수집이면 최신 확정일 기준(어제라고 하지 않음)");
+h = plain(D.salesHtml(D.salesModel(summary, "2026-09-13", forDate), { fmt, at: NOW, confirmed: false, prevConfirmed: false }));
+check([h.includes("잠정 09-12 · 하루 종료 전 수집"), h.includes("09-11 ₩460,730 · 잠정"), h.includes("어제 확정")], [true, true, false], "하루 끝나기 전 수집값은 '잠정'(확정이라 하지 않음)");
+const aug = { has_rg_statistics: true, collected_dates: ["2026-08-30", "2026-08-31"], entries: [entry("2026-08-31", 100)] };
+const sepFirst = { has_rg_statistics: true, collected_dates: ["2026-09-01"], entries: [entry("2026-09-01", 50)] };
+s = D.salesModel(sepFirst, "2026-09-01", forDate, { prevMonthSummary: aug });
+check([s.shown, s.prevDate, s.month], ["2026-08-31", "2026-08-30", null], "[월 경계] 9월 1일: 어제·그제 = 지난달 · 이번 달 확정일 없음");
+has(plain(D.salesHtml(s, { fmt, at: NOW })), "확정일 없음", "이번 달 확정일 없으면 0원 대신 '확정일 없음'");
+s = D.salesModel({ ...sepFirst, collected_dates: ["2026-09-01", "2026-09-02"], entries: [entry("2026-09-01", 50), entry("2026-09-02", 70)] }, "2026-09-02", forDate, { prevMonthSummary: aug });
+check([s.shown, s.prevDate, s.month.net_amount], ["2026-09-01", "2026-08-31", 50], "[월 경계] 9월 2일: 어제 09-01 vs 그제 08-31 · 이번 달은 09-01 만");
 check(D.salesModel({ has_rg_statistics: false }, "2026-09-13", forDate).empty, true, "판매통계 없음 = 데이터 없음(0원 아님)");
+check(D.salesModel({ ...sepFirst, collected_dates: ["2026-09-01"] }, "2026-09-01", forDate).empty, true, "오늘 값만 있으면 매출 요약은 비움(오늘은 실시간 매출에서만)");
 has(plain(D.salesHtml({ empty: true }, { fmt })), "0원이 아니라 미수집", "데이터 없음 문구");
+const appNow = read("./js/app.js");
+const cBlock = appNow.slice(appNow.indexOf("// C. 매출 요약"), appNow.indexOf("// H. 실시간 매출"));
+check([cBlock.includes("prevMonthSummary"), cBlock.includes("LiveSales.confirmState"), /\.(insert|update|upsert|delete|rpc)\s*\(/.test(cBlock)], [true, true, false],
+      "대시보드: 지난달 집계는 같은 buildMonthlyNetSales · 확정 판정은 실시간 매출과 같은 규칙 · 쓰기 없음");
 h = D.salesHtml(D.salesModel(summary, "2026-09-13", forDate), { fmt, at: NOW });
 check([h.includes('href="#/sales"'), plain(h).includes("매출 상세"), /<button/.test(h), h.includes("다시 수집")], [true, true, false, false], "[핵심] 매출 카드: WING 수집 버튼 없음 · '매출 상세' 링크만");
 

@@ -247,20 +247,34 @@
   }
 
   // ── C. 매출 요약 ───────────────────────────────────────────────────────────
-  function salesModel(summary, today, forDate) {
-    if (!summary || !summary.has_rg_statistics) return { empty: true };
-    const dates = summary.collected_dates || [];
-    const shown = dates.includes(today) ? today : (dates[dates.length - 1] || null);
+  /** 2026-09-29 [사용자 지시: "오늘 진행 중 매출과 어제 하루 전체를 비교하지 말고, 어제 확정 매출과 그제 확정 매출을 비교.
+   *  오늘 누적은 실시간 매출에서만"] 매출 요약은 오늘을 뺀 가장 최근 수집일(보통 어제)과 그 바로 앞 수집일(보통 그제)만 봐요.
+   *  값·집계 기준은 그대로(forDate 로켓그로스, 이번 달은 같은 공통 집계 entries) - 오늘 행만 빼요.
+   *  prevMonthSummary: 매월 1·2일에 어제/그제가 지난달일 때 같은 buildMonthlyNetSales 로 읽은 지난달 집계. */
+  function salesModel(summary, today, forDate, { prevMonthSummary = null } = {}) {
+    const sources = [summary, prevMonthSummary].filter(s => s && s.has_rg_statistics);
+    if (!sources.length) return { empty: true };
+    const srcOf = new Map();
+    sources.forEach(s => (s.collected_dates || []).forEach(d => { if (d < today && !srcOf.has(d)) srcOf.set(d, s); }));
+    const dates = [...srcOf.keys()].sort();
+    const shown = dates[dates.length - 1] || null;
     if (!shown) return { empty: true };
-    const day = forDate(summary, shown, { rgOnly: true });
-    const prevDate = dates.filter(d => d < shown).pop() || null;
-    const prev = prevDate ? forDate(summary, prevDate, { rgOnly: true }) : null;
+    const day = forDate(srcOf.get(shown), shown, { rgOnly: true });
+    const prevDate = dates.length > 1 ? dates[dates.length - 2] : null;
+    const prev = prevDate ? forDate(srcOf.get(prevDate), prevDate, { rgOnly: true }) : null;
     const dod = prev && prev.net_amount ? ((day.net_amount - prev.net_amount) / prev.net_amount) * 100 : null;
-    return { empty: false, shown, isToday: shown === today, day, prevDate, prev, dod,
-      month: summary.total, rg: summary.rocket_growth, mp: summary.marketplace, coverage: dates.length ? `${dates[0]} ~ ${dates[dates.length - 1]}` : "" };
+    // 이번 달 순매출 = 같은 공통 집계(entries) 중 오늘 전 날짜만 - 오늘 진행 중 값은 실시간 매출 카드에서만
+    const cur = summary && summary.has_rg_statistics ? summary : null;
+    const done = cur ? (cur.entries || []).filter(x => x.date < today) : [];
+    const month = cur && done.length ? { net_amount: done.reduce((t, x) => t + (Number(x.net_amount) || 0), 0),
+                                         net_qty: done.reduce((t, x) => t + (Number(x.net_qty) || 0), 0),
+                                         through: done.reduce((m, x) => (x.date > m ? x.date : m), "") } : null;
+    const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+    return { empty: false, shown, isToday: false, isYesterday: shown === yesterday, day, prevDate, prev, dod, month,
+      rg: summary && summary.rocket_growth, mp: summary && summary.marketplace, coverage: dates.length ? `${dates[0]} ~ ${dates[dates.length - 1]}` : "" };
   }
 
-  function salesHtml(m, { fmt, at, statusLine = "", detail = "", error = null } = {}) {
+  function salesHtml(m, { fmt, at, statusLine = "", detail = "", error = null, confirmed = null, prevConfirmed = null } = {}) {
     const won = v => `₩${fmt(v)}`;
     if (m.empty) {
       return shellHtml({ id: "dash-sales", title: "매출 요약", actions: link("#/sales", "매출 상세"),
@@ -269,8 +283,11 @@
     const d = m.day;
     const dod = m.dod == null ? `<span class="dash-sub">비교 없음</span>`
       : `<span class="${m.dod >= 0 ? "dash-up" : "dash-down"}">${m.dod >= 0 ? "▲" : "▼"} ${Math.abs(m.dod).toFixed(1)}%</span>`;
-    const basis = m.isToday ? badge("ok", `오늘 ${md(m.shown)}`, { small: true })
-      : badge("info", `최신 확정일 기준 ${md(m.shown)}`, { small: true, title: "오늘 판매통계는 아직 수집 전이에요" });
+    // 2026-09-29 오늘은 여기서 보지 않아요(실시간 매출 카드). 확정 = 그날이 끝난 뒤 받은 판매통계(confirmed 는 호출부가 수집 이력으로 판정)
+    const provisional = confirmed === false;
+    const basis = provisional ? badge("check", `잠정 ${md(m.shown)} · 하루 종료 전 수집`, { small: true, title: "그날이 끝나기 전에 받은 판매통계라 06:20 재수집 때 확정돼요" })
+      : m.isYesterday ? badge("ok", `어제 확정 ${md(m.shown)}`, { small: true })
+      : badge("info", `최신 확정일 기준 ${md(m.shown)}`, { small: true, title: "어제 판매통계가 아직 없어 가장 최근 확정일을 보여 줘요" });
     return shellHtml({ id: "dash-sales", title: "매출 요약", actions: link("#/sales", "매출 상세"),
       meta: `${basis} 로켓그로스 판매통계 기준 · 갱신 ${esc(hm(at))}`,
       body: `${statusLine}
@@ -279,9 +296,9 @@
         <div class="dash-kpi"><span>전체 거래액</span><b>${won(d.gross_amount)}</b></div>
         <div class="dash-kpi"><span>취소·반품</span><b>${won(d.cancel_amount)}</b><small>${fmt(d.cancel_qty)}개</small></div>
         <div class="dash-kpi"><span>주문 수량</span><b>${fmt(d.gross_qty)}개</b></div>
-        <div class="dash-kpi"><span>전일 대비</span><b>${dod}</b><small>${m.prevDate ? `${md(m.prevDate)} ${won(m.prev.net_amount)}` : ""}</small></div>
+        <div class="dash-kpi"><span>전일 대비</span><b>${dod}</b><small>${m.prevDate ? `${md(m.prevDate)} ${won(m.prev.net_amount)}${prevConfirmed === false ? " · 잠정" : ""}` : ""}</small></div>
       </div>
-      <div class="dash-month"><span>이번 달 순매출</span><b>${won(m.month.net_amount)}</b></div>
+      <div class="dash-month"><span>이번 달 순매출${m.month ? ` <small class="dash-sub">(${esc(md(m.month.through))}까지 · 오늘 제외)</small>` : ""}</span><b>${m.month ? won(m.month.net_amount) : "확정일 없음"}</b></div>
       ${error ? `<p class="dash-stale">${badge("check", "일부 확인 필요", { small: true })} ${esc(humanize(error))}</p>` : ""}
       ${detail}` });
   }
