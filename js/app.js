@@ -2708,6 +2708,7 @@ function erpStockLabel(p) {
 let erpFreight = { bySale: new Map(), records: [], history: [], costs: [], error: null };
 let erpRowsCache = [];  // 현재 목록 캐시 (수정 모달용)
 let monthlySalesLedgerGroups = {}; // 날짜+상품+채널 집계에서 원 주문을 여는 용도
+let tossSettlementData = null;     // 2026-09-29 토스쇼핑 정산 행(읽기 전용) - 매출 내역 배지·주문 상세 수수료 표
 // 2026-09-11 매출 내역 CSV = 화면에 방금 그린 월 집계 그대로. viewSales 가 그릴 때마다 덮어써요.
 // { month, summary, statisticsError, adjustmentError, loadedAt }
 let salesCsvSnapshot = null;
@@ -3106,7 +3107,7 @@ function monthlySalesRowsHtml(summary) {
     return `<tr${isNegative ? ` style="background:#fff7f7"` : ""}>
       <td>${esc(group.date)}</td>
       <td><b>${esc(salesRowTitle(group))}</b></td>
-      <td>${esc(group.channel)}</td>
+      <td>${esc(group.channel)}${tossBadgeHtml(group)}</td>
       <td class="num">${fmt(group.gross_qty)}</td>
       <td class="num" style="color:${group.cancel_qty ? "#b26a00" : "inherit"}">${fmt(group.cancel_qty)}</td>
       <td class="num"><b>${fmt(group.net_qty)}</b></td>
@@ -3120,6 +3121,13 @@ function monthlySalesRowsHtml(summary) {
 const COUPANG_SALES_CHANNELS = new Set(["쿠팡 로켓그로스", "쿠팡 판매자배송"]);
 function salesRowTitle(group) {
   return COUPANG_SALES_CHANNELS.has(group.channel) ? group.product_name : `${group.channel} · ${group.product_name}`;
+}
+
+// 2026-09-29 토스쇼핑 정산 배지(채널 칸 옆 작은 배지만 - 쿠팡 행은 빈 문자열)
+function tossBadgeHtml(group) {
+  const T = globalThis.TossSettlement;
+  if (!T || !T.isToss(group)) return "";
+  return ` ${T.badgeHtml(T.groupStatus(group, tossSettlementData))}`;
 }
 
 function openMonthlySalesLedger(encodedKey) {
@@ -3140,6 +3148,8 @@ function openMonthlySalesLedger(encodedKey) {
               <button class="btn sm danger" onclick="deleteErpRow('sales','${r.id}')">삭제</button></td>
           </tr>`).join("")}</tbody>
         </table></div>
+        ${globalThis.TossSettlement ? TossSettlement.feeTableHtml(group, tossSettlementData,
+          { fmt, taxable: isTaxable(erpProducts.find(p => p.id === group.product_id)), today: today() }) : ""}
         <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">닫기</button></div>
       </div>
     </div>`;
@@ -3173,6 +3183,11 @@ async function viewSales() {
     adjustmentRows: adjustmentSummary?.rows || [],
     productName: prodName,
   });
+  // 2026-09-29 토스쇼핑 정산 행(읽기만) - 표가 없거나 실패해도 '정산 전'으로 두고 화면은 그대로
+  tossSettlementData = globalThis.TossSettlement
+    ? await TossSettlement.load(sb, (monthlySummary?.entries || []).filter(TossSettlement.isToss)
+        .flatMap(g => (g.ledger_rows || []).map(TossSettlement.opidOf)))
+    : null;
   // 아래 표가 그리는 것과 *같은* 집계 결과를 CSV 용으로 보관(다시 조회·계산하지 않음).
   salesCsvSnapshot = {
     month: erpMonth, summary: monthlySummary || null,
