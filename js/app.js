@@ -1851,7 +1851,7 @@ async function dashboardHydrate() {
     // WING 세션 줄은 맨 위 운영 상태에 있으므로 health 없이(중복 방지)
     const statusLine = globalThis.SalesRefresh.statusLineHtml({ date: td, state: todayState, hasData: model.today.rgCollected, today: td, health: null });
     put("dash-live", LiveSales.dashboardHtml(model, { today: td, yesterday: yd, statusLine, at,
-      refreshButton: globalThis.SalesRefresh.buttonHtml({ date: td, source: "dashboard" }) }));
+      refreshButton: globalThis.SalesRefresh.buttonHtml({ date: td, source: "dashboard", label: "화면 새로고침", confirm: false }) }));
     if (globalThis.__dashFocusLive) {
       globalThis.__dashFocusLive = false;
       document.getElementById("dash-live")?.scrollIntoView?.({ block: "start" });

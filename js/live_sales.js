@@ -173,25 +173,24 @@
 
   /** 2026-09-29 대시보드 '실시간 매출' 카드(전체 폭). 오늘 누적(잠정)이 주인공이고, 전일은 한 줄 요약 + 펼치는 채널표.
    *  아래 '매출 요약'(로켓그로스만·최신 수집일·이번 달)과 겹치지 않게 여기서는 *판매자배송 포함 합계*와 채널별 값만
-   *  보여 주고, 로켓그로스 값은 같은 공통 집계라 매출 요약과 같다고 밝혀요. 버튼: 수집(기존 확인창) · 화면 새로고침(읽기). */
+   *  보여 주고, 로켓그로스 값은 같은 공통 집계라 매출 요약과 같다고 밝혀요.
+   *  2026-09-30 [사용자 지시] 버튼은 '화면 새로고침' 하나 = WING 최신 판매데이터 수집(확인창 없음) → 끝나면 화면 다시 읽기.
+   *  마지막 수집은 큰 칸 대신 제목 아래 작은 회색 한 줄. */
   function dashboardHtml(m, { today, yesterday, refreshButton = "", statusLine = "", at = null } = {}) {
     const d = m.today;
     const y = m.yesterday;
     const t = d.total;
     const [chipCls, chipText] = CONFIRM_LABEL[y.confirm] || CONFIRM_LABEL.UNKNOWN;
-    const reread = `<button type="button" class="btn sm secondary" onclick="dashboardRefresh()" title="저장된 값을 다시 읽어요(WING 수집·저장 없음)">화면 새로고침</button>`;
     const hm = at ? new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit", hour12: false }).format(at) : "";
     const todayBody = d.rgCollected ? `<div class="grid-stats">
         ${stat("오늘 누적 순매출", won(t.net_amount), `로켓그로스 ${won(d.rg.net_amount)} · 그 외 ${won(d.mp.net_amount)}`, "blue")}
         ${stat("판매 수량", ea(t.net_qty), "순 판매수량(취소·반품 제외)")}
         ${stat("주문 건수", d.mp.has_rows ? cnt(d.mp.order_count) : "—", "판매자배송·토스쇼핑 등 · 로켓그로스 미제공")}
         ${stat("취소·반품", won(t.cancel_amount), ea(t.cancel_qty), "amber")}
-        ${stat("마지막 수집", esc(lastCollectedText(m.todayState)), "로켓그로스 판매통계")}
       </div>`
       : `<div role="status" class="live-empty" style="background:#f8f9fb;border:1px solid var(--line,#e5e7eb);border-radius:9px;padding:10px 12px;margin:4px 0 10px">
           <b>오늘(${esc(today)}) 로켓그로스 판매통계 미수집 — 0원이 아니에요.</b>
-          <div style="font-size:12.5px;color:var(--text-sub);margin-top:3px">06:20 통합수집은 전날 판매만 받아요. 오늘 누적은 'WING 판매데이터 다시 수집'을 눌렀을 때만 들어와요
-            · 마지막 수집: ${esc(lastCollectedText(m.todayState))}</div></div>`;
+          <div style="font-size:12.5px;color:var(--text-sub);margin-top:3px">06:20 통합수집은 전날 판매만 받아요. 오늘 누적은 07:45 자동 수집이나 '화면 새로고침'을 눌렀을 때 들어와요</div></div>`;
     const yt = y.total;
     const ydLine = y.rgCollected
       ? `<b>${won(yt.net_amount)}</b> <span class="dash-sub">(로켓그로스 ${won(y.rg.net_amount)} · 그 외 ${won(y.mp.net_amount)})</span>
@@ -200,7 +199,8 @@
     // min-width:0 - .dash 는 grid 라 없으면 채널 표 최소 폭(약 590px)이 대시보드 열 전체를 넓혀 모바일에서 가로 넘침(09-29 실측)
     return `<section class="card" id="dash-live" style="margin:0 0 14px;min-width:0">
       <div class="card-head"><h2>실시간 매출 <span style="font-size:12px;font-weight:400;color:var(--text-sub)">오늘 ${esc(today)} · 진행 중 · 잠정${hm ? ` · 화면 ${esc(hm)}` : ""}</span></h2>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${refreshButton}${reread}</div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${refreshButton}</div></div>
+      <div class="live-last" style="font-size:12px;color:var(--text-sub);margin:-8px 0 8px">마지막 수집 ${esc(lastCollectedText(m.todayState))} · 로켓그로스 판매통계</div>
       ${statusLine}
       ${todayBody}
       <details class="live-detail" open><summary style="cursor:pointer;font-size:13px;font-weight:600;margin:4px 0">오늘 채널별</summary>${channelTable(d)}</details>

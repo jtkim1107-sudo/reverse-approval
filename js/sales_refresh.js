@@ -151,9 +151,13 @@
     if (confirming) return null;                           // 확인창이 떠 있는 동안 다시 누름
     const date = btn && btn.dataset ? btn.dataset.date : null;
     const source = btn && btn.dataset ? btn.dataset.source : "";
-    confirming = true;
-    let ok = false;
-    try { ok = await confirmCollect(date); } finally { confirming = false; }
+    // 2026-09-30 [사용자 지시] 대시보드 실시간 매출의 '화면 새로고침'(data-confirm="0")은 확인창 없이 바로 WING 수집 → 끝나면 화면 다시 읽기
+    const ask = !(btn && btn.dataset && btn.dataset.confirm === "0");
+    let ok = !ask;
+    if (ask) {
+      confirming = true;
+      try { ok = await confirmCollect(date); } finally { confirming = false; }
+    }
     if (!ok) return null;
     if (inflight) return inflight;
     setBusy(true);
@@ -182,10 +186,11 @@
 
   function isBusy() { return !!inflight; }
 
-  function buttonHtml({ date, source, small = true, label = "WING 판매데이터 다시 수집" }) {
+  function buttonHtml({ date, source, small = true, label = "WING 판매데이터 다시 수집", confirm = true }) {
     return `<button type="button" class="btn ${small ? "sm " : ""}secondary ${BTN_CLASS}"
-      data-date="${esc(date)}" data-source="${esc(source)}" data-label="${esc(label)}"
-      title="GCP 서버가 쿠팡 WING 에서 판매통계를 다시 받아 DB 에 저장해요 - 누르면 확인창이 떠요"
+      data-date="${esc(date)}" data-source="${esc(source)}" data-label="${esc(label)}"${confirm ? "" : ' data-confirm="0"'}
+      title="${confirm ? "GCP 서버가 쿠팡 WING 에서 판매통계를 다시 받아 DB 에 저장해요 - 누르면 확인창이 떠요"
+        : "WING 최신 판매데이터를 받아 저장한 뒤 화면을 다시 읽어요(실패하면 기존 값 유지)"}"
       ${inflight ? "disabled aria-busy=\"true\"" : ""}
       onclick="SalesRefresh.click(this)">${inflight ? "수집 중…" : esc(label)}</button>`;
   }

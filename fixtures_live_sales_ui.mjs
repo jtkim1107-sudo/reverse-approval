@@ -88,11 +88,16 @@ check([m.today.rgCollected, m.today.mp.net_amount, m.today.mp.order_count], [fal
 console.log("\n[4] 대시보드 '실시간 매출' 카드(2026-09-29 별도 탭 → 대시보드 통합)");
 m = L.model({ todaySummary: sep, yesterdaySummary: sep, today: TD, yesterday: YD, todayState: state("2026-09-29T02:10:00Z"),
   yesterdayState: state("2026-09-28T21:20:30Z"), forDate: S.forDate });
-let dh = L.dashboardHtml(m, { today: TD, yesterday: YD, refreshButton: R.buttonHtml({ date: TD, source: "dashboard" }), at: new Date("2026-09-29T02:30:00Z") });
+let dh = L.dashboardHtml(m, { today: TD, yesterday: YD, refreshButton: R.buttonHtml({ date: TD, source: "dashboard", label: "화면 새로고침", confirm: false }), at: new Date("2026-09-29T02:30:00Z") });
 check([dh.includes('id="dash-live"'), dh.includes("오늘 누적 순매출"), dh.includes("₩77,600"), dh.includes("전일 2026-09-28"), dh.includes("전일 확정")], [true, true, true, true, true],
   "오늘 누적 KPI(합계 ₩77,600)와 전일(확정 배지)을 한 카드에서 분리 표시");
-check([dh.includes("SalesRefresh.click(this)"), dh.includes("dashboardRefresh()"), dh.includes("화면 새로고침")], [true, true, true],
-  "[핵심] 대시보드 안에서 'WING 판매데이터 다시 수집'(기존 확인창) · '화면 새로고침'(다시 읽기) 둘 다");
+// 2026-09-30 [사용자 지시] 버튼 하나: '화면 새로고침' = WING 최신 판매데이터 수집(확인창 없음) → 끝나면 화면 다시 읽기
+check([(dh.match(/<button/g) || []).length, dh.includes("SalesRefresh.click(this)"), dh.includes('data-confirm="0"'), dh.includes(">화면 새로고침<"),
+       dh.includes("WING 판매데이터 다시 수집"), dh.includes("dashboardRefresh()")], [1, true, true, true, false, false],
+  "[핵심] 실시간 매출 버튼은 '화면 새로고침' 하나(WING 수집 → 다시 읽기) · 별도 'WING 판매데이터 다시 수집' 없음");
+check([/stat-label[^>]*>마지막 수집</.test(dh), /<div class="live-last"[^>]*>마지막 수집 [^<]+ · 로켓그로스 판매통계<\/div>/.test(dh),
+       dh.indexOf('class="live-last"') > dh.indexOf("</h2>") && dh.indexOf('class="live-last"') < dh.indexOf("오늘 누적 순매출")], [false, true, true],
+  "[핵심] '마지막 수집' 큰 칸 삭제 · 제목 아래 작은 회색 한 줄");
 check([dh.includes("오늘 채널별"), dh.includes("전일 채널별 표"), dh.includes("판매통계 미제공")], [true, true, true], "오늘·전일 채널별 표 · 로켓그로스 주문 건수 미제공 표시");
 check(dh.includes("'매출 요약'과 같은 공통 집계"), true, "[핵심] 아래 매출 요약(로켓그로스만)과 값 관계를 밝혀 상충하지 않게");
 m = L.model({ todaySummary: noToday, yesterdaySummary: noYd, today: TD, yesterday: YD, todayState: null, yesterdayState: null, forDate: S.forDate });
