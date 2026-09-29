@@ -324,7 +324,8 @@ const json = (status, body) => ({ status, json: async () => body });
   check(appSrc.includes("async function renderSyncHealthCard()") && appSrc.includes("async function viewUnmatchedSales()"), "자동 수집 상태 기능·누락 매출 화면은 남김");
   // 2026-09-13 대시보드 정리: 매출 요약은 erp_dashboard.js salesModel(공통 집계 forDate · 로켓그로스), 순서는 운영 상태 → 할 일 → 매출
   const dashJs = fs.readFileSync(new URL("./js/erp_dashboard.js", import.meta.url), "utf8");
-  check(dash.includes("SalesMonthlySummary.forDate") && dashJs.includes("forDate(summary, shown, { rgOnly: true })"), "대시보드 매출 요약은 공통 집계(forDate · 로켓그로스)");
+  // 2026-09-29 매출 요약은 어제·그제(지난달 집계일 수 있음)만 - 기준일 행을 가진 집계로 같은 forDate(로켓그로스) 호출
+  check(dash.includes("SalesMonthlySummary.forDate") && /forDate\((summary|srcOf\.get\(shown\)), shown, \{ rgOnly: true \}\)/.test(dashJs), "대시보드 매출 요약은 공통 집계(forDate · 로켓그로스)");
   // 2026-09-15 [사용자 지시] 순서 변경: 운영 확인 필요 → 매출 요약 · 공헌이익 → 오늘 해야 할 일 · 재고·발주
   check(dash.indexOf('id="dash-status-slot"') < dash.indexOf("DASH_SECTIONS.map") && /const DASH_SECTIONS = \[\["dash-sales"[\s\S]*?"dash-profit"[\s\S]*?"dash-todo"[\s\S]*?"dash-stock"/.test(appSrc)
     && dash.indexOf("rg-sales-statistics-mount") > 0, "운영 상태 → 매출 요약 → 공헌이익 → 오늘 해야 할 일 → 재고(판매통계 패널은 매출 요약 상세 안)");
