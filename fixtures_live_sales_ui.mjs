@@ -1,5 +1,5 @@
 // fixtures_live_sales_ui.mjs
-// 2026-09-29 실시간 매출 현황(#/livesales) 격리 검증 - 네트워크·DB 없음.
+// 2026-09-29 실시간 매출(대시보드 '실시간 매출' 카드, 예전 #/livesales) 격리 검증 - 네트워크·DB 없음.
 //   · 오늘 누적(잠정)과 전일(확정/잠정/미수집)을 분리 · 미수집을 0원으로 그리지 않음
 //   · 금액·수량은 공통 집계(SalesMonthlySummary.build/forDate) 값 그대로 - 대시보드 카드·매출 입력과 같은 값
 //   · 주문 건수: 판매자배송 등 원장 행 수만, 로켓그로스는 '판매통계 미제공'(지어내지 않음)
@@ -85,22 +85,38 @@ const octNoRg = build("2026-10", [], [sale("o1", "2026-10-01", 1, 10000)]);
 m = L.model({ todaySummary: octNoRg, yesterdaySummary: sepEnd, today: "2026-10-01", yesterday: "2026-09-30", todayState: null, yesterdayState: null, forDate: S.forDate });
 check([m.today.rgCollected, m.today.mp.net_amount, m.today.mp.order_count], [false, 10000, 1], "새 달 첫날(로켓그로스 0건)에도 판매자배송 값은 보임");
 
-console.log("\n[4] 쓰기 없음 · 연결");
+console.log("\n[4] 대시보드 '실시간 매출' 카드(2026-09-29 별도 탭 → 대시보드 통합)");
+m = L.model({ todaySummary: sep, yesterdaySummary: sep, today: TD, yesterday: YD, todayState: state("2026-09-29T02:10:00Z"),
+  yesterdayState: state("2026-09-28T21:20:30Z"), forDate: S.forDate });
+let dh = L.dashboardHtml(m, { today: TD, yesterday: YD, refreshButton: R.buttonHtml({ date: TD, source: "dashboard" }), at: new Date("2026-09-29T02:30:00Z") });
+check([dh.includes('id="dash-live"'), dh.includes("오늘 누적 순매출"), dh.includes("₩77,600"), dh.includes("전일 2026-09-28"), dh.includes("전일 확정")], [true, true, true, true, true],
+  "오늘 누적 KPI(합계 ₩77,600)와 전일(확정 배지)을 한 카드에서 분리 표시");
+check([dh.includes("SalesRefresh.click(this)"), dh.includes("dashboardRefresh()"), dh.includes("화면 새로고침")], [true, true, true],
+  "[핵심] 대시보드 안에서 'WING 판매데이터 다시 수집'(기존 확인창) · '화면 새로고침'(다시 읽기) 둘 다");
+check([dh.includes("오늘 채널별"), dh.includes("전일 채널별 표"), dh.includes("판매통계 미제공")], [true, true, true], "오늘·전일 채널별 표 · 로켓그로스 주문 건수 미제공 표시");
+check(dh.includes("'매출 요약'과 같은 공통 집계"), true, "[핵심] 아래 매출 요약(로켓그로스만)과 값 관계를 밝혀 상충하지 않게");
+m = L.model({ todaySummary: noToday, yesterdaySummary: noYd, today: TD, yesterday: YD, todayState: null, yesterdayState: null, forDate: S.forDate });
+dh = L.dashboardHtml(m, { today: TD, yesterday: YD });
+check([dh.includes("미수집 — 0원이 아니에요"), dh.includes("오늘 누적 순매출"), rgRow(dh).includes("₩"), dh.includes("<b>미수집</b>")], [true, false, false, true],
+  "오늘·전일 미수집: 0원 대신 미수집 · 합계 카드 없음");
+
+console.log("\n[5] 쓰기 없음 · 연결");
 check(/\.(insert|update|upsert|delete|rpc)\s*\(|fetch\s*\(|sb\.from/.test(liveSrc), false, "[핵심] live_sales.js 는 DB·네트워크를 직접 부르지 않음");
-const view = appSrc.slice(appSrc.indexOf("async function viewLiveSales"), appSrc.indexOf("async function viewUnmatchedSales"));
-check([view.length > 200, /\.(insert|update|upsert|delete|rpc)\s*\(/.test(view), /requestRefresh|SalesRefresh\.click\(/.test(view)], [true, false, false],
-  "[핵심] viewLiveSales 는 읽기만(쓰기·수집 호출 없음)");
-check([view.includes("buildMonthlyNetSales"), view.includes("SalesMonthlySummary.forDate"), view.includes("SalesRefresh.loadDayState"), view.includes("SalesRefresh.buttonHtml")],
-  [true, true, true, true], "대시보드와 같은 공통 경로 · 수집은 기존 확인창 버튼");
-const btn = R.buttonHtml({ date: TD, source: "dashboard" });
-check([btn.includes("SalesRefresh.click(this)"), btn.includes(`data-date="${TD}"`)], [true, true], "수집 버튼 = 기존 SalesRefresh(확인창 → GCP, 이 화면이 직접 수집 안 함)");
-check(/livesales:\s*\{\s*title:\s*"실시간 매출 현황",\s*render:\s*viewLiveSales\s*\}/.test(appSrc), true, "라우트 #/livesales 등록");
-check(/href="#\/livesales" data-route="livesales" class="nav-item"[^>]*>.*실시간 매출 현황/.test(indexSrc), true, "사이드바 메뉴(일반 메뉴 - 관리자 전용 아님)");
+const hyd = appSrc.slice(appSrc.indexOf("// H. 실시간 매출"), appSrc.indexOf("// D+G. 공헌이익"));
+check([hyd.length > 300, /\.(insert|update|upsert|delete|rpc)\s*\(/.test(hyd), /requestRefresh|SalesRefresh\.click\(/.test(hyd)], [true, false, false],
+  "[핵심] 대시보드 실시간 매출 블록은 읽기만(쓰기·수집 호출 없음)");
+check([hyd.includes("salesP"), hyd.includes("buildMonthlyNetSales"), hyd.includes("SalesMonthlySummary.forDate"), hyd.includes("loadDayState"), hyd.includes("SalesRefresh.buttonHtml")],
+  [true, true, true, true, true], "매출 요약과 같은 salesP·공통 집계 · 전일이 지난달이면 같은 경로로 그 달만");
+check(/<div id="dash-live-slot">/.test(appSrc) && appSrc.indexOf('id="dash-live-slot"') < appSrc.indexOf('<div class="dash-grid">'), true, "대시보드 슬롯: 운영 상태 아래 · 그리드 위(전체 폭)");
+check([/livesales:\s*\{/.test(appSrc), appSrc.includes("async function viewLiveSales")], [false, false], "별도 라우트·화면 함수 제거");
+check(/hash === "livesales"[\s\S]{0,160}history\.replaceState\(null, "", "#\/dashboard"\)/.test(appSrc), true, "[핵심] 예전 #/livesales 주소는 대시보드로 replaceState(뒤로가기 루프 없음)");
+check(indexSrc.includes('data-route="livesales"') || indexSrc.includes("실시간 매출 현황"), false, "[핵심] 사이드바 메뉴 제거");
 const pos = (s) => indexSrc.indexOf(s);
 check(pos("js/sales_monthly_summary.js") < pos("js/live_sales.js") && pos("js/sales_refresh.js") < pos("js/live_sales.js") && pos("js/live_sales.js") < pos("js/app.js"),
   true, "스크립트 순서: 공통 집계·새로고침 → live_sales → app");
 const v = Number((indexSrc.match(/app\.js\?v=(\d+)/) || [])[1]);
-check(v >= 152, true, "app.js 캐시 버전 올림(152 이상)");
+const lv = Number((indexSrc.match(/live_sales\.js\?v=(\d+)/) || [])[1]);
+check([v >= 153, lv >= 2], [true, true], "캐시 버전 올림(app 153·live_sales 2 이상)");
 
 console.log(failures ? `\nFAIL ${failures}` : "\nALL PASS");
 process.exit(failures ? 1 : 0);

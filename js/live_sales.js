@@ -3,6 +3,9 @@
  * 2026-09-29 [사용자 지시: "예전에 보이던 실시간 매출 현황 화면 복구 - 오늘 누적 매출액·주문 건수·
  * 판매 수량·취소·반품·마지막 수집 시각, 전일 확정 매출과 명확히 구분, 사이드바 메뉴"]
  *
+ * 2026-09-29 [사용자 지시: "별도 탭을 없애고 이 기능을 ERP 대시보드에"] 사이드바 #/livesales 는 없애고
+ * 대시보드 '실시간 매출' 카드(dashboardHtml)로 옮겼어요. #/livesales 주소는 라우터가 대시보드로 바꿔요.
+ *
  * 원래 화면: 2026-09-11 대시보드 '오늘 로켓그로스 판매현황' 카드(0f045d2, SalesRefresh.todayCardHtml).
  * 2026-09-13 대시보드 정리(935c5ed)에서 '매출 요약'(어제 기준)으로 바뀌며 화면에서 빠졌어요.
  * 이 화면은 그 카드와 *같은 원천·같은 공통 집계*만 씁니다(새 쿼리·새 계산식 없음):
@@ -159,6 +162,49 @@
     </div>`;
   }
 
+  /** 2026-09-29 대시보드 '실시간 매출' 카드(전체 폭). 오늘 누적(잠정)이 주인공이고, 전일은 한 줄 요약 + 펼치는 채널표.
+   *  아래 '매출 요약'(로켓그로스만·최신 수집일·이번 달)과 겹치지 않게 여기서는 *판매자배송 포함 합계*와 채널별 값만
+   *  보여 주고, 로켓그로스 값은 같은 공통 집계라 매출 요약과 같다고 밝혀요. 버튼: 수집(기존 확인창) · 화면 새로고침(읽기). */
+  function dashboardHtml(m, { today, yesterday, refreshButton = "", statusLine = "", at = null } = {}) {
+    const d = m.today;
+    const y = m.yesterday;
+    const t = d.total;
+    const [chipCls, chipText] = CONFIRM_LABEL[y.confirm] || CONFIRM_LABEL.UNKNOWN;
+    const reread = `<button type="button" class="btn sm secondary" onclick="dashboardRefresh()" title="저장된 값을 다시 읽어요(WING 수집·저장 없음)">화면 새로고침</button>`;
+    const hm = at ? new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit", hour12: false }).format(at) : "";
+    const todayBody = d.rgCollected ? `<div class="grid-stats">
+        ${stat("오늘 누적 순매출", won(t.net_amount), `로켓그로스 ${won(d.rg.net_amount)} · 그 외 ${won(d.mp.net_amount)}`, "blue")}
+        ${stat("판매 수량", ea(t.net_qty), "순 판매수량(취소·반품 제외)")}
+        ${stat("주문 건수", d.mp.has_rows ? cnt(d.mp.order_count) : "—", "판매자배송 등만 · 로켓그로스 미제공")}
+        ${stat("취소·반품", won(t.cancel_amount), ea(t.cancel_qty), "amber")}
+        ${stat("마지막 수집", esc(lastCollectedText(m.todayState)), "로켓그로스 판매통계")}
+      </div>`
+      : `<div role="status" class="live-empty" style="background:#f8f9fb;border:1px solid var(--line,#e5e7eb);border-radius:9px;padding:10px 12px;margin:4px 0 10px">
+          <b>오늘(${esc(today)}) 로켓그로스 판매통계 미수집 — 0원이 아니에요.</b>
+          <div style="font-size:12.5px;color:var(--text-sub);margin-top:3px">06:20 통합수집은 전날 판매만 받아요. 오늘 누적은 'WING 판매데이터 다시 수집'을 눌렀을 때만 들어와요
+            · 마지막 수집: ${esc(lastCollectedText(m.todayState))}</div></div>`;
+    const yt = y.total;
+    const ydLine = y.rgCollected
+      ? `<b>${won(yt.net_amount)}</b> <span class="dash-sub">(로켓그로스 ${won(y.rg.net_amount)} · 그 외 ${won(y.mp.net_amount)})</span>
+         · ${ea(yt.net_qty)} · 주문 ${y.mp.has_rows ? cnt(y.mp.order_count) : "—"}(판매자배송 등) · 취소·반품 ${won(yt.cancel_amount)} (${ea(yt.cancel_qty)})`
+      : `<b>미수집</b> <span class="dash-sub">0원 아님</span>`;
+    return `<section class="card" id="dash-live" style="margin:0 0 14px">
+      <div class="card-head"><h2>실시간 매출 <span style="font-size:12px;font-weight:400;color:var(--text-sub)">오늘 ${esc(today)} · 진행 중 · 잠정${hm ? ` · 화면 ${esc(hm)}` : ""}</span></h2>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">${refreshButton}${reread}</div></div>
+      ${statusLine}
+      ${todayBody}
+      <details class="live-detail" open><summary style="cursor:pointer;font-size:13px;font-weight:600;margin:4px 0">오늘 채널별</summary>${channelTable(d)}</details>
+      <div class="live-yday" id="dash-live-yesterday" style="border-top:1px solid var(--line,#e5e7eb);margin-top:10px;padding-top:10px;font-size:13.5px">
+        <span style="font-weight:600">전일 ${esc(yesterday)}</span> <span class="chip ${chipCls}">${esc(chipText)}</span>
+        · ${ydLine}
+        <div style="font-size:12px;color:var(--text-sub);margin-top:3px">마지막 수집 ${esc(lastCollectedText(m.yesterdayState))} · 오늘 누적과 합치지 않은 별도 값 ·
+          로켓그로스 값은 아래 '매출 요약'과 같은 공통 집계(매출 요약은 로켓그로스만, 여기는 판매자배송 포함 합계)</div>
+        <details class="live-detail"><summary style="cursor:pointer;font-size:12.5px;margin-top:6px">전일 채널별 표</summary>${channelTable(y)}</details>
+      </div>
+      <p style="font-size:11.5px;color:var(--text-sub);margin:8px 0 0">오늘 값은 하루가 끝나지 않아 계속 바뀌는 <b>잠정값</b>이에요 · 쿠팡 자체 집계 지연이 있을 수 있어요</p>
+    </section>`;
+  }
+
   function viewHtml(m, opts) {
     const reread = `<button type="button" class="btn sm secondary" onclick="route()" title="DB 에 저장된 값을 다시 읽어요(수집·저장 없음)">화면 새로고침</button>`;
     return `<div class="card" style="margin-bottom:14px;padding:10px 14px">
@@ -169,5 +215,5 @@
       ${yesterdayHtml(m, opts)}`;
   }
 
-  global.LiveSales = { model, dayModel, confirmState, dayEndMs, nextDate, todayHtml, yesterdayHtml, viewHtml };
+  global.LiveSales = { model, dayModel, confirmState, dayEndMs, nextDate, todayHtml, yesterdayHtml, viewHtml, dashboardHtml };
 })(typeof window !== "undefined" ? window : globalThis);
