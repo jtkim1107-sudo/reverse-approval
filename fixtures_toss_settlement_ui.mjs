@@ -41,7 +41,7 @@ const pending = { orders: 1, pending: { rows: 1, revenue_sup: 8091 }, settled: {
                   ads: { status: "AD_SOURCE_UNAVAILABLE", amount: null }, contribution: null, in_total: false, final: false };
 const pHtml = card({ ...base, toss: pending });
 check("[핵심] 정산 전: 승인 문구 그대로", text(pHtml.match(/<div class="cmv2-dtoss">[\s\S]*?<\/div>/)[0]),
-      "토스쇼핑 매출 1건 · 원가·수수료 확인 전 · 합계 미포함 ₩8,091");
+      "토스쇼핑 매출 1건 · 구매확정 전(실제 수수료 정산 없음) · 합계 미포함 ₩8,091");
 check("토스 줄은 '갱신' 줄 바로 위(기존 목록 안)", pHtml.indexOf("cmv2-dtoss") < pHtml.indexOf("<span>갱신</span>") &&
       pHtml.indexOf("cmv2-dtoss") > pHtml.indexOf("기여액 <small>"), true);
 check("토스 줄 외 카드 구조 동일(줄 하나만 추가)", pHtml.replace(/\s*<div class="cmv2-dtoss">[\s\S]*?<\/div>/, "").replace(/\s+/g, " "),
@@ -50,13 +50,18 @@ check("정산 전: 합계 금액 그대로", pHtml.includes("−₩56,117"), tru
 const settled = { orders: 2, pending: { rows: 1, revenue_sup: 8091 }, settled: { rows: 1, revenue_sup: 7636, ship_cost: 2727 }, cost_missing_rows: 0,
                   ads: { status: "AD_SOURCE_UNAVAILABLE", amount: null }, contribution: 5787, in_total: true, final: false };
 check("정산 완료: 기여·광고비 확인 필요(추정 금액 없음)", text(card({ ...base, toss: settled }).match(/<div class="cmv2-dtoss">[\s\S]*?<\/div>/)[0]),
-      "토스쇼핑 기여 1건 · 정산 완료 · 배송·포장비 ₩2,727 · 정산 대기 1건 합계 미포함 · 광고비 확인 필요 ₩5,787");
+      "토스쇼핑 기여 1건 · 정산 완료 · 배송·포장비 ₩2,727 · 구매확정 전 1건 합계 미포함 · 광고비 확인 필요 ₩5,787");
 check("확인 필요 건수(0원으로 두지 않음)", text(card({ ...base, toss: { ...pending, needs_review: { rows: 2 } } }).match(/<div class="cmv2-dtoss">[\s\S]*?<\/div>/)[0]),
-      "토스쇼핑 매출 1건 · 원가·수수료 확인 전 · 확인 필요 2건 · 합계 미포함 ₩8,091");
+      "토스쇼핑 매출 1건 · 구매확정 전(실제 수수료 정산 없음) · 확인 필요 2건 · 합계 미포함 ₩8,091");
 check("실제 광고비가 있으면 차감 금액만 작게", text(card({ ...base, toss: { ...settled, pending: { rows: 0 }, final: true,
       ads: { status: "AD_ACTUAL", amount: 1500 } } }).match(/<div class="cmv2-dtoss">[\s\S]*?<\/div>/)[0]),
       "토스쇼핑 기여 1건 · 정산 완료 · 확정 · 배송·포장비 ₩2,727 · 광고비 ₩1,500 차감 ₩5,787");
 const bd = CM.dashboardProvisionalBreakdownHtml({ detail: { ...base, toss: pending }, lastSuccessAt: at });
+check("[핵심] 광고 미시작(대표 확인) = 0원 · 확정", text(card({ ...base, toss: { ...settled, pending: { rows: 0 }, final: true,
+      ads: { status: "AD_NOT_STARTED", amount: 0 } } }).match(/<div class="cmv2-dtoss">[\s\S]*?<\/div>/)[0]),
+      "토스쇼핑 기여 1건 · 정산 완료 · 확정 · 배송·포장비 ₩2,727 · 광고 미시작(0원) ₩5,787");
+check("광고 시작 뒤 자료 없으면 '광고비 확인 필요'(0원 아님)", text(card({ ...base, toss: { ...settled, ads: { status: "AD_SOURCE_UNAVAILABLE", amount: null } } })
+      .match(/<div class="cmv2-dtoss">[\s\S]*?<\/div>/)[0]).includes("광고비 확인 필요"), true);
 check("펼침 내역 표는 기존 줄 그대로(정산 전 토스는 줄 없음)", (bd.match(/<tr/g) || []).length, base.lines.length + 4);
 
 console.log("\n[2] 매출 내역 행 배지");
@@ -82,6 +87,7 @@ const cells = html => [...html.matchAll(/<tr><th scope="row"[^>]*>([\s\S]*?)<\/t
   .map(m => [text(m[1]).split(" ")[0], text(m[2]), text(m[3])]);
 const p0 = cells(tbl(data0));
 check("정산 전: 행 12개(승인 표 + 배송·포장비 한 줄)", p0.length, 12);
+check("[핵심] 정산 전 공헌이익 칸: 제외 사유는 구매확정 전뿐", text(tbl(data0)).includes("합계 미포함 구매확정 전 - 실제 수수료 정산 없음"), true);
 check("정산 전: 확정 열 전부 '—'", p0.every(c => c[2] === "—"), true);
 check("정산 전: 수수료는 '정산 전'(요율 추정 없음)", [p0[4][1], p0[5][1], tbl(data0).includes("%")], ["정산 전", "정산 전", false]);
 check("정산 전: 판매가·매출(공급가액)", [p0[0][1], p0[3][1]], ["₩8,900", "₩8,091"]);

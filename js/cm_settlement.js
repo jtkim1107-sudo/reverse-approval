@@ -535,6 +535,13 @@
   /** 2026-09-29 토스쇼핑 한 줄(승인 PNG ①) - 기존 목록과 같은 모양 한 줄만. 토스 매출이 없는 달(t 없음)은 아무것도 안 그려요.
    *  정산 전: 매출 공급가액 + '합계 미포함' · 정산 완료분이 있으면: 토스 기여(합계 포함) + 광고비 상태를 작은 글씨로.
    *  광고비는 실제 자료가 있을 때만 금액, 없으면 '광고비 확인 필요'(추정 금액을 그리지 않음). */
+  /** 광고비 상태 한 마디 - 광고 미시작(대표 확인)은 실제 0원, 실제 자료가 있으면 금액, 없으면 확인 필요(추정 금액 없음) */
+  function tossAdText(ad) {
+    if (ad.status === "AD_NOT_STARTED") return "광고 미시작(0원)";
+    if (ad.amount !== null && ad.amount !== undefined) return `광고비 ${won(ad.amount)} 차감`;
+    return "광고비 확인 필요";
+  }
+
   function tossLineHtml(t) {
     if (!t) return "";
     const parts = [];
@@ -543,13 +550,12 @@
     if (t.in_total) {
       parts.push(`기여 ${fmt(t.settled.rows)}건`, t.final ? "정산 완료 · 확정" : "정산 완료");
       if (t.settled.ship_cost) parts.push(`배송·포장비 ${won(t.settled.ship_cost)}`);
-      if (t.pending && t.pending.rows) parts.push(`정산 대기 ${fmt(t.pending.rows)}건 합계 미포함`);
+      if (t.pending && t.pending.rows) parts.push(`구매확정 전 ${fmt(t.pending.rows)}건 합계 미포함`);
       if (rv) parts.push(`확인 필요 ${fmt(rv)}건`);
-      const ad = t.ads || {};
-      parts.push(ad.amount !== null && ad.amount !== undefined ? `광고비 ${won(ad.amount)} 차감` : "광고비 확인 필요");
+      parts.push(tossAdText(t.ads || {}));
       amount = won(t.contribution);
     } else {
-      parts.push(`매출 ${fmt(t.pending ? t.pending.rows : 0)}건`, "원가·수수료 확인 전");
+      parts.push(`매출 ${fmt(t.pending ? t.pending.rows : 0)}건`, "구매확정 전(실제 수수료 정산 없음)");
       if (rv) parts.push(`확인 필요 ${fmt(rv)}건`);
       parts.push("합계 미포함");
       amount = won(t.pending ? t.pending.revenue_sup : 0);
