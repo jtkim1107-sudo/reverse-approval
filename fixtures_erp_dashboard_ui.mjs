@@ -205,12 +205,13 @@ check([...new Set(handlers)].sort(), ["dashboardRefresh", "dashboardWingGuide", 
 // 수집 버튼 없음')을 좁혀요: 수집 버튼은 '실시간 매출' 블록 안 1개뿐, 기존 SalesRefresh(확인창 → GCP)로만. 다른 영역엔 여전히 없음.
 const liveBlock = dashSrc.slice(dashSrc.indexOf("// H. 실시간 매출"), dashSrc.indexOf("// D+G. 공헌이익"));
 check([liveBlock.length > 300, (liveBlock.match(/SalesRefresh\.buttonHtml/g) || []).length, (dashSrc.match(/SalesRefresh\.buttonHtml/g) || []).length,
-       /SalesRefresh\.buttonHtml\(\{ date: td, source: "dashboard" \}\)/.test(liveBlock)], [true, 1, 1, true],
-      "[핵심] WING 판매데이터 수집 버튼은 대시보드 '실시간 매출' 카드 안 1개뿐(기존 확인창 흐름) · 다른 영역엔 없음");
+       /SalesRefresh\.buttonHtml\(\{ date: td, source: "dashboard", label: "화면 새로고침", confirm: false \}\)/.test(liveBlock)], [true, 1, 1, true],
+      "[핵심] WING 수집은 대시보드 '실시간 매출' 카드의 '화면 새로고침' 하나뿐(2026-09-30 확인창 없이 수집 → 다시 읽기) · 다른 영역엔 없음");
 for (const bad of ["team_milestones", "claimMilestones", "teamCardHtml", "loadTeamMonth"]) hasNot(dashSrc, bad, `대시보드 영역에 '${bad}' 없음(팀 목표 기록 쓰기 없음)`);
 const srSrc = read("./js/sales_refresh.js");
-check([/async function click\(btn\)[\s\S]{0,400}confirmCollect\(date\)/.test(srSrc), srSrc.includes('label = "WING 판매데이터 다시 수집"')], [true, true],
-      "매출 화면의 WING 수집 버튼: 이름 명확 + 누르기 전 확인창");
+check([/async function click\(btn\)[\s\S]{0,800}confirmCollect\(date\)/.test(srSrc), srSrc.includes('label = "WING 판매데이터 다시 수집"'),
+       /confirm = true \}\)/.test(srSrc), /dataset\.confirm === "0"/.test(srSrc)], [true, true, true, true],
+      "매출 화면의 WING 수집 버튼: 이름 명확 + 누르기 전 확인창(기본) · 대시보드 '화면 새로고침'만 확인창 없음");
 const idx = read("./index.html");
 check(idx.indexOf("js/erp_ui.js") < idx.indexOf("js/erp_dashboard.js") && idx.indexOf("js/erp_dashboard.js") < idx.indexOf("js/app.js"), true, "스크립트 순서 erp_ui → erp_dashboard → app");
 

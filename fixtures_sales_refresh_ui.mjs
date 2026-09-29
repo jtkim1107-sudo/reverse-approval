@@ -96,6 +96,27 @@ const json = (status, body) => ({ status, json: async () => body });
   check(R.buttonHtml({ date: "2026-09-10", source: "sales" }).includes("WING 판매데이터 다시 수집"), "버튼 이름: 'WING 판매데이터 다시 수집'");
 }
 
+{
+  // 2026-09-30 [사용자 지시] 대시보드 실시간 매출 '화면 새로고침' 하나 = 확인창 없이 WING 수집 → 끝나면 화면 다시 읽기
+  const { win, buttons, R } = makeEnv({ respond: () => json(200, { status: "UPDATED", ok: true, changed: true, sales_date: "2026-09-10", message: "교체" }) });
+  buttons[1].dataset = { ...buttons[1].dataset, confirm: "0", label: "화면 새로고침" };
+  const p1 = R.click(buttons[1]);
+  const p2 = R.click(buttons[1]);                 // 수집 중 다시 누름
+  await Promise.all([p1, p2]);
+  check(win.confirms === 0 && win.fetchCalls.filter(x => x.url.endsWith("/refresh")).length === 1 && win.routeCalls === 1,
+        "[핵심] '화면 새로고침'(data-confirm=0): 확인창 없이 수집 1회 · 중복 차단 · 끝나면 화면 다시 읽기", [win.confirms, win.fetchCalls.length, win.routeCalls]);
+  check(win.busySeen[0][1][0] === true && win.busySeen[0][1][1] === "수집 중…" && buttons[1].textContent === "화면 새로고침", "수집 중 '수집 중…'·잠금, 끝나면 '화면 새로고침'");
+  const html = R.buttonHtml({ date: "2026-09-10", source: "dashboard", label: "화면 새로고침", confirm: false });
+  check(html.includes('data-confirm="0"') && html.includes(">화면 새로고침<") && !html.includes("확인창이 떠요"), "대시보드 버튼 HTML: 확인창 없음 표시");
+  check(!R.buttonHtml({ date: "2026-09-10", source: "sales" }).includes("data-confirm"), "매출 화면 버튼은 그대로 확인창");
+  // 로그인 만료·실패: 기존 값 유지(서버가 덮지 않음) + 안내만, 화면은 다시 읽기
+  const e2 = makeEnv({ respond: () => json(401, { detail: "인증이 필요해요." }) });
+  e2.buttons[1].dataset = { ...e2.buttons[1].dataset, confirm: "0" };
+  const r2 = await e2.R.click(e2.buttons[1]);
+  check(r2.status === "AUTH" && e2.win.toasts.some(t => /인증|로그인/.test(t)) && e2.win.routeCalls === 1 && e2.buttons[1].disabled === false,
+        "[핵심] 로그인 만료 → 로그인 안내만 · 버튼 복구 · 화면은 저장된 값으로 다시 읽기", [r2.status, e2.win.toasts]);
+}
+
 // ── 2. 실패 응답들 ──────────────────────────────────────────────────────────
 {
   const { R } = makeEnv({ respond: () => json(401, { detail: "인증이 필요해요." }) });
