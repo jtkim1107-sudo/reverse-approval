@@ -6382,9 +6382,32 @@ async function viewProfit() {
   const newestFirst = cms.mode === "PRIMARY" && cms.contribution && cms.contribution.detail
     && cms.contribution.detail.provisional_cm && cms.contribution.detail.provisional_cm.is_confirmed === false
     && String(cms.contribution.detail.period_end) > String(cms.cur.MAIN.period_end);
+  // 2026-09-30 공헌이익 화면 단순 보기(사용자 승인 목업): 이 달 최신 잠정 공헌이익이 있으면 4칸 + 한 줄 흐름 + 확인할 일만 먼저,
+  // 계산표·광고비·반품·운송비·출처는 '상세보기', 저장된 스냅샷은 '이전 계산 보기'로 접어요. 숫자·계산은 그대로(표현만).
+  // 검산이 맞지 않거나 다른 달이면 아래 기존 화면 그대로.
+  const simple = profitSimpleHtml(cms, { adInfo, mainHtml, tail: { ad: AdCosts.cardHtml(adInfo, [], { autoError: adSrc.autoError }), freight: inboundFreightCardHtml(erpMonth) } });
+  if (simple) return simple;
   return `${newestFirst ? contribHtml : mainHtml}
     ${newestFirst ? mainHtml : contribHtml}
     ${tail}`;
+}
+
+function profitSimpleHtml(cms, { adInfo, mainHtml, tail }) {
+  const c = cms.contribution;
+  const d = c && !c.error && c.detail;
+  if (cms.mode !== "PRIMARY" || !globalThis.CmSimple || !d || d.month !== erpMonth) return "";
+  const m = CmSimple.model(d);
+  if (!m.ok) { console.warn("공헌이익 단순 보기 생략:", m.why); return ""; }
+  const updated = CmSettlement.kstTime(c.lastSuccessAt);
+  const stale = CmSettlement.contribStale && CmSettlement.contribStale(c);
+  const settingsHtml = `<label class="cms-mi">월 선택 ${monthPicker()}</label>
+    <button type="button" class="cms-mi" onclick="openAdModal()">＋ 수동 광고비 입력 <span>›</span></button>
+    <button type="button" class="cms-mi" onclick="openFixedModal()">고정비 설정 <span>›</span></button>
+    <div class="cms-mi">${AdCosts.refreshButtonHtml ? AdCosts.refreshButtonHtml(erpMonth) : ""}</div>`;
+  const top = CmSimple.topHtml(m, d, { settingsHtml, updated: updated.replace(/^\d{4}-/, "").replace(/ KST$/, ""),
+    staleHtml: stale ? `<p class="cmv2-fail" role="alert">${esc(stale)}</p>` : "" });
+  return top.replace("<!--cms-more-->", CmSimple.moreHtml(d, m, { adInfo, adCardHtml: tail.ad, freightCardHtml: tail.freight,
+    previousHtml: mainHtml, updatedAt: updated }));
 }
 
 let profitAdsCache = [], profitFixedCache = [];

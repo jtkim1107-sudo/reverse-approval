@@ -513,5 +513,5 @@
     }
   }
 
-  global.AdCosts = { AUTO_START_DATE, monthAds, cardHtml, cmBadge, refreshClick, reasonText, splitVat, latestByDate, MANUAL, STATE, AUTO_CHANNEL, monthDays, addDays };
+  global.AdCosts = { AUTO_START_DATE, monthAds, cardHtml, cmBadge, refreshClick, refreshButtonHtml, reasonText, splitVat, latestByDate, MANUAL, STATE, AUTO_CHANNEL, monthDays, addDays };
 })(typeof window !== "undefined" ? window : globalThis);
