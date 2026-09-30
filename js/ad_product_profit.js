@@ -278,12 +278,78 @@
       ${productsHtml(s, state.filter || "ALL")}${unallocatedHtml(s)}${reconciliationHtml(s)}${filesHtml(s)}`;
   }
 
+
+  // ── 일일 광고 보고서(2026-09-30) - 매일 10:00 VM 생성 PNG 목록·다운로드(읽기만, 광고 설정 변경 없음) ──
+  const DAILY_PREFIX = "/api/ad-daily-report";
+  const WD = "일월화수목금토";
+  const DAILY_ST = { "정상": "ok", "확인 필요": "warn", "생성 실패": "fail" };
+  function dayLabel(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ""));
+    if (!m) return esc(iso);
+    return `${esc(iso)}(${WD[new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])).getUTCDay()]})`;
+  }
+  function genLabel(ts) {
+    const t = String(ts || "");
+    return t ? `생성 ${esc(t.slice(5, 10))} ${esc(t.slice(11, 16))}` : "";
+  }
+  function dailyRowHtml(it) {
+    const st = it.status || "생성 실패";
+    const why = (it.reasons || []).join(" · ");
+    const can = !!it.png;
+    return `<div class="adr-row"><div class="adr-d"><b>${dayLabel(it.report_date)}</b>
+      <span class="adr-st adr-${DAILY_ST[st] || "warn"}">${esc(st)}${why ? ` · ${esc(why)}` : ""}</span>
+      <span class="adr-t">${genLabel(it.generated_at)}</span></div>
+      <button class="btn sm ${can ? "" : "secondary"}" ${can ? `onclick="AdProductProfit.downloadDaily('${esc(it.report_date)}')"` : "disabled"}>${can ? "PNG 받기" : "받을 파일 없음"}</button></div>`;
+  }
+  function dailyHtml(state) {
+    const d = state.daily;
+    let body;
+    if (!d) body = `<p class="adp-note">불러오는 중…</p>`;
+    else if (d.error) body = `<p class="adp-note" style="color:var(--red)">목록을 불러오지 못했어요: ${esc(d.error)}</p>`;
+    else if (!d.items.length) body = `<p class="adp-note">아직 생성된 보고서가 없어요. 매일 10:00에 전날 실적으로 만들어집니다.</p>`;
+    else {
+      const items = state.dailyAll ? d.items : d.items.slice(0, 4);
+      body = items.map(dailyRowHtml).join("") + (d.items.length > 4
+        ? `<button class="adr-more" onclick="AdProductProfit.toggleDailyAll()">${state.dailyAll ? "접기 ▴" : `지난 ${d.items.length}일 보기 ▾`}</button>` : "");
+    }
+    return `<div class="card adr-card"><h2>일일 광고 보고서 <span class="adp-note adr-sub">매일 10:00 자동 생성 · 설정 자동 변경 없음</span></h2>
+      <p class="adp-note">전날 실적 · 7/14/30일 · 캠페인별 판정을 1장 PNG로 받습니다. 실패한 날은 이전 보고서를 대신 보여 주지 않아요.</p>${body}</div>`;
+  }
+  async function loadDaily() {
+    const token = await jwt();
+    if (!token) { state.daily = { error: "로그인 세션이 없어요", items: [] }; return; }
+    try {
+      const res = await fetch(`${API_BASE}${DAILY_PREFIX}/list`, { credentials: "omit", cache: "no-store", headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) { state.daily = { error: `HTTP ${res.status}`, items: [] }; return; }
+      const b = await res.json();
+      state.daily = { items: Array.isArray(b.items) ? b.items : [] };
+    } catch (e) { state.daily = { error: "서버에 연결하지 못했어요", items: [] }; }
+  }
+  function toggleDailyAll() { state.dailyAll = !state.dailyAll; paint(); }
+  async function downloadDaily(reportDate) {
+    const token = await jwt();
+    const toast = (m) => (typeof global.toast === "function" ? global.toast(m) : null);
+    if (!token) return toast("ERP 로그인이 필요합니다");
+    try {
+      const res = await fetch(`${API_BASE}${DAILY_PREFIX}/${encodeURIComponent(reportDate)}/png`, { credentials: "omit", cache: "no-store", headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(res.status === 404 ? "이 날짜는 받을 PNG가 없어요" : `다운로드 실패(HTTP ${res.status})`);
+      const url = URL.createObjectURL(await res.blob());
+      const a = global.document.createElement("a");
+      a.href = url;
+      a.download = `rebirth_ad_report_${reportDate}.png`;
+      global.document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } catch (e) { toast(String((e && e.message) || e)); }
+  }
+
   function pageHtml(state) {
-    return `<div class="adp-page">${periodHtml(state)}${uploadHtml(state)}<div id="adp-summary">${summaryPageHtml(state.summary, state)}</div></div>`;
+    return `<div class="adp-page">${dailyHtml(state)}${periodHtml(state)}${uploadHtml(state)}<div id="adp-summary">${summaryPageHtml(state.summary, state)}</div></div>`;
   }
 
   // ── 서버 호출 ─────────────────────────────────────────────────────────────
-  const state = { filter: "ALL", reports: [], summary: null, start: "", end: "", uploading: false, uploadResult: null };
+  const state = { daily: null, dailyAll: false, filter: "ALL", reports: [], summary: null, start: "", end: "", uploading: false, uploadResult: null };
 
   async function jwt() {
     const sb = global.sb;
@@ -329,7 +395,7 @@
   }
 
   async function view() {
-    await loadReports();
+    await Promise.all([loadReports(), loadDaily()]);
     if (!state.start) {
       const act = pickDefaultReport(state.reports);
       if (act) { state.start = act.start; state.end = act.end; }
@@ -439,5 +505,5 @@
 
   global.AdProductProfit = { view, upload, fileChosen, choosePeriod, pickReport, setFilter, toIso, reasonText, pageHtml, summaryPageHtml,
                              productRowHtml, detailHtml, unallocatedHtml, reconciliationHtml, toggleDetail, uploadFields, fileHintText, timeTyped,
-                             unknownToggled, uploadHtml, pickDefaultReport, _state: state };
+                             unknownToggled, uploadHtml, pickDefaultReport, dailyHtml, dailyRowHtml, loadDaily, downloadDaily, toggleDailyAll, _state: state };
 })(typeof window !== "undefined" ? window : globalThis);
