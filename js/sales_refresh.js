@@ -356,7 +356,7 @@
     const a = s.auth || {};
     const nowOk = d.kind === "renew" && a.state === "AUTH_OK" && !a.stale
       ? `지금 WING 인증은 정상이에요${a.checked_at ? `(${esc(kst(a.checked_at, true))} 확인)` : ""}. ` : "";
-    return `<div role="${red ? "alert" : "status"}" class="wing-session-top wing-session-top--${d.kind}" style="${box};border-radius:9px;padding:10px 14px;margin:10px 16px 0;font-size:13px;line-height:1.55">
+    return `<div role="${red ? "alert" : "status"}" class="wing-session-top wing-session-top--${d.kind}" style="${box};border-radius:9px;padding:10px 14px;margin:0;font-size:13px;line-height:1.55">
       <b>${esc(d.title)}</b> · ${nowOk}${esc(d.reason)}
       ${sessionDetailHtml(s)}</div>`;
   }
@@ -491,7 +491,8 @@
         ${esc(kst(latest.collected_at, true))} 수집 실패 · ${esc(reasonText(latest.error))} ·
         ${hasData ? "기존 값을 그대로 보여주고 있어요" : "표시할 저장값이 없어요(0원 아님)"}</div>`;
     }
-    return `${sessionBannerHtml(health)}<div class="sales-refresh-status" style="font-size:12.5px;color:var(--text-sub);display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;margin:4px 0 10px">
+    // 2026-10-01 WING 로그인 경고는 화면 맨 아래 공통 영역 하나로만(여기 상단에 또 쓰지 않음)
+    return `<div class="sales-refresh-status" style="font-size:12.5px;color:var(--text-sub);display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;margin:4px 0 10px">
       ${chip}<span style="font-weight:600">${DATA_BASIS}</span>${parts.join("")}${hasData ? reconText(state && state.recon) : ""}${sessionStateText(health)}</div>${note}`;
   }
 

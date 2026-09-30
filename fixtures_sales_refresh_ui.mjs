@@ -194,13 +194,15 @@ const json = (status, body) => ({ status, json: async () => body });
   let h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11",
     health: { last_success_at: last, session: { state: "SESSION_EXPIRED", needs_renewal: true, warning: false,
       message: "세션 갱신 필요 - WING 세션이 만료돼 수집을 멈췄어요. 기존 매출은 그대로 유지됩니다." } } });
-  check(h.includes("세션 갱신 필요") && h.includes('role="alert"'), "만료 → '세션 갱신 필요' 경고 배너", h.slice(0, 200));
-  check(h.includes("마지막 정상 수집 09. 11. 00:40 KST"), "마지막 정상 수집 시각(KST) 표시", h.slice(0, 400));
-  check(h.includes("0원 아님"), "저장하지 않아도 0원이 아님을 안내");
+  // 2026-10-01 WING 로그인 경고는 화면 맨 아래 공통 영역 하나로만 - 상태 줄(화면 상단)에는 배너를 쓰지 않아요
+  check(!h.includes("sales-session-banner") && !h.includes('role="alert"'), "만료여도 상태 줄(상단)에 경고 배너 없음(맨 아래 공통 영역 하나)", h.slice(0, 200));
+  const sb = R.sessionBannerHtml({ last_success_at: last, session: { state: "SESSION_EXPIRED", needs_renewal: true, warning: false,
+      message: "세션 갱신 필요 - WING 세션이 만료돼 수집을 멈췄어요. 기존 매출은 그대로 유지됩니다." } });
+  check(sb.includes("마지막 정상 수집 09. 11. 00:40 KST") && sb.includes("0원 아님"), "sessionBannerHtml 판정 기능은 그대로(시각·0원 아님)", sb.slice(0, 400));
   h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11",
     health: { last_success_at: last, session: { state: "OK", hours_left: 8, needs_renewal: false, warning: true,
       message: "세션 자동 연장이 2회 연속 실패했어요(AUTH_BLOCKED). 아직 8시간 남아 수집은 가능합니다." } } });
-  check(h.includes("연속 실패") && !h.includes("세션 갱신 필요"), "연장 실패지만 여유 있음 → 주의 문구(갱신 필요 아님)");
+  check(!h.includes("sales-session-banner"), "연장 실패 주의도 상태 줄에는 배너 없음");
   // 2026-09-13: 쿠키 남은 시간만으로 '정상'이라 쓰지 않아요 - 실제 인증(AUTH_OK)과 쿠키(참고)를 따로.
   h = R.statusLineHtml({ date: "2026-09-11", state: st, hasData: true, today: "2026-09-11",
     health: { last_success_at: last, session: { state: "AUTH_OK", level: "ok", hours_left: 11.94,
@@ -220,7 +222,7 @@ const json = (status, body) => ({ status, json: async () => body });
   check(!h.includes("sales-session-banner"), "세션 상태를 못 읽으면 배너 없이 기존 표시");
   const card = R.todayCardHtml({ day: null, date: "2026-09-11", today: "2026-09-11", state: st,
     health: { last_success_at: last, session: { state: "NO_SESSION", needs_renewal: true, message: "세션 갱신 필요" } } });
-  check(card.includes("세션 갱신 필요"), "대시보드 카드에도 같은 배너");
+  check(!card.includes("sales-session-banner"), "카드 안에도 경고 배너를 또 쓰지 않음(맨 아래 공통 영역 하나)");
 }
 
 // ── 3-E. ERP 상단 WING 세션 경고 (2026-09-13) ─────────────────────────────────
@@ -273,8 +275,9 @@ const json = (status, body) => ({ status, json: async () => body });
   globalThis.fetch = async () => { throw new Error("offline"); };
   await R.renderTopBanner({ force: true });
   check(el.hidden, "상태를 못 읽으면 경고를 지어내지 않음");
-  check(indexSrc.indexOf('id="wing-session-banner"') > indexSrc.indexOf("</header>") &&
-    indexSrc.indexOf('id="wing-session-banner"') < indexSrc.indexOf('id="content"'), "index.html: 상단(헤더 아래·본문 위)에 경고 영역");
+  // 2026-10-01 [사용자 지시] 공통 경고 영역은 각 화면 주요 내용(#content)이 끝난 뒤 맨 아래 - 하나만
+  check(indexSrc.indexOf('id="wing-session-banner"') > indexSrc.indexOf('id="content"') &&
+    indexSrc.split('id="wing-session-banner"').length === 2, "index.html: 본문(#content) 뒤 맨 아래에 경고 영역 하나");
   const routeBody = appSrc.slice(appSrc.indexOf("async function route()"), appSrc.indexOf("const seq = ++routeSeq;"));
   check(routeBody.includes("renderTopBanner"), "모든 화면 이동 때 상단 경고 갱신");
 }

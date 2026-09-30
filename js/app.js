@@ -1733,17 +1733,18 @@ async function dashboardHydrate() {
     .then(([a, b]) => ({ plans: rows(a), items: rows(b) }));
   const jobsP = sb.from("sync_job_status").select("*").then(rows);
   const dayStateP = globalThis.SalesRefresh.loadDayState(yd);
+  const liveStateP = globalThis.SalesRefresh.loadDayState(td);
   const csP = CsInquiries.load(sb).then(d => { if (d.error) throw d.error; return d; });
 
   // A. 운영 상태
-  const statusP = settled([healthP, salesP, dayStateP, adsP, jobsP, plansP]).then(([h, sm, ds, ad, jobs, pl]) => {
+  const statusP = settled([healthP, salesP, dayStateP, adsP, jobsP, plansP, liveStateP]).then(([h, sm, ds, ad, jobs, pl, lv]) => {
     _dashHealth = h.ok ? h.v : null;
     const adYd = ad.ok ? (adMonthState(ad.v, yd.slice(0, 7)).days || []).find(x => x.date === yd) : null;
     const dates = sm.ok && sm.v ? sm.v.collected_dates || [] : [];
     const model = ErpDashboard.statusModel({
       health: h.ok ? h.v : null, healthError: h.ok ? null : String(h.e && h.e.message || h.e),
       dataDate: dates.length ? (dates.includes(td) ? td : dates[dates.length - 1]) : null, today: td, yesterday: yd,
-      dayState: ds.ok ? ds.v : null, adYesterday: adYd ? { status: adYd.status, lastError: adYd.lastError } : null,
+      dayState: ds.ok ? ds.v : null, liveState: lv.ok ? lv.v : null, adYesterday: adYd ? { status: adYd.status, lastError: adYd.lastError } : null,
       jobs: jobs.ok ? jobs.v : [], plans: pl.ok ? pl.v.plans : null,
     });
     put("dash-status", ErpDashboard.statusHtml(model, { at }));
@@ -1845,7 +1846,7 @@ async function dashboardHydrate() {
       ydSummary = r.summary;
     }
     const [todayState, yesterdayState] = await Promise.all([
-      globalThis.SalesRefresh.loadDayState(td).catch(() => null), dayStateP.catch(() => null)]);
+      liveStateP.catch(() => null), dayStateP.catch(() => null)]);
     const model = LiveSales.model({ todaySummary: sm.v, yesterdaySummary: ydSummary, today: td, yesterday: yd,
       todayState, yesterdayState, forDate: globalThis.SalesMonthlySummary.forDate });
     // WING 세션 줄은 맨 위 운영 상태에 있으므로 health 없이(중복 방지)
