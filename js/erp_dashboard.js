@@ -99,7 +99,7 @@
   const POLLER_KEYS = ["mail", "poller"];   // 실행 상태를 기록하지 않는 폴러('정보 없음'일 때만 판정 제외 - 메일 발송 실패는 그대로 확인 필요)
   const MAIL_BAD = ["MAIL_FAILED", "MAIL_SEND_UNKNOWN", "MAIL_SENT_RECORD_FAILED", "MAIL_DATA_CHECK_NEEDED", "MAIL_LEGACY_REVIEW"];
 
-  /** in = { health, dataDate, today, yesterday, dayState(어제 매출 수집 이력 요약), adYesterday(광고비 어제 상태),
+  /** in = { health, dataDate, today, yesterday, dayState(어제 매출 수집 이력 요약), liveState(오늘 수집 이력 요약), adYesterday(광고비 어제 상태),
    *        jobs(sync_job_status 행), plans(inbound_plans), healthError } */
   function statusModel(inp) {
     const items = [];
@@ -143,6 +143,14 @@
       items.push({ key: "sales0620", tone: has ? "check" : "error", text: has ? "최신 매출 수집 확인 필요" : "06:20 매출 수집 실패",
         why: `${hm(ds.latest.collected_at)} · ${humanize(root.SalesRefresh && root.SalesRefresh.reasonText ? root.SalesRefresh.reasonText(ds.latest.error) : ds.latest.error)}`,
         href: "#/sales", collect: true });
+    }
+    // 2026-10-01 오늘 실시간 매출(10분 자동 수집·새로고침) 마지막 시도가 실패면 실패 시각 - 기존 값은 그대로 보여줘요
+    const lv = inp.liveState;
+    const noRows = e => /빈 스냅샷|옵션 행이 하나도 없|EMPTY_SNAPSHOT/.test(e || "");
+    if (lv && lv.latest && lv.latest.status !== "OK" && !noRows(lv.latest.error)) {
+      const rt = root.SalesRefresh && root.SalesRefresh.reasonText ? root.SalesRefresh.reasonText(lv.latest.error) : lv.latest.error;
+      items.push({ key: "live", tone: "check", text: `실시간 매출 수집 실패 ${hm(lv.latest.collected_at)}`,
+        why: `${humanize(rt) || "확인 필요"} · 기존 매출 유지${lv.last_check ? ` · 마지막 수집 ${hm(lv.last_check.collected_at)}` : ""}` });
     }
     if (inp.adYesterday && inp.adYesterday.status === "UNDETERMINED") {
       items.push({ key: "ad0620", tone: "check", text: "어제 광고비 수집 누락", why: humanize(inp.adYesterday.lastError) || "정상 수집 기록 없음", href: "#/profit", collect: true });

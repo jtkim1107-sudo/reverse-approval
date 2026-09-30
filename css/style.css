@@ -156,6 +156,8 @@ a { text-decoration: none; color: inherit; }
 .btn-ghost:hover { opacity: 1; background: rgba(128,128,128,.15); }
 
 .content { padding: 24px 26px 60px; max-width: 1180px; width: 100%; }
+/* 2026-10-01 공통 WING 경고는 화면 맨 아래 - 본문과 같은 폭·여백 */
+#wing-session-banner { max-width: 1180px; width: 100%; box-sizing: border-box; padding: 0 26px 32px; margin-top: -36px; min-width: 0; overflow-wrap: anywhere; }
 
 /* ===== 공통 컴포넌트 ===== */
 .card {
@@ -667,6 +669,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .main { margin-left: 0; }
   .menu-toggle { display: block; }
   .content { padding: 16px 14px 60px; }
+  #wing-session-banner { padding: 0 14px 28px; }
   .form-grid { grid-template-columns: 1fr; }
   .topbar-user { display: none; }
   .card { padding: 16px; }

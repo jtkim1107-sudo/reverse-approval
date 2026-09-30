@@ -42,6 +42,6 @@ const css = fs.readFileSync(new URL("./css/style.css", import.meta.url), "utf8")
 check(/@media \(max-width: 640px\)[\s\S]*\.adr-row \{ flex-direction: column/.test(css), "모바일 세로 배치 CSS");
 check(/\.adr-row \.btn \{ width: 100%/.test(css), "모바일 버튼 전체 폭");
 const idx = fs.readFileSync(new URL("./index.html", import.meta.url), "utf8");
-check(idx.includes("js/ad_product_profit.js?v=3") && idx.includes("css/style.css?v=73"), "캐시 번호 올림");
+check(idx.includes("js/ad_product_profit.js?v=3") && /css\/style\.css\?v=(7[3-9]|[89]\d)/.test(idx), "캐시 번호 올림");
 console.log(failures ? `${failures} FAILED` : "ALL OK");
 process.exit(failures ? 1 : 0);
