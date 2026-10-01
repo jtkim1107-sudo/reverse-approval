@@ -6401,8 +6401,11 @@ async function viewProfit() {
 
     ${AdCosts.cardHtml(adInfo, [], { autoError: adSrc.autoError })}`;
   if (!REF) return legacyTop + legacyRest + tail;
+  // 2026-10-01 저장 스냅샷이 같은 달 최신 계산보다 앞선 중간값이면 '이전 중간 스냅샷' 표시 · 이미 해결된 세이버 VAT 경고 제외(금액 그대로)
+  const curView = cms.mode === "PRIMARY" && CmSettlement.snapshotView
+    ? CmSettlement.snapshotView(cms.cur, cms.contribution && !cms.contribution.error && cms.contribution.detail, erpMonth) : cms.cur;
   const mainHtml = cms.mode === "PRIMARY"
-    ? CmSettlement.primaryHtml(cms.cur, { month: erpMonth, recovery: cms.recovery, controls })
+    ? CmSettlement.primaryHtml(curView, { month: erpMonth, recovery: cms.recovery, controls })
     : CmSettlement.noticeHtml(cms.mode, { month: erpMonth, error: cms.error, controls });
   // 2026-09-16 최신 자료 기여액(월 공통비 차감 전) - 확정 공헌이익 카드 아래 별도 카드. 이름·표를 섞지 않아요.
   const contribHtml = cms.mode === "PRIMARY" && CmSettlement.contributionHtml
@@ -6437,7 +6440,8 @@ function profitSimpleHtml(cms, { adInfo, mainHtml, tail }) {
   const top = CmSimple.topHtml(m, d, { settingsHtml, updated: updated.replace(/^\d{4}-/, "").replace(/ KST$/, ""),
     staleHtml: stale ? `<p class="cmv2-fail" role="alert">${esc(stale)}</p>` : "" });
   return top.replace("<!--cms-more-->", CmSimple.moreHtml(d, m, { adInfo, adCardHtml: tail.ad, freightCardHtml: tail.freight,
-    previousHtml: mainHtml, updatedAt: updated }));
+    previousHtml: mainHtml, updatedAt: updated,
+    previousLabel: CmSettlement.snapshotLabel ? CmSettlement.snapshotLabel(cms.cur, d, erpMonth) : "" }));
 }
 
 let profitAdsCache = [], profitFixedCache = [];

@@ -211,5 +211,35 @@ check("[핵심] 대시보드 켜짐: 잠정 내역을 보여 주고 기존 계�
 const onErr = Dsh.profitHtml(legacyModel, { fmt: fmtK, at: new Date(), settlement: { mode: "ERROR", mainHtml: C.dashboardNoticeHtml("ERROR", "timeout"), compareHtml: "", meta: "정산자료 계산 조회 실패", tone: "error" } });
 check("[핵심] 대시보드 조회 실패: 실패 안내만 표시", [onErr.includes("정산자료 계산 조회 실패"), onErr.includes("₩3,077,548")], [true, false]);
 check("대시보드 실패 안내에 존재하지 않는 아래 비교표를 안내하지 않음", onErr.includes("아래 기존 운영 계산"), false);
+
+console.log("[2026-10-01] 중간 스냅샷 표시 · 해결된 세이버 VAT 경고 제외(금액 그대로)");
+{
+  const rS = { ...r, required_inputs: [
+      { key: "AD_OUTSIDE_INVOICE", kind: "NOT_AVAILABLE", label: "정산 밖 광고비", status: "NEEDED", impact_low: 0, impact_high: 1000, impact_note: "a", how: "b" },
+      { key: "SAVER_VAT", kind: "NOT_AVAILABLE", label: "세이버 비용 VAT 기준", status: "NEEDED", impact_low: 0, impact_high: 9113,
+        impact_note: "세이버 100,247원을 원 금액 그대로 쓰는 중", how: "쿠팡 세이버 청구서의 부가세 포함 여부 확인 → 설정 승인" }],
+    lines: [...r.lines, { code: "MONTHLY_SUBSCRIPTION", label: "로켓그로스 세이버/구독요금 (월 공통, 상품 배분 없음)", amount: -100247, status: "VAT_UNCONFIRMED" }] };
+  const snap = { ...cur, MAIN: { ...cur.MAIN, period_end: "2026-09-13", cm: -100995,
+    reasons: [{ status: "VAT_UNCONFIRMED", label: "VAT 미확인", text: "세이버/구독요금 VAT 기준 확인 전 - 원 금액 사용" }, { status: "ACCRUED", text: "광고비" }], result: rS } };
+  const latest = { month: "2026-09", period_end: "2026-09-30",
+    monthly_cost: { items: [{ code: "SUBSCRIPTION", amount: 91134, vat_basis: "INCLUDED_SPLIT", vat_amount: 9113.36 }] } };
+  const v = C.snapshotView(snap, latest, "2026-09");
+  const hv = C.primaryHtml(v, { month: "2026-09" });
+  check("중간 스냅샷 이름 '이전 중간 스냅샷(9/13)' · 현재값 아님", [hv.includes("이전 중간 스냅샷(9/13)"), hv.includes("현재값 아님"), C.snapshotLabel(snap, latest, "2026-09")],
+        [true, true, "이전 중간 스냅샷(9/13)"]);
+  check("스냅샷 금액은 그대로(−₩100,995) · 원본 객체 변경 없음", [hv.includes("−₩100,995"), snap.MAIN.result.required_inputs.length, snap.MAIN._superseded], [true, 2, undefined]);
+  check("세이버 VAT 경고·설정 승인·입력 할 일 제거, 건수에서 제외", [hv.includes("설정 승인"), hv.includes("VAT 미확인"), hv.includes("1건 남음"), hv.includes("정산 밖 광고비")],
+        [false, false, true, true]);
+  check("세이버 줄 상태 = VAT 포함 확정 · 최신 계산 반영", hv.includes("VAT 포함 확정 · 최신 계산 반영"), true);
+  const keep = C.primaryHtml(C.snapshotView(snap, { ...latest, monthly_cost: { items: [{ code: "SUBSCRIPTION", vat_basis: "UNCONFIRMED" }] } }, "2026-09"), { month: "2026-09" });
+  check("세이버 미확정이면 경고 유지(일반 규칙)", [keep.includes("설정 승인"), keep.includes("2건 남음")], [true, true]);
+  const other = C.snapshotView(snap, { ...latest, month: "2026-10", period_end: "2026-10-05" }, "2026-09");
+  check("다른 달 최신 계산이면 스냅샷 그대로", [other.MAIN._superseded, C.primaryHtml(other, { month: "2026-09" }).includes("설정 승인")], [undefined, true]);
+  const full = C.snapshotView({ ...snap, MAIN: { ...snap.MAIN, period_end: "2026-09-30", confirmed: true } }, latest, "2026-09");
+  check("승인 확정 스냅샷은 '중간 스냅샷'으로 바꾸지 않음", full.MAIN._superseded, undefined);
+  const cHtml = C.contributionHtml({ detail: { ...latest, period_start: "2026-09-01", latest_data_date: "2026-09-30", reasons: [], lines: [], rows: {},
+    confirmed_cm: { cm: -100995, period_end: "2026-09-13", confirmed: false }, provisional_cm: { is_confirmed: false, amount: -282968, period_start: "2026-09-01", period_end: "2026-09-30" } } }, {});
+  check("기여액 카드: 저장된 월 공헌이익 → 이전 중간 스냅샷(9/13)", [cHtml.includes("이전 중간 스냅샷(9/13)"), cHtml.includes("저장된 월 공헌이익")], [true, false]);
+}
 console.log(`\n${n - fail}/${n} 통과`);
 process.exit(fail ? 1 : 0);

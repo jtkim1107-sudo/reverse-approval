@@ -227,7 +227,7 @@
   }
 
   /** 상세보기 + 이전 계산 보기(기존 카드들을 그대로 접어 넣음) */
-  function moreHtml(d, m, { adInfo = null, adCardHtml = "", freightCardHtml = "", previousHtml = "", updatedAt = "" } = {}) {
+  function moreHtml(d, m, { adInfo = null, adCardHtml = "", freightCardHtml = "", previousHtml = "", previousLabel = "", updatedAt = "" } = {}) {
     const sub = (title, body) => `<details class="cms-sub" open><summary>${esc(title)}</summary>${body}</details>`;
     return `<details class="cms-more" id="cms-detail"><summary><span>상세보기<small>계산표 · 광고비 두 값 · 반품·회수 · 입고 운송비 · 데이터 출처</small></span></summary>
         ${sub("계산표 (항목별 금액 · 출처 · 상태)", calcTableHtml(d, m))}
@@ -236,7 +236,7 @@
         ${sub("입고 운송비", freightHtml(d) + freightCardHtml)}
         ${sub("데이터 출처", sourcesHtml(d, { updatedAt }))}
       </details>
-      <details class="cms-more" id="cms-previous"><summary><span>이전 계산 보기<small>저장된 공헌이익 스냅샷 · 코호트 · 쿠팡 정산 잔액</small></span></summary>
+      <details class="cms-more" id="cms-previous"><summary><span>${previousLabel ? `${esc(previousLabel)} · 현재값 아님` : "이전 계산 보기"}<small>${previousLabel ? "최신 마감값은 위 숫자 · 이력 확인용" : "저장된 공헌이익 스냅샷"} · 코호트 · 쿠팡 정산 잔액</small></span></summary>
         ${previousHtml || `<p class="cms-muted">저장된 이전 계산이 없어요.</p>`}
       </details>`;
   }

@@ -120,6 +120,19 @@ check("설정 메뉴에 기존 함수 그대로(openAdModal · openFixedModal ·
 check("스크립트·스타일 등록", [idx.includes("js/cm_simple.js"), idx.indexOf("js/cm_simple.js") < idx.indexOf("js/app.js"), css.includes(".cms-flow")], [true, true, true]);
 check("새 탭·메뉴 없음", /data-route="cm/.test(idx), false);
 
+console.log("[2026-10-01] 세이버 VAT 포함 확정 → 확인할 일·건수 제외 / 이전 중간 스냅샷 제목");
+{
+  const D2 = JSON.parse(JSON.stringify(D));
+  D2.monthly_cost.items = D2.monthly_cost.items.map(i => (i.code === "SUBSCRIPTION" ? { ...i, vat_basis: "INCLUDED_SPLIT", vat_amount: 9113.36 } : i));
+  const m2 = C.model(D2);
+  check("세이버 확정이면 SAVER_VAT 할 일 없음 · 건수 1 줄어듦", [m2.todos.some(t => t.key === "SAVER_VAT"), m2.todos.length, m2.mine], [false, m.todos.length - 1, m.mine - 1]);
+  const top2 = C.topHtml(m2, D2);
+  check("화면에 세이버 VAT 확인 문구 없음", [top2.includes("세이버 VAT"), top2.includes("부가세 포함인지")], [false, false]);
+  const more2 = C.moreHtml(D2, m2, { previousHtml: "<p>x</p>", previousLabel: "이전 중간 스냅샷(9/13)" });
+  check("접힌 이력 제목 = 이전 중간 스냅샷(9/13) · 현재값 아님", [more2.includes("이전 중간 스냅샷(9/13) · 현재값 아님"), more2.includes('id="cms-previous"'), /<details class="cms-more" id="cms-previous" open/.test(more2)], [true, true, false]);
+  check("라벨 없으면 기존 제목", C.moreHtml(D2, m2, {}).includes("이전 계산 보기"), true);
+}
+
 console.log();
 if (fails.length) { console.log(`실패 ${fails.length}건: ${fails.join(", ")}`); process.exit(1); }
 console.log("전부 통과");
