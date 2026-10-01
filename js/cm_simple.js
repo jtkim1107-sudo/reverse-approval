@@ -143,18 +143,25 @@
       </div>
       ${staleHtml}
       <div class="grid-stats cms-kpi">
-        <div class="stat"><div class="stat-label">잠정 공헌이익</div><div class="stat-value${m.cm < 0 ? " red" : ""}">${won(m.cm)}</div>
+        <div class="stat"><div class="stat-label">잠정 공헌이익(본업)</div><div class="stat-value${m.cm < 0 ? " red" : ""}">${won(m.cm)}</div>
           <small>공헌이익률 ${m.rate == null ? "—" : `${m.rate < 0 ? "−" : ""}${Math.abs(m.rate).toFixed(1)}%`} · 확정 전</small></div>
         <div class="stat"><div class="stat-label">순매출</div><div class="stat-value blue">${won(m.revenue)}</div><small>부가세 제외 · 환불·쿠폰 뺀 금액</small></div>
         <div class="stat"><div class="stat-label">총비용</div><div class="stat-value">${won(m.totalCost)}</div><small>원가·수수료·광고·물류·공통비·반품손실</small></div>
         <div class="stat"><div class="stat-label">확인할 항목</div><div class="stat-value${m.todos.length ? " amber" : " green"}">${m.todos.length}건</div>
           <small>내가 할 일 ${m.mine} · 자동 대기 ${m.auto}</small></div>
       </div>
+      ${otherIncomeHtml(p)}
       ${flowHtml(m)}
       <h3 class="cms-h3">확인할 일</h3>
       ${todoHtml(m)}
       <!--cms-more-->
     </div>`;
+  }
+
+  /** 2026-10-01 재고 손실 보상 = 본업과 분리한 기타 영업수익. 요약에 값이 있을 때만(없으면 0원으로 만들지 않음). */
+  function otherIncomeHtml(p) {
+    if (!p || p.other_income == null || p.amount_with_other_income == null) return "";
+    return `<p class="cms-other" id="cms-other-income">기타 영업수익 · 재고 손실 보상 <b>${signed(p.other_income)}</b> → 보상 포함 손익 <b class="${num(p.amount_with_other_income) < 0 ? "red" : ""}">${won(p.amount_with_other_income)}</b> <small>(본업 공헌이익과 별도)</small></p>`;
   }
 
   // ── 상세보기 안 ────────────────────────────────────────────────────────
@@ -167,7 +174,8 @@
     const rev = d.lines.filter(l => REVENUE_CODES.includes(l.code));
     const rest = d.lines.filter(l => !REVENUE_CODES.includes(l.code));
     const monthly = ((d.monthly_cost && d.monthly_cost.items) || []).map(i =>
-      row(`월 공통비 · ${i.label}`, -num(i.amount), "정산파일", i.vat_basis === "UNCONFIRMED" ? "⚠ VAT 미확인" : "⏳"));
+      row(`월 공통비 · ${i.label}${i.vat_basis === "INCLUDED_SPLIT" ? " (공급가, VAT 분리)" : ""}`, -num(i.amount), "정산파일",
+          i.vat_basis === "UNCONFIRMED" ? "⚠ VAT 미확인" : i.vat_basis === "INCLUDED_SPLIT" ? "✓ 대표 확정" : "⏳"));
     const rw = d.rows || {};
     return `<div class="table-wrap"><table class="cms-tbl"><thead><tr><th>항목</th><th class="num">금액(공급가액)</th><th>출처</th><th>상태</th></tr></thead><tbody>
       ${rev.map(l => row(l.label, l.amount, l.source, st[l.status] || l.status)).join("")}
@@ -175,7 +183,9 @@
       ${rest.map(l => row(l.label, l.amount, l.source, st[l.status] || l.status)).join("")}
       ${row("판매분 입고 운반비(리파코 → 쿠팡창고)", -num(p.inbound_freight), "ERP", "✓ 확정")}
       ${monthly.join("")}
-      ${row("= 잠정 공헌이익", m.cm, "", "잠정", "tot")}
+      ${row("= 잠정 공헌이익(본업)", m.cm, "", "잠정", "tot")}
+      ${p.other_income != null ? row("+ 기타 영업수익 · 재고 손실 보상", p.other_income, "정산파일", "본업과 별도") : ""}
+      ${p.amount_with_other_income != null ? row("= 보상 포함 손익", p.amount_with_other_income, "", "잠정", "tot") : ""}
     </tbody></table></div>
     <p class="cms-muted">주문 ${fmt(rw.orders)}건 · 취소 ${fmt(rw.cancels)}건 · 판매수수료·광고비 VAT 는 매입세액이라 공헌이익에서 빼지 않아요.</p>`;
   }
@@ -199,14 +209,14 @@
   function recoveryHtml(d) {
     const rc = d.recovery || {};
     return `<table class="cms-tbl"><tbody>
-      <tr><td>자동 원가환입 (환불 수량 × 원판매 원가)</td><td class="num">${won(rc.confirmed)} · ${fmt(rc.check_pending_rows)}건 확인 대기</td></tr>
-      <tr><td>반품 손실 (승인된 회수 확인 기준 · 확인 전은 우선 0원)</td><td class="num">${won(-num(rc.loss))}</td></tr>
+      <tr><td>취소·반품 원가 재고 복원 (전량 회수 운영 기준 · 환불 수량 × 원판매 원가)</td><td class="num">${won(rc.confirmed)} · ${fmt(rc.check_pending_rows)}건 확인 대기</td></tr>
+      <tr><td>반품 손실 (폐기·파손 기록분만)</td><td class="num">${won(-num(rc.loss))}</td></tr>
       <tr><td>회수·손실 확인 대기 (전량 미회수면 최대)</td><td class="num">${won(rc.check_pending_amount)} (최대 ${won(-num(rc.check_pending_amount))})</td></tr>
     </tbody></table>`;
   }
 
   function freightHtml(d) {
-    return `<table class="cms-tbl"><tbody><tr><td>판매분 입고 운반비 (리파코 → 쿠팡창고, 판매 수량에 배분)</td><td class="num">${won(num(d.provisional_cm.inbound_freight))}</td></tr></tbody></table>`;
+    return `<table class="cms-tbl"><tbody><tr><td>판매분 입고 운반비 (FIFO 판매분 귀속 · 반품은 원래 배치로 복원 · 등급상품 재판매 1회 재차감)</td><td class="num">${won(num(d.provisional_cm.inbound_freight))}</td></tr></tbody></table>`;
   }
 
   function sourcesHtml(d, { updatedAt = "" } = {}) {
@@ -231,5 +241,5 @@
       </details>`;
   }
 
-  root.CmSimple = { model, todoItems, topHtml, moreHtml, calcTableHtml, adCompareHtml, recoveryHtml, freightHtml, sourcesHtml, flowHtml, todoHtml };
+  root.CmSimple = { model, todoItems, topHtml, otherIncomeHtml, moreHtml, calcTableHtml, adCompareHtml, recoveryHtml, freightHtml, sourcesHtml, flowHtml, todoHtml };
 })(typeof window !== "undefined" ? window : globalThis);

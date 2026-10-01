@@ -1380,6 +1380,10 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
 .cms-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .cms-head h2 { font-size: 20px; margin: 0; }
 .cms-period { color: var(--text-sub); font-size: 13px; margin-top: 4px; }
+.cms-other { margin: 10px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--bg-sub, #f4f6f8); font-size: 14px; }
+.cms-other b { margin: 0 2px; }
+.cms-other b.red { color: var(--red); }
+.cms-other small { color: var(--text-sub); }
 details.cms-set { position: relative; flex: none; }
 details.cms-set > summary { list-style: none; white-space: nowrap; cursor: pointer; }
 details.cms-set > summary::-webkit-details-marker { display: none; }

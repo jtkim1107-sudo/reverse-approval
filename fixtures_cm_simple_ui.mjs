@@ -91,7 +91,7 @@ check("토스 정산분이 생기면 '+ 토스쇼핑' 한 칸 · 검산 통과",
 console.log("\n[4] 화면 - 기본은 쉬운 말만, 기술 표시는 상세보기 안");
 const top = C.topHtml(m, D, { settingsHtml: '<label class="cms-mi">월 선택 <input type="month" value="2026-09"></label><button class="cms-mi" onclick="openAdModal()">＋ 수동 광고비 입력</button><button class="cms-mi" onclick="openFixedModal()">고정비 설정</button>', updated: "09-29 23:49" });
 const basic = top.replace(/<details class="cms-set">[\s\S]*?<\/details>/, "");
-check("4칸 라벨", [...basic.matchAll(/stat-label">([^<]+)</g)].map(x => x[1]), ["잠정 공헌이익", "순매출", "총비용", "확인할 항목"]);
+check("4칸 라벨", [...basic.matchAll(/stat-label">([^<]+)</g)].map(x => x[1]), ["잠정 공헌이익(본업)", "순매출", "총비용", "확인할 항목"]);
 check("4칸 값", [...basic.matchAll(/stat-value[^"]*">([^<]+)</g)].map(x => x[1]), ["−₩56,117", "₩19,120,500", "₩19,176,617", "5건"]);
 check("[핵심] 한 줄 흐름 문구", text(basic.match(/<div class="cms-flow"[\s\S]*?<\/div>/)[0]),
       "₩19,120,500 순매출 − ₩10,183,272 상품원가 − ₩2,228,646 판매수수료 − ₩1,639,491 광고비 − ₩521,990 물류비 − ₩4,603,218 공통비 − ₩0 반품손실 = −₩56,117 공헌이익");
@@ -106,7 +106,10 @@ check("상세보기 안 5개 소제목", [...more.matchAll(/<details class="cms-
 check("기술 표시는 상세보기 안에(ACCRUED · VAT 미확인 · 실행번호 · 버전)", ["ACCRUED", "VAT 미확인", "9a31d629", "cm_settlement_v2.7"].every(w => more.includes(w)), true);
 check("기존 광고비 카드·운송비 카드를 상세보기 안에 그대로", [more.includes('id="ad-card"'), more.includes('id="fr-card"')], [true, true]);
 check("저장된 스냅샷은 '이전 계산 보기' 안", more.indexOf("저장된 스냅샷 −₩100,995") > more.indexOf('id="cms-previous"'), true);
-check("계산표 합계 = 잠정 공헌이익", /= 잠정 공헌이익<\/td><td class="num">−₩56,117/.test(more), true);
+check("계산표 합계 = 잠정 공헌이익(본업)", /= 잠정 공헌이익\(본업\)<\/td><td class="num">−₩56,117/.test(more), true);
+check("기타 영업수익 없는 요약이면 줄도 없음(0원으로 만들지 않음)", basic.includes("cms-other-income"), false);
+check("기타 영업수익·보상 포함 손익 줄(값 있을 때)", /재고 손실 보상 <b>\+₩140,415<\/b> → 보상 포함 손익 <b class="red">−₩142,553<\/b>/.test(
+  C.otherIncomeHtml({ other_income: 140415, amount_with_other_income: -142553 })), true);
 check("광고비 두 값(일별 합계는 기간 안 정상 수집만)", /WING 일별 합계 09-01~09-28\)<\/td><td class="num">₩99,789/.test(more), true);
 
 console.log("\n[5] app.js 연결");

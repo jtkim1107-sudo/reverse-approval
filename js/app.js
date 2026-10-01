@@ -1696,6 +1696,32 @@ async function downloadKakaoReport(kind) {
   } catch (e) { toast(String(e?.message || e)); }
 }
 
+// 2026-10-01 월 최종 정산서 PNG - VM 비공개 보관(공개 저장소에 올리지 않음), ERP 로그인 JWT 로만 받음
+async function downloadMonthlySettlement(month) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session?.access_token) return toast("ERP 로그인이 필요합니다");
+  if (!/^\d{4}-\d{2}$/.test(String(month || ""))) return toast("월 형식이 올바르지 않습니다");
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/monthly-settlement/${month}/png`, {
+      headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store",
+    });
+    if (!resp.ok) throw new Error(resp.status === 404 ? `${month} 최종 정산서가 아직 없어요` : `다운로드 실패(HTTP ${resp.status})`);
+    const url = URL.createObjectURL(await resp.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `rebirth_coupang_settlement_${month}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch (e) { toast(String(e?.message || e)); }
+}
+
+function prevMonthOf(ym) {
+  const [y, m] = String(ym).split("-").map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
 async function dashboardHydrate() {
   const gen = ++_dashGen;
   const at = new Date();
@@ -6405,7 +6431,9 @@ function profitSimpleHtml(cms, { adInfo, mainHtml, tail }) {
   const settingsHtml = `<label class="cms-mi">월 선택 ${monthPicker()}</label>
     <button type="button" class="cms-mi" onclick="openAdModal()">＋ 수동 광고비 입력 <span>›</span></button>
     <button type="button" class="cms-mi" onclick="openFixedModal()">고정비 설정 <span>›</span></button>
-    <div class="cms-mi">${AdCosts.refreshButtonHtml ? AdCosts.refreshButtonHtml(erpMonth) : ""}</div>`;
+    <div class="cms-mi">${AdCosts.refreshButtonHtml ? AdCosts.refreshButtonHtml(erpMonth) : ""}</div>
+    <button type="button" class="cms-mi" onclick="downloadMonthlySettlement('${prevMonthOf(erpMonth)}')">${Number(prevMonthOf(erpMonth).slice(5))}월 최종 정산서 PNG <span>›</span></button>
+    <button type="button" class="cms-mi" onclick="downloadMonthlySettlement('${erpMonth}')">${Number(String(erpMonth).slice(5))}월 최종 정산서 PNG <span>›</span></button>`;
   const top = CmSimple.topHtml(m, d, { settingsHtml, updated: updated.replace(/^\d{4}-/, "").replace(/ KST$/, ""),
     staleHtml: stale ? `<p class="cmv2-fail" role="alert">${esc(stale)}</p>` : "" });
   return top.replace("<!--cms-more-->", CmSimple.moreHtml(d, m, { adInfo, adCardHtml: tail.ad, freightCardHtml: tail.freight,
