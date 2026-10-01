@@ -54,6 +54,8 @@
     COST_SUMMARY_MISSING: { kind: "check", text: "월 공통비 없음" },
     COST_SUMMARY_STALE: { kind: "check", text: "월 공통비 조회 시점 문제" },
     MONTHLY_COST_DATA_CHECK: { kind: "check", text: "월 공통비 확인 필요" },
+    // 2026-10-01 이전 스냅샷의 세이버 줄 - 이후 대표 확정(VAT 포함 청구액 → 공급가 분리)으로 최신 계산에 반영됨
+    SAVER_VAT_RESOLVED: { kind: "ok", text: "VAT 포함 확정 · 최신 계산 반영" },
   };
   function chip(status, opts = {}) {
     const s = STATUS[status] || { kind: "info", text: status };
@@ -294,20 +296,50 @@
   }
 
   /** 2026-09-15 공헌이익 화면 맨 위 주 결과 카드 - 스위치 ON + 성공 MAIN 결과가 있을 때. controls = 월 선택·버튼(app.js 가 넘김) */
+  const md = s => { const m = /^\d{4}-(\d{2})-(\d{2})/.exec(String(s || "")); return m ? `${Number(m[1])}/${Number(m[2])}` : String(s || ""); };
+  const isSaver = x => /세이버|구독|SUBSCRIPTION/.test(`${x.code || ""} ${x.label || ""} ${x.text || ""}`);
+
+  /** 2026-10-01 저장 스냅샷 보기 정리(금액은 그대로, 표시만).
+   *  · 승인 확정이 아닌 스냅샷이 같은 달 최신 잠정 계산보다 앞선 날까지만 계산했으면 '이전 중간 스냅샷(M/D)' - 현재값으로 읽히지 않게.
+   *  · 최신 계산에서 세이버가 VAT 포함 확정(공급가 분리, vat_basis INCLUDED_SPLIT)이면 스냅샷의 세이버 VAT 경고·입력 할 일은 뺀다. */
+  function snapshotView(cur, detail, month) {
+    if (!cur || !cur.MAIN) return cur;
+    const main = { ...cur.MAIN };
+    const d = detail && detail.month === month ? detail : null;
+    if (d && main.confirmed !== true && String(d.period_end || "") > String(main.period_end || "").slice(0, 10)) {
+      main._superseded = { as_of: md(main.period_end) };
+    }
+    const saverDone = !!d && ((d.monthly_cost && d.monthly_cost.items) || []).some(i => i.code === "SUBSCRIPTION" && i.vat_basis === "INCLUDED_SPLIT");
+    if (saverDone) {
+      main.reasons = (main.reasons || []).filter(z => !(z.status === "VAT_UNCONFIRMED" && isSaver(z)));
+      const r = { ...(main.result || {}) };
+      if (Array.isArray(r.required_inputs)) r.required_inputs = r.required_inputs.filter(x => x.key !== "SAVER_VAT");
+      if (Array.isArray(r.lines)) r.lines = r.lines.map(l => (l.status === "VAT_UNCONFIRMED" && isSaver(l) ? { ...l, status: "SAVER_VAT_RESOLVED" } : l));
+      main.result = r;
+    }
+    return { ...cur, MAIN: main };
+  }
+  /** '이전 계산 보기' 제목 - 중간 스냅샷이면 날짜를 붙여 현재값이 아님을 밝혀요 */
+  const snapshotLabel = (cur, detail, month) => {
+    const v = snapshotView(cur, detail, month);
+    return v && v.MAIN && v.MAIN._superseded ? `이전 중간 스냅샷(${v.MAIN._superseded.as_of})` : "";
+  };
+
   function primaryHtml(cur, { month, recovery, controls = "" } = {}) {
     const main = cur.MAIN;
     const r = main.result || {};
     const rec = r.cost_recovery || {};
     const st = stateText(main);
     const v27 = rec.auto_qty != null;
+    const old = main._superseded;
     return `
     <section class="card cmv2 cmv2-primary" id="cmv2" aria-labelledby="cmv2-h" data-snapshot-id="${esc(main.id ?? "")}">
-      <div class="card-head"><h2 id="cmv2-h">${esc(month)} 공헌이익 <span class="cmv2-tag">정산자료 기준</span></h2>
+      <div class="card-head"><h2 id="cmv2-h">${old ? `이전 중간 스냅샷(${esc(old.as_of)}) <span class="cmv2-tag">현재값 아님</span>` : `${esc(month)} 공헌이익 <span class="cmv2-tag">정산자료 기준</span>`}</h2>
         ${controls ? `<div class="cmv2-controls">${controls}</div>` : ""}</div>
       <p class="cmv2-meta">기간 <b>${esc(periodText(main))}</b> · 쿠팡 매출인식일 기준 · 메인(취소 처리월) · 상태 <b class="cmv2-prov">${st}</b>
         · 계산 ${esc(kstTime(main.created_at))}${main.id != null ? ` · 결과 #${esc(main.id)}` : ""}${main.calc_version ? ` · ${esc(String(main.calc_version).replace("cm_settlement_", ""))}` : ""}</p>
       <div class="grid-stats cmv2-stats">
-        <div class="stat cmv2-stat-main"><div class="stat-label">공헌이익 <span class="cmv2-prov">${st}</span></div>
+        <div class="stat cmv2-stat-main"><div class="stat-label">${old ? `이전 중간 스냅샷(${esc(old.as_of)})` : "공헌이익"} <span class="cmv2-prov">${old ? "현재값 아님" : st}</span></div>
           <div class="stat-value${Number(main.cm) < 0 ? " red" : ""}">${won(main.cm)}</div><div class="cmv2-stat-sub">공헌이익률 ${rateText(r)}</div></div>
         <div class="stat"><div class="stat-label">순매출 <small>공급가액</small></div><div class="stat-value">${won(r.revenue)}</div></div>
         ${v27 ? `
@@ -494,6 +526,9 @@
     // 저장된 스냅샷(confirmed_cm)과 다른 칸에 따로 보여 주고, 확정으로 읽히지 않게 표시해요.
     const p = (d.provisional_cm && d.provisional_cm.is_confirmed === false) ? d.provisional_cm : null;
     const confPeriod = confirmed ? `${String(confirmed.period_start).slice(5)}~${String(confirmed.period_end).slice(5)}` : null;
+    const snapEnd = confirmed ? confirmed.period_end : d.confirmed_cm && d.confirmed_cm.period_end;
+    const snapOk = confirmed ? confirmed.confirmed === true : !!(d.confirmed_cm && d.confirmed_cm.confirmed);
+    const midSnap = snapEnd && !snapOk && String(d.period_end || "") > String(snapEnd).slice(0, 10) ? md(snapEnd) : "";
     return `
     <section class="card cmv2 cmv2-contrib" id="cmv2-contrib" aria-labelledby="cmc-h" data-period-end="${esc(d.period_end)}">
       <div class="card-head"><h2 id="cmc-h">최신 자료 공헌이익 <span class="cmv2-tag">${p ? "잠정 · 확정 전" : "월 공통비 차감 전"}</span></h2></div>
@@ -508,7 +543,7 @@
         <div class="stat${p ? "" : " cmv2-stat-main"}"><div class="stat-label">월 공통비 차감 전 기여액 <span class="cmv2-prov">잠정</span></div>
           <div class="stat-value${Number(d.subtotal_before_monthly) < 0 ? " red" : ""}">${won(d.subtotal_before_monthly)}</div>
           <div class="cmv2-stat-sub">${esc(d.period_start)}~${esc(d.period_end)} · 공헌이익이 아니에요</div></div>
-        <div class="stat"><div class="stat-label">${confirmed && confirmed.confirmed ? "월 확정 공헌이익" : "저장된 월 공헌이익"} <small>${confirmed && confirmed.confirmed ? "확정" : "잠정 스냅샷"}</small></div>
+        <div class="stat"><div class="stat-label">${confirmed && confirmed.confirmed ? "월 확정 공헌이익" : midSnap ? `이전 중간 스냅샷(${esc(midSnap)})` : "저장된 월 공헌이익"} <small>${confirmed && confirmed.confirmed ? "확정" : midSnap ? "현재값 아님" : "잠정 스냅샷"}</small></div>
           <div class="stat-value">${confirmed ? won(confirmed.cm) : d.confirmed_cm ? won(d.confirmed_cm.cm) : `<span class="cmv2-none">없음</span>`}</div>
           <div class="cmv2-stat-sub">${confPeriod ? esc(confPeriod) : d.confirmed_cm ? `~${esc(String(d.confirmed_cm.period_end).slice(5))}` : "—"} 기준 · 이 카드가 덮어쓰지 않아요</div></div>
         <div class="stat"><div class="stat-label">월 공통비</div>
@@ -626,6 +661,6 @@
 
   global.CmSettlement = { SETTING_KEY, STATUS, switchState, isEnabled, loadCurrent, prodParts, compare, primaryHtml, compareHtml, noticeHtml,
                           dashboardMainHtml, dashboardNoticeHtml, dashboardCompareHtml, dashboardMeta, chip, requiredInputsHtml, refundsRefHtml,
-                          costName, kstTime,
+                          costName, kstTime, snapshotView, snapshotLabel,
                           CONTRIB_JOB, loadContribution, contributionHtml, dashboardContributionHtml, dashboardProvisionalBreakdownHtml, contribStale };
 })(typeof window !== "undefined" ? window : globalThis);
