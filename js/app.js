@@ -12323,6 +12323,26 @@ function lastBankStatementAt(txns) {
   return dated.sort().at(-1) || null;
 }
 
+// 2026-10-02 자금일보 통장 최신화 - 은행 '거래내역조회' 엑셀 → VM 대사(확인 → 반영). js/bank_statement_upload.js
+async function uploadBankStatement(input) {
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session?.access_token) return toast("ERP 로그인이 필요합니다");
+  const btn = document.getElementById("bank-upload-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "통장 파일 확인 중…"; }
+  try {
+    const r = await BankStatementUpload.run(file, { base: WING_SUBMIT_API_BASE, token: session.access_token });
+    toast(r.text);
+    if (r.applied) route();
+  } catch (e) {
+    toast(`통장 파일 처리 실패: ${String(e?.message || e)}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "통장 파일 올리기"; }
+  }
+}
+
 function addDaysStr(base, n) {
   const d = new Date(base + "T00:00:00");
   d.setDate(d.getDate() + n);
@@ -12411,7 +12431,9 @@ async function viewCash() {
   return `
     <div class="card" style="border:1.5px solid ${bankAsOf?.slice(0, 10) === today() ? 'var(--green)' : 'var(--amber)'}">
       <b>통장 대사:</b> ${bankAsOf ? `${esc(bankAsOf)} 기준 · 이후 거래는 아직 확인되지 않았습니다.` : '통장 거래내역 대사 기록이 없습니다.'}
-      새 거래내역을 받으면 기존 거래·지출결의서와 맞춰 실제 입출금만 반영하세요.
+      은행에서 받은 '거래내역조회' 엑셀을 올리면 ERP에 없는 실제 입출금만 맞춰 반영합니다.
+      <div style="margin-top:8px"><button class="btn sm" id="bank-upload-btn" onclick="document.getElementById('bank-upload-input').click()">통장 파일 올리기</button>
+        <input type="file" id="bank-upload-input" accept=".xlsx" style="display:none" onchange="uploadBankStatement(this)"></div>
     </div>
     <div class="grid-stats">
       <div class="stat"><div class="stat-label">${cashDate} 총 잔액 (실제)</div>
