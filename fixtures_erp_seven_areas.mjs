@@ -64,6 +64,14 @@ check([t.includes("15일 지남"), t.includes("통장 최신화 필요"), t.incl
 const empty = H.html({ sales: {}, profit: { valid: false, notes: ["최신 잠정 공헌이익을 계산할 수 없습니다."] }, inventory: { total: null, error: "재고 판단 캐시 없음" }, cash: {}, ads: {}, actions: [] });
 check([empty.includes("₩0"), (empty.match(/확인 필요/g) || []).length >= 5, empty.includes("재고 판단 캐시 없음")], [false, true, true], "값 없음 → 확인 필요(0원 아님)");
 check(H.errorHtml("HTTP 503").includes("이전 값을 대신 보여 주지 않아요"), true, "조회 실패 문구");
+const pending = H.withPendingApprovals(home, { count: 3 });
+const pendingHtml = H.html(pending);
+check([pending.actions.length, pendingHtml.includes("결재 대기 3건"), pendingHtml.includes('href="#/inbox"'), pendingHtml.includes(">3건</b>")],
+      [3, true, true, true], "내 결재 차례 문서를 오늘 조치사항 건수·목록에 합치고 결재 대기로 연결");
+const nonePending = H.html(H.withPendingApprovals(home, { count: 0 }));
+check([nonePending.includes("결재 대기 0건"), nonePending.includes(">2건</b>")], [true, true], "결재 대기 0건도 숨기지 않고 운영 조치와 분리 표시");
+const failedPending = H.html(H.withPendingApprovals(home, { error: true }));
+check([failedPending.includes("결재 대기 건수 확인 필요"), failedPending.includes('href="#/inbox"')], [true, true], "결재 조회 실패를 0건으로 오인하지 않고 확인 경로 제공");
 
 console.log("[4] 광고 현황 - 최신 아님 · 잠정 · 원가 확인 필요");
 const adm = {
@@ -86,6 +94,8 @@ check(ah.includes('href="#/adprofit"'), true, "상품별 광고·이익(기존 �
 console.log("[5] 대시보드 연결");
 const dash = app.slice(app.indexOf("/* ---------- 화면: 대시보드 ---------- */"), app.indexOf("/* ---------- 문서 목록 테이블 ---------- */"));
 check([dash.includes("ErpHome.load({ base: WING_SUBMIT_API_BASE"), dash.includes("ErpHome.errorHtml"), dash.includes('id="dash-status-slot"')], [true, true, true], "한눈에 보기 + 운영 상태(맨 아래) 유지");
+check([dash.includes('select("status,approval_line,current_step")'), dash.includes("inboxOf(docsResult.data || []).length"), dash.includes("ErpHome.withPendingApprovals")],
+      [true, true, true], "로그인 사용자에게 지금 결재 차례인 문서만 대시보드에 합침");
 check(idx.indexOf("js/erp_home.js") > 0 && idx.indexOf("js/ad_status_view.js") > 0 && idx.indexOf("js/ad_status_view.js") < idx.indexOf("js/app.js"), true, "모듈이 app.js 보다 먼저");
 check(dash.includes("약 24시간"), false, "옛 '약 24시간' 안내 제거");
 check([dash.includes('<details class="dash-more"'), dash.includes("상세 현황 보기"), !dash.includes('<details class="dash-more" open')],
@@ -94,6 +104,11 @@ check([dash.includes('id="dash-live-slot"'), dash.indexOf('id="dash-status-slot"
       [true, true], "실시간 매출은 바로 표시 · 운영 상태는 맨 아래");
 check([dash.includes('sb.from("po_inbound_holds")'), dash.includes('put("dash-todo"')], [false, false],
       "서버 한눈에 보기와 중복되던 오늘 할 일 조회·카드 제거");
+
+console.log("[5-1] 모바일 두 열 카드 글자줄 정렬");
+const css = read("./css/style.css");
+check([css.includes(".eh-t { min-height: 2.9em"), css.includes(".eh-v { min-height: 2.6em"), css.includes(".eh-s { min-height: 4.2em"), css.includes(".eh-st { min-height: 1.4em")],
+      [true, true, true, true], "제목·금액·설명·상태 영역의 최소 높이로 시작선 정렬");
 
 console.log("[6] 이동된 옛 화면의 중복 렌더러 제거");
 for (const gone of ["inventory", "purchasereco", "aireport", "rginbound", "shipmentplans"])

@@ -28,6 +28,11 @@
   function tiles(h) {
     const s = h.sales || {}, p = h.profit || {}, inv = h.inventory || {}, c = h.cash || {}, a = h.ads || {}, acts = h.actions || [];
     const d7 = a.d7 || {};
+    const pending = h.pending_approvals || {};
+    const pendingText = pending.error
+      ? "결재 대기 확인 필요"
+      : (num(pending.count) === null ? "" : `결재 대기 ${num(pending.count)}건`);
+    const actionTitles = acts.filter(x => x.link !== "#/inbox").slice(0, 2).map(x => x.title);
     const invSub = inv.total === null || inv.total === undefined
       ? esc(inv.error || "재고·원가 확인 필요")
       : `${esc(inv.products)}개 상품 · 입고 예정분 ${esc(won(inv.incoming_value))}${(inv.cost_unconfirmed || []).length ? ` · 원가 미확정 ${inv.cost_unconfirmed.length}` : ""}${(inv.missing_cost || []).length + (inv.missing_qty || []).length ? ` · 제외 ${(inv.missing_cost || []).length + (inv.missing_qty || []).length}` : ""}`;
@@ -49,8 +54,22 @@
              sub: d7.complete ? `7일 ROAS ${esc(roas(d7.roas))} · 광고비율 ${esc(pct(d7.ad_cost_ratio))}` : "7일 자료 확인 필요",
              status: a.campaign_fresh === false ? "캠페인 수치 최신 아님" : a.status }),
       tile({ id: "actions", title: "오늘 조치사항", value: `${acts.length}건`, href: "#dash-home-actions",
-             sub: acts.length ? esc(acts.slice(0, 2).map(x => x.title).join(" · ")) : "운영 조치 없음", status: acts.some(x => x.level === "alert") ? "확인 필요" : "" }),
+             sub: esc([pendingText, ...actionTitles].filter(Boolean).join(" · ") || "운영 조치 없음"),
+             status: pending.error || acts.some(x => x.level === "alert") ? "확인 필요" : "" }),
     ].join("");
+  }
+
+  /** 로그인 사용자 기준 결재 대기를 운영 조치와 합쳐요. 서버 운영 조치 원본은 바꾸지 않아요. */
+  function withPendingApprovals(h, { count = null, error = false } = {}) {
+    const out = { ...(h || {}), actions: [...((h && h.actions) || [])] };
+    const n = num(count);
+    out.pending_approvals = { count: error ? null : Math.max(0, Math.trunc(n || 0)), error: !!error };
+    if (error) {
+      out.actions.push({ level: "warn", title: "결재 대기 건수 확인 필요", detail: "결재 대기 화면에서 직접 확인해 주세요", link: "#/inbox" });
+    } else if (n > 0) {
+      out.actions.push({ level: "action", title: `결재 대기 ${Math.trunc(n)}건`, detail: "내 결재 차례인 문서를 확인해 주세요", link: "#/inbox" });
+    }
+    return out;
   }
 
   function actionsHtml(acts) {
@@ -79,5 +98,5 @@
     return r.json();
   }
 
-  root.ErpHome = { load, html, errorHtml, tiles, actionsHtml };
+  root.ErpHome = { load, html, errorHtml, tiles, actionsHtml, withPendingApprovals };
 })(typeof window !== "undefined" ? window : globalThis);

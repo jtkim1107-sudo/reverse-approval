@@ -1731,7 +1731,13 @@ async function loadDashHome(gen) {
   try {
     const { data: { session } } = await sb.auth.getSession();
     if (!session?.access_token) throw new Error("ERP 로그인이 필요합니다");
-    const h = await ErpHome.load({ base: WING_SUBMIT_API_BASE, token: session.access_token });
+    const [rawHome, docsResult] = await Promise.all([
+      ErpHome.load({ base: WING_SUBMIT_API_BASE, token: session.access_token }),
+      sb.from("documents").select("status,approval_line,current_step").eq("status", "progress"),
+    ]);
+    const h = ErpHome.withPendingApprovals(rawHome, docsResult.error
+      ? { error: true }
+      : { count: inboxOf(docsResult.data || []).length });
     if (gen !== _dashGen || !document.getElementById("dash-home-slot")) return;
     const html = ErpHome.html(h);
     _dashLast["dash-home"] = { html, at: Date.now() };
