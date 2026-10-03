@@ -498,6 +498,76 @@ async function updateBadge() {
   }
 }
 
+/* ---------- 영역별 통합 메뉴 ---------- */
+// 왼쪽 메뉴에는 대표 영역만 표시하고, 기존 세부 화면은 이 상단 탭에서 전환해요.
+// 기존 hash와 render 함수는 그대로 사용하므로 북마크·딥링크·업무 기능은 바뀌지 않아요.
+const ERP_AREA_GROUPS = [
+  { id: "sales", title: "매출 · 고객", tabs: [
+    { href: "sales", label: "매출 내역", routes: ["sales"] },
+    { href: "unmatched", label: "누락 매출", routes: ["unmatched"] },
+    { href: "voc", label: "리뷰 · 고객문의", routes: ["voc"] },
+  ]},
+  { id: "purchase", title: "매입 · 상품", tabs: [
+    { href: "po", label: "발주서", routes: ["po", "podoc"] },
+    { href: "purchases", label: "매입 입력", routes: ["purchases"] },
+    { href: "suppliers", label: "거래처", routes: ["suppliers"] },
+    { href: "procurement", label: "발주·물류 정보", routes: ["procurement"] },
+    { href: "products", label: "제품 마스터", routes: ["products"] },
+  ]},
+  { id: "inventory", title: "재고 · 발주", tabs: [
+    { href: "stockflow/stock", label: "재고 현황 · 발주 판단", routes: ["stockflow/stock"] },
+  ]},
+  { id: "finance", title: "자금 · 결재", tabs: [
+    { href: "cash", label: "자금일보", routes: ["cash"] },
+    { href: "vat", label: "부가세", routes: ["vat"] },
+    { href: "inbox", label: "결재 대기", routes: ["inbox"] },
+    { href: "new", label: "지출결의 작성", routes: ["new"] },
+    { href: "drafts", label: "내 기안", routes: ["drafts"] },
+    { href: "docs", label: "전체 문서", routes: ["docs", "doc"] },
+  ]},
+  { id: "inbound", title: "자동 입고", tabs: [
+    { href: "stockflow/rginbound", label: "쿠팡 입고관리", routes: ["stockflow/rginbound"] },
+    { href: "restockapproval", label: "재입고 후보 승인", routes: ["restockapproval"] },
+    { href: "suppliermailapproval", label: "공급처 메일 승인", routes: ["suppliermailapproval"] },
+  ]},
+  { id: "reports", title: "보고 · 결산", tabs: [
+    { href: "briefing", label: "아침 보고서 · 월 결산", routes: ["briefing"] },
+    { href: "profit", label: "공헌이익", routes: ["profit"] },
+    { href: "report", label: "월별 리포트", routes: ["report"] },
+  ]},
+  { id: "ads", title: "광고", tabs: [
+    { href: "ads", label: "광고 현황", routes: ["ads"] },
+    { href: "adprofit", label: "상품별 광고 · 이익", routes: ["adprofit"] },
+  ]},
+  { id: "work", title: "업무 · 일정", tabs: [
+    { href: "tasks", label: "업무 지시", routes: ["tasks"] },
+    { href: "calendar", label: "공용 일정", routes: ["calendar"] },
+    { href: "team", label: "우리 팀 목표", routes: ["team"] },
+  ]},
+  { id: "settings", title: "운영 설정", tabs: [
+    { href: "settings", label: "설정 · 알림", routes: ["settings"] },
+    { href: "channels", label: "판매채널 · SCM 계정", routes: ["channels"] },
+  ]},
+];
+
+function erpRouteKey(name, param) {
+  return name === "stockflow" ? `stockflow/${param || "stock"}` : name;
+}
+function erpAreaFor(name, param) {
+  const key = erpRouteKey(name, param);
+  return ERP_AREA_GROUPS.find(area => area.tabs.some(tab => tab.routes.includes(key) || tab.routes.includes(name))) || null;
+}
+function erpAreaTabsHtml(area, name, param) {
+  if (!area || area.tabs.length < 2) return "";
+  const key = erpRouteKey(name, param);
+  return `<nav class="area-tabs" aria-label="${esc(area.title)} 세부 메뉴">
+    ${area.tabs.map(tab => {
+      const active = tab.routes.includes(key) || tab.routes.includes(name);
+      return `<a href="#/${tab.href}" class="area-tab${active ? " active" : ""}"${active ? ' aria-current="page"' : ""}>${esc(tab.label)}</a>`;
+    }).join("")}
+  </nav>`;
+}
+
 /* ---------- 라우터 ---------- */
 const routes = {
   dashboard: { title: "대시보드", render: viewDashboard, after: () => dashboardHydrate() },
@@ -609,9 +679,13 @@ async function route() {
   const [name, param] = hash.split("?")[0].split("/");
   const r = routes[name] || routes.dashboard;
   syncTodayState(); // 앱을 켜둔 채 자정을 넘겨도 '오늘'이 어제로 굳지 않도록
+  const area = erpAreaFor(name, param);
   document.getElementById("page-title").textContent = r.title;
-  document.querySelectorAll(".nav-item").forEach(el =>
-    el.classList.toggle("active", el.dataset.route === name && (!el.dataset.tab || el.dataset.tab === (param || "stock"))));
+  document.querySelectorAll(".nav-item").forEach(el => {
+    const areaActive = el.dataset.area && area && el.dataset.area === area.id;
+    const routeActive = !el.dataset.area && el.dataset.route === name && (!el.dataset.tab || el.dataset.tab === (param || "stock"));
+    el.classList.toggle("active", !!(areaActive || routeActive));
+  });
   const content = document.getElementById("content");
   content.innerHTML = `<div class="card" style="color:var(--text-sub)">불러오는 중…</div>`;
   let html;
@@ -636,7 +710,7 @@ async function route() {
     return;
   }
   if (seq !== routeSeq) return; // 다른 페이지로 이동한 경우 무시
-  content.innerHTML = html;
+  content.innerHTML = `${erpAreaTabsHtml(area, name, param)}${html}`;
   if (r.after) r.after(param);
   updateBadge();
   closeSidebar();
@@ -4887,12 +4961,8 @@ async function viewStockFlow(tab) {
     body = await viewRgInbound(await rgDataPromise, truckPrepCardPromise);
   }
   return `
-    <div class="card" style="padding:8px 12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:14px">
-      ${STOCKFLOW_TABS.map(([key, label]) => `
-        <button class="btn sm ${tab === key ? "" : "secondary"}" onclick="location.hash='#/stockflow/${key}'">${label}</button>
-      `).join("")}
-      <span style="flex:1"></span>
-      <button class="btn sm secondary" onclick="stockFlowRefresh()" title="탭 캐시를 비우고 새로 조회">🔄 새로고침</button>
+    <div class="stockflow-actions">
+      <button class="btn sm secondary" onclick="stockFlowRefresh()" title="현재 영역을 새로 조회">🔄 새로고침</button>
     </div>
     ${body}`;
 }

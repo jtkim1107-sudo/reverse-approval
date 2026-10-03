@@ -1513,3 +1513,21 @@ details.cms-sub .card { box-shadow: none; border: 1px solid var(--line); }
   .eh-v { font-size: 16px; }
   .as-camp th, .as-camp td { font-size: 12px; }
 }
+
+/* 2026-10-03 영역별 통합 메뉴: 세부 화면은 왼쪽이 아니라 페이지 상단 탭에서 전환 */
+.area-tabs {
+  display: flex; align-items: center; gap: 6px; overflow-x: auto;
+  margin: 0 0 14px; padding: 6px; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--card); scrollbar-width: thin;
+}
+.area-tab {
+  flex: 0 0 auto; padding: 9px 12px; border-radius: 9px;
+  color: var(--text-sub); font-size: 13px; font-weight: 650; white-space: nowrap;
+}
+.area-tab:hover { color: var(--text); background: var(--bg); }
+.area-tab.active { color: #fff; background: var(--brand-grad); box-shadow: 0 3px 10px rgba(107,82,240,.25); }
+@media (max-width: 760px) {
+  .area-tabs { margin: 0 0 10px; padding: 5px; border-radius: 10px; }
+  .area-tab { padding: 8px 10px; font-size: 12px; }
+}
+.stockflow-actions { display: flex; justify-content: flex-end; margin: 0 0 10px; }
