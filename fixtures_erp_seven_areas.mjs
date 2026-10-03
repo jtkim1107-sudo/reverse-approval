@@ -69,7 +69,8 @@ const pendingHtml = H.html(pending);
 check([pending.actions.length, pendingHtml.includes("결재 대기 3건"), pendingHtml.includes('href="#/inbox"'), pendingHtml.includes(">3건</b>")],
       [3, true, true, true], "내 결재 차례 문서를 오늘 조치사항 건수·목록에 합치고 결재 대기로 연결");
 const nonePending = H.html(H.withPendingApprovals(home, { count: 0 }));
-check([nonePending.includes("결재 대기 0건"), nonePending.includes(">2건</b>")], [true, true], "결재 대기 0건도 숨기지 않고 운영 조치와 분리 표시");
+check([nonePending.includes("결재 대기 0건"), nonePending.includes('class="eh-inbox-link" href="#/inbox"'), nonePending.includes(">2건</b>")],
+      [true, true, true], "결재 대기 0건도 숨기지 않고 결재 대기 화면으로 연결");
 const failedPending = H.html(H.withPendingApprovals(home, { error: true }));
 check([failedPending.includes("결재 대기 건수 확인 필요"), failedPending.includes('href="#/inbox"')], [true, true], "결재 조회 실패를 0건으로 오인하지 않고 확인 경로 제공");
 
