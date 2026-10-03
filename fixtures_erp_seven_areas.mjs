@@ -69,8 +69,8 @@ const pendingHtml = H.html(pending);
 check([pending.actions.length, pendingHtml.includes('id="eh-approvals" href="#/inbox"'), pendingHtml.includes("결재 대기"), pendingHtml.includes(">3건</b>")],
       [2, true, true, true], "내 결재 차례 문서를 오늘 조치사항과 분리한 카드로 표시");
 const nonePending = H.html(H.withPendingApprovals(home, { count: 0 }));
-check([nonePending.includes('id="eh-approvals" href="#/inbox"'), nonePending.includes(">0건</b>"), nonePending.includes("대기 없음"), nonePending.includes(">2건</b>")],
-      [true, true, true, true], "결재 대기 0건도 독립 카드로 표시하고 결재 대기 화면으로 연결");
+check([nonePending.includes('id="eh-approvals" href="#/inbox"'), nonePending.includes('class="eh-tile eh-ok" id="eh-approvals"'), nonePending.includes(">0건</b>"), nonePending.includes(">2건</b>")],
+      [true, true, true, true], "결재 대기 0건은 경고색 없이 독립 카드로 표시하고 결재 대기 화면으로 연결");
 const failedPending = H.html(H.withPendingApprovals(home, { error: true }));
 check([failedPending.includes('id="eh-approvals" href="#/inbox"'), failedPending.includes(">확인 필요</b>")], [true, true], "결재 조회 실패를 0건으로 오인하지 않고 독립 카드에 표시");
 
