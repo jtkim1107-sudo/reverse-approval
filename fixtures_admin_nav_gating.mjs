@@ -26,13 +26,13 @@ for (const r of ADMIN) {
 }
 check(/<div class="nav-label nav-admin nav-admin-label hidden">[^<]*관리자 도구<\/div>/.test(index), true, "'시스템 · 관리자 도구' 라벨(nav-admin, 기본 hidden)");
 
-console.log("[2] '재입고 후보 승인'은 기준 정보 유지(nav-admin 아님), 3개 도구는 시스템 뒤로 이동");
-const mApp = index.match(/<a href="#\/restockapproval" data-route="restockapproval" class="([^"]*)"/);
-check(!!mApp && !/nav-admin/.test(mApp[1]) && /\bnav-item\b/.test(mApp[1]), true, "restockapproval: nav-item (nav-admin 아님)");
-// 2026-10-03 [ERP 7개 영역] '재입고 후보 승인'은 ⑤ 자동 입고 그룹(관리자 도구 라벨 앞)
-const iBase = index.indexOf('⑤ 자동 입고'), iSys = index.indexOf('관리자 도구</div>'), iApproval = index.indexOf('data-route="restockapproval"');
-check(iBase > 0 && iBase < iApproval && iApproval < iSys, true, "restockapproval 은 ⑤ 자동 입고 그룹(관리자 도구 앞)");
-for (const r of ADMIN) check(index.indexOf(`data-route="${r}"`) > iSys, true, `${r} 은 시스템 라벨 뒤(기준 정보 밖)`);
+console.log("[2] 재입고 후보 승인·메일 승인은 왼쪽 중복 제거, 자동 입고 상단 탭에 유지");
+check(index.includes('data-route="restockapproval"'), false, "restockapproval: 왼쪽 메뉴에서 제거");
+check(index.includes('data-route="suppliermailapproval"'), false, "suppliermailapproval: 왼쪽 메뉴에서 제거");
+check(/href: "restockapproval", label: "재입고 후보 승인"/.test(app), true, "restockapproval: 자동 입고 상단 탭 유지");
+check(/href: "suppliermailapproval", label: "공급처 메일 승인"/.test(app), true, "suppliermailapproval: 자동 입고 상단 탭 유지");
+const iSys = index.indexOf('관리자 도구</div>');
+for (const r of ADMIN) check(index.indexOf(`data-route="${r}"`) > iSys, true, `${r} 은 시스템 라벨 뒤`);
 
 console.log("[3] 라우트/스크립트/기능 유지(삭제 아님)");
 for (const r of ADMIN) check(new RegExp(`${r}: \\{ title:`).test(app), true, `app.js 라우트 ${r} 유지`);

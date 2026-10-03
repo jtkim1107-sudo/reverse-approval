@@ -9,9 +9,9 @@ const check = (got, want, label) => { n++; const ok = JSON.stringify(got) === JS
 const read = p => fs.readFileSync(new URL(p, import.meta.url), "utf8");
 const idx = read("./index.html"), app = read("./js/app.js");
 
-console.log("[1] 메뉴 = 첫 화면 + 7개 영역 + 업무·설정 (순서)");
+console.log("[1] 왼쪽 메뉴 = 대표 영역만, 세부 화면은 상단 탭");
 const labels = [...idx.matchAll(/<div class="nav-label">([^<]+)<\/div>/g)].map(m => m[1]);
-check(labels, ["① 매출", "② 매입", "③ 재고", "④ 자금", "⑤ 자동 입고", "⑥ 하루 · 월간 브리핑", "⑦ 광고", "업무 · 설정"], "영역 라벨 순서");
+check(labels, ["핵심 업무", "업무 · 설정"], "왼쪽 메뉴 라벨을 두 묶음으로 단순화");
 const navRoutes = [...idx.matchAll(/data-route="([a-z]+)"/g)].map(m => m[1]);
 const routeNames = [...app.matchAll(/^\s{2}([a-z]+): \{ title:/gm)].map(m => m[1]);
 check(navRoutes.filter(r => !routeNames.includes(r)), [], "메뉴의 모든 화면이 routes 에 있음");
@@ -20,8 +20,13 @@ for (const gone of ["aireport", "rginbound", "shipmentplans", "inventory", "purc
   check(navRoutes.includes(gone), false, `메뉴에서 '${gone}' 제거(옛 주소는 이동)`);
 check([/href="#\/stockflow\/stock" data-route="stockflow" data-tab="stock"/.test(idx), /href="#\/stockflow\/rginbound" data-route="stockflow" data-tab="rginbound"/.test(idx)],
       [true, true], "③ 재고 / ⑤ 자동 입고 는 같은 화면의 다른 탭(data-tab 으로 활성 표시)");
-check(app.includes('el.dataset.route === name && (!el.dataset.tab || el.dataset.tab === (param || "stock"))'), true, "탭까지 비교해 활성 표시");
+check([app.includes("const ERP_AREA_GROUPS"), app.includes("erpAreaTabsHtml(area, name, param)"), app.includes("el.dataset.area === area.id")], [true, true, true], "세부 화면 상단 탭 + 영역 대표 메뉴 활성 표시");
 for (const id of ["badge-voc", "badge-po", "badge-inbox", "badge-rginbound", "badge-tasks"]) check(idx.includes(`id="${id}"`), true, `배지 ${id} 유지`);
+const visibleNav = [...idx.matchAll(/<a href="#\/([^"]+)"[^>]*class="nav-item"/g)].map(m => m[1]);
+check(visibleNav.filter(x => !["restockrecovery", "restockinquiryclose", "wingreceiptfix"].includes(x)).length, 10, "일반 왼쪽 메뉴를 첫 화면 + 대표 영역 9개로 축소");
+for (const hiddenFromSide of ["unmatched", "voc", "purchases", "suppliers", "procurement", "products", "vat", "inbox", "new", "drafts", "docs", "restockapproval", "suppliermailapproval", "profit", "report", "adprofit", "calendar", "team", "channels"])
+  check(idx.includes(`data-route="${hiddenFromSide}"`), false, `세부 메뉴 '${hiddenFromSide}'는 왼쪽에서 제거`);
+check(["매출 내역", "누락 매출", "리뷰 · 고객문의", "발주서", "제품 마스터", "자금일보", "전체 문서", "쿠팡 입고관리", "공급처 메일 승인", "아침 보고서 · 월 결산", "공헌이익", "광고 현황", "상품별 광고 · 이익"].every(x => app.includes(`label: "${x}"`)), true, "제거한 세부 메뉴를 영역 상단 탭에 보존");
 check(/nav-admin-label hidden">[^<]*관리자 도구/.test(idx) && idx.includes('data-route="wingreceiptfix"'), true, "관리자 도구(승인 권한자만) 유지");
 
 console.log("[2] 옛 주소 → 새 위치(replaceState, 뒤로가기 루프 없음)");

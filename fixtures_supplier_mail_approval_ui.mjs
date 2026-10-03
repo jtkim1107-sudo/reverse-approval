@@ -199,7 +199,7 @@ check([deny.status, rpcs("fn_override_restock_inquiry_quantity").length], ["DENI
 console.log("\n=== 5. 연결 ===");
 const app = read("./js/app.js"), index = read("./index.html");
 check([/suppliermailapproval: \{ title: "공급처 메일 발송 승인", render: \(\) => \(globalThis\.SupplierMailApproval \? SupplierMailApproval\.view\(sb, me\)/.test(app),
-       index.includes('<script src="js/supplier_mail_approval.js?v=2"></script>'), index.includes('href="#/suppliermailapproval" data-route="suppliermailapproval"'),
+       index.includes('<script src="js/supplier_mail_approval.js?v=2"></script>'), app.includes('{ href: "suppliermailapproval", label: "공급처 메일 승인"'),
        index.indexOf("supplier_mail_approval.js") < index.indexOf("js/app.js"), /js\/app\.js\?v=(15[1-9]|1[6-9]\d)\b/.test(index)],
       [true, true, true, true, true], "[핵심] 라우트·메뉴·스크립트(app.js 앞)·app.js?v=151 이상");
 console.log(`\n${fails ? "FAIL" : "ALL PASS"} ${passes} / FAIL ${fails}`);
