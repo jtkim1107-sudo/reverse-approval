@@ -84,5 +84,15 @@ check([dash.includes("ErpHome.load({ base: WING_SUBMIT_API_BASE"), dash.includes
 check(idx.indexOf("js/erp_home.js") > 0 && idx.indexOf("js/ad_status_view.js") > 0 && idx.indexOf("js/ad_status_view.js") < idx.indexOf("js/app.js"), true, "모듈이 app.js 보다 먼저");
 check(dash.includes("약 24시간"), false, "옛 '약 24시간' 안내 제거");
 
+console.log("[6] 이동된 옛 화면의 중복 렌더러 제거");
+for (const gone of ["inventory", "purchasereco", "aireport", "rginbound", "shipmentplans"])
+  check(routeNames.includes(gone), false, `옛 routes 항목 제거: ${gone}`);
+for (const dead of ["erpSummaryCards", "getStockFlowErpBase", "viewInventory", "viewPurchaseReco", "chooseAndSave1pltOption", "pickRgRetrySlotGated"])
+  check(new RegExp(`function\\s+${dead}\\s*\\(`).test(app), false, `참조 없는 함수 제거: ${dead}`);
+check(app.includes('const MOVED = { aireport: "briefing", rginbound: "stockflow/rginbound", shipmentplans: "stockflow/rginbound" }'), true,
+      "삭제한 옛 routes도 기존 북마크에서 새 화면으로 이동");
+check(/hash === "inventory"[\s\S]{0,300}hash\.startsWith\("purchasereco\/"\)/.test(routeBody), true,
+      "재고·발주추천 옛 주소 이동 유지");
+
 console.log(`\n${n - fail}/${n} 통과`);
 process.exit(fail ? 1 : 0);
