@@ -1513,6 +1513,8 @@ details.cms-sub .card { box-shadow: none; border: 1px solid var(--line); }
 .as-hour td { min-width: 82px; }
 .as-hour td small { display: block; font-size: 10px; }
 .as-hour td.as-hot { background: #f1f5ff; font-weight: 700; }
+.as-ad-burn td.as-base { background: #f7f5ff; color: var(--text-sub); font-weight: 650; }
+.as-ad-burn td.as-gap { color: #aab1c0; background: #fafbfc; }
 
 /* 하루·월간 브리핑 */
 .brief-links { margin: 0 0 10px; padding-left: 18px; font-size: 14px; line-height: 1.9; }

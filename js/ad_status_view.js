@@ -100,7 +100,18 @@
       <p class="as-note">${esc(h.basis || "")} 각 칸은 <b>판매수량</b>, 아래 작은 숫자는 결제금액입니다. 광고센터는 일 단위 자료만 제공하므로 시간대 광고매출이나 시간대 ROAS를 추정하지 않아요.</p>`;
   }
 
-  function html(m, { date = "", days = 7, hourly = null } = {}) {
+  function adBurnHtml(m) {
+    if (!m) return `<p class="as-miss">시간별 광고비를 불러오지 못했어요. 이전 값을 대신 보여 주지 않아요.</p>`;
+    const hours = Array.from({ length: 24 }, (_, x) => x), rows = m.rows || [];
+    const body = rows.map(r => `<tr><th scope="row">${esc(r.name)}${r.id === "__ACCOUNT__" ? "" : `<br><small>${r.on ? "ON" : "OFF"} · 일예산 ${won(r.budget)}</small>`}<br><small>누적 ${won(r.cumulative)} · 소진 ${pct(r.burn_rate, 0)}</small></th>
+      ${hours.map(hr => { const x=(r.hours||[])[hr]; if(!x) return `<td class="num as-gap">—</td>`; if(x.status==="BASELINE") return `<td class="num as-base" title="첫 수집값은 앞 시점이 없어 시간 소진액을 계산하지 않아요">기준<small>누적 ${won(x.cumulative)}</small></td>`; if(x.status!=="OK") return `<td class="num as-miss">확인<small>누적 ${won(x.cumulative)}</small></td>`; return `<td class="num${x.cost ? " as-hot" : ""}" title="${String(hr).padStart(2,"0")}시 수집 구간 · 누적 ${won(x.cumulative)}">${won(x.cost)}<small>누적 ${won(x.cumulative)}</small></td>`; }).join("")}</tr>`).join("");
+    return `<div class="card-head"><h2>오늘 광고비 시간별 소진 <small>${esc(m.date)} · 최근 수집 ${m.latest_at ? esc(m.latest_at.slice(11,16)) : "없음"}</small> ${badge(m.status === "정상" ? "ok" : "check", m.status || "확인 필요")}</h2></div>
+      ${m.failures && m.failures.length ? `<p class="as-stale">⚠ 광고센터 로그인 만료·수집 실패 시간은 미수집으로 표시해요. 0원으로 간주하지 않습니다.</p>` : ""}
+      ${!rows.length ? `<p class="as-miss">오늘 수집된 광고비 스냅샷이 없어요. 광고센터 자동 수집 세션을 갱신하면 다음 매시간 수집부터 표시됩니다.</p>` : `<div class="table-wrap as-hour-wrap"><table class="as-tbl as-hour as-ad-burn" aria-label="광고비 시간별 소진"><thead><tr><th>캠페인 · 오늘 누적</th>${hours.map(x=>`<th class="num">${String(x).padStart(2,"0")}시</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`}
+      <p class="as-note">${esc(m.basis || "")} 첫 수집 시각은 기준값이고, 다음 수집부터 구간 소진액이 나옵니다. 미수집 시간은 보간하지 않으며 과거 시간은 소급 복원하지 않습니다.</p>`;
+  }
+
+  function html(m, { date = "", days = 7, hourly = null, adBurn = null } = {}) {
     const st = m.status === "정상" ? badge("ok", "정상") : badge("check", "확인 필요");
     return `<div class="as" id="ad-status">
       <section class="card"><div class="card-head"><h2>광고 현황 <small>${esc(m.report_date)} 실적</small> ${st}</h2>
@@ -109,6 +120,7 @@
         ${(m.account_alerts || []).length ? `<ul class="as-alerts as-acc-alerts">${m.account_alerts.map(x => `<li>⚠ ${esc(x)}</li>`).join("")}</ul>` : ""}
         ${accountHtml(m)}</section>
       <section class="card"><div class="card-head"><h2>캠페인별 성과 · 판정</h2></div>${campaignsHtml(m)}${reviewsHtml(m)}</section>
+      <section class="card">${adBurnHtml(adBurn)}</section>
       <section class="card">${hourlyHtml(hourly, { date: date || m.report_date, days })}</section>
       <section class="card"><div class="card-head"><h2>연결 화면</h2></div>
         <p><a href="#/adprofit">상품별 광고·이익(광고센터 보고서 올리기 · 일일 광고 보고서 PNG) ›</a> · <a href="#/profit">공헌이익(광고비 실제 청구 기준) ›</a></p>
@@ -131,6 +143,13 @@
     return body;
   }
 
+  async function loadAdBurn({ base, token, fetchFn = root.fetch } = {}) {
+    const r = await fetchFn(`${base}/api/ad-hourly-burn`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.message || body.detail || `HTTP ${r.status}`);
+    return body;
+  }
+
   async function view({ sb, base, hash = "" } = {}) {
     const m = /[?&]date=(\d{4}-\d{2}-\d{2})/.exec(hash || "");
     const dm = /[?&]days=(1|7|14|30)(?:&|$)/.exec(hash || "");
@@ -139,13 +158,16 @@
     if (!session?.access_token) return `<div class="card">ERP 로그인이 필요해요</div>`;
     try {
       const ad = await load(m ? m[1] : "", { base, token: session.access_token });
-      const hourly = await loadHourly(m ? m[1] : ad.report_date, days, { base, token: session.access_token });
-      return html(ad, { date: m ? m[1] : ad.report_date, days, hourly });
+      const [hourly, adBurn] = await Promise.all([
+        loadHourly(m ? m[1] : ad.report_date, days, { base, token: session.access_token }),
+        loadAdBurn({ base, token: session.access_token }).catch(() => null)
+      ]);
+      return html(ad, { date: m ? m[1] : ad.report_date, days, hourly, adBurn });
     } catch (e) {
       return `<div class="card"><h2>광고 현황</h2><p class="as-miss" role="alert">광고 현황을 불러오지 못했어요: ${esc(e.message || e)} - 이전 값을 대신 보여 주지 않아요.</p>
         <p><a href="#/adprofit">상품별 광고·이익 ›</a></p></div>`;
     }
   }
 
-  root.AdStatusView = { html, view, load, loadHourly, accountHtml, campaignsHtml, reviewsHtml, hourlyHtml };
+  root.AdStatusView = { html, view, load, loadHourly, loadAdBurn, accountHtml, campaignsHtml, reviewsHtml, hourlyHtml, adBurnHtml };
 })(typeof window !== "undefined" ? window : globalThis);
