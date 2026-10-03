@@ -1501,6 +1501,18 @@ details.cms-sub .card { box-shadow: none; border: 1px solid var(--line); }
 .as-note { font-size: 12px; color: var(--text-sub); margin-top: 8px; line-height: 1.5; }
 .as-h3 { font-size: 14px; margin: 16px 0 6px; }
 .as-prop summary { cursor: pointer; font-size: 12px; color: var(--text-sub); }
+.as-ranges { display: flex; gap: 4px; }
+.as-range { padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--text-sub); font-size: 12px; text-decoration: none; }
+.as-range.active { color: #fff; background: var(--brand); border-color: var(--brand); }
+.as-hour-summary { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; margin: 6px 0 10px; }
+.as-hour-summary span { color: var(--text-sub); font-size: 13px; }
+.as-hour-wrap { max-height: 620px; overflow: auto; }
+.as-hour { min-width: 2500px; }
+.as-hour thead { position: sticky; top: 0; z-index: 2; background: var(--card); }
+.as-hour th:first-child { position: sticky; left: 0; z-index: 1; min-width: 250px; background: var(--card); }
+.as-hour td { min-width: 82px; }
+.as-hour td small { display: block; font-size: 10px; }
+.as-hour td.as-hot { background: #f1f5ff; font-weight: 700; }
 
 /* 하루·월간 브리핑 */
 .brief-links { margin: 0 0 10px; padding-left: 18px; font-size: 14px; line-height: 1.9; }
@@ -1517,6 +1529,7 @@ details.cms-sub .card { box-shadow: none; border: 1px solid var(--line); }
   .eh-s { min-height: 4.2em; }
   .eh-st { min-height: 1.4em; }
   .as-camp th, .as-camp td { font-size: 12px; }
+  .as-hour th:first-child { min-width: 190px; }
 }
 
 /* 2026-10-03 영역별 통합 메뉴: 세부 화면은 왼쪽이 아니라 페이지 상단 탭에서 전환 */

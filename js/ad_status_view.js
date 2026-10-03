@@ -85,7 +85,22 @@
       <p class="as-note">하루라도 캠페인 일자료가 없으면 비교하지 않아요(0원으로 채우지 않음). 원복은 제안만 - 대표 승인 뒤 광고센터에서 직접 바꿔요.</p>`;
   }
 
-  function html(m, { date = "" } = {}) {
+  function hourlyHtml(h, { date = "", days = 7 } = {}) {
+    if (!h) return `<p class="as-miss">상품별 시간대 판매를 불러오지 못했어요. 이전 값을 대신 보여 주지 않아요.</p>`;
+    const ps = h.products || [], cov = h.coverage || {}, total = h.totals || {};
+    const dayLinks = [1, 7, 14, 30].map(n => `<a class="as-range${Number(days) === n ? " active" : ""}" href="#/ads?date=${esc(date || (h.period || [])[1] || "")}&days=${n}">${n === 1 ? "하루" : n + "일"}</a>`).join("");
+    const hours = Array.from({ length: 24 }, (_, x) => x);
+    const rows = ps.map(p => `<tr><th scope="row">${esc(p.name || p.code || "상품 확인 필요")}<br><small>${esc(p.code || "")} ${esc(p.spec || "")} · 합계 ${cnt(p.qty)}개 / ${won(p.amount)} · 일평균 ${Number(p.avg_daily_qty || 0).toFixed(1)}개</small></th>
+      ${hours.map(hr => { const x = (p.hours || [])[hr] || {}; return `<td class="num${x.qty ? " as-hot" : ""}" title="${String(hr).padStart(2,"0")}:00~${String((hr+1)%24).padStart(2,"0")}:00 · ${cnt(x.qty || 0)}개 · ${won(x.amount || 0)}">${x.qty ? `${cnt(x.qty)}<small>${won(x.amount)}</small>` : "—"}</td>`; }).join("")}</tr>`).join("");
+    return `<div class="card-head"><h2>상품별 1시간 판매 <small>${esc((h.period || []).join(" ~ "))}</small> ${badge(h.status === "정상" ? "ok" : "check", h.status || "확인 필요")}</h2>
+      <div class="as-ranges">${dayLinks}</div></div>
+      <div class="as-hour-summary"><b>${cnt(total.qty)}개 · ${won(total.amount)}</b><span>결제가 가장 많은 시간 ${total.peak_hour == null ? "—" : `${String(total.peak_hour).padStart(2,"0")}:00~${String((total.peak_hour+1)%24).padStart(2,"0")}:00`}</span></div>
+      ${cov.automated_rows_without_time ? `<p class="as-stale">⚠ 자동수집 주문 ${cnt(cov.automated_rows_without_time)}줄에 결제시각이 없어 시간대 표에서 제외됐어요. 재수집이 필요합니다.</p>` : ""}
+      ${!ps.length ? `<p class="as-miss">이 기간에 결제시각이 확인된 상품 판매가 없어요.</p>` : `<div class="table-wrap as-hour-wrap"><table class="as-tbl as-hour" aria-label="상품별 1시간 판매"><thead><tr><th>상품 · 기간 합계</th>${hours.map(x => `<th class="num">${String(x).padStart(2,"0")}시</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`}
+      <p class="as-note">${esc(h.basis || "")} 각 칸은 <b>판매수량</b>, 아래 작은 숫자는 결제금액입니다. 광고센터는 일 단위 자료만 제공하므로 시간대 광고매출이나 시간대 ROAS를 추정하지 않아요.</p>`;
+  }
+
+  function html(m, { date = "", days = 7, hourly = null } = {}) {
     const st = m.status === "정상" ? badge("ok", "정상") : badge("check", "확인 필요");
     return `<div class="as" id="ad-status">
       <section class="card"><div class="card-head"><h2>광고 현황 <small>${esc(m.report_date)} 실적</small> ${st}</h2>
@@ -94,6 +109,7 @@
         ${(m.account_alerts || []).length ? `<ul class="as-alerts as-acc-alerts">${m.account_alerts.map(x => `<li>⚠ ${esc(x)}</li>`).join("")}</ul>` : ""}
         ${accountHtml(m)}</section>
       <section class="card"><div class="card-head"><h2>캠페인별 성과 · 판정</h2></div>${campaignsHtml(m)}${reviewsHtml(m)}</section>
+      <section class="card">${hourlyHtml(hourly, { date: date || m.report_date, days })}</section>
       <section class="card"><div class="card-head"><h2>연결 화면</h2></div>
         <p><a href="#/adprofit">상품별 광고·이익(광고센터 보고서 올리기 · 일일 광고 보고서 PNG) ›</a> · <a href="#/profit">공헌이익(광고비 실제 청구 기준) ›</a></p>
         <p class="as-note">이 화면은 광고 설정을 바꾸지 않아요. 변경은 제안만 하고, 대표 승인 뒤 광고센터에서 직접 바꿔요.</p></section>
@@ -107,17 +123,29 @@
     return body;
   }
 
+  async function loadHourly(date, days, { base, token, fetchFn = root.fetch } = {}) {
+    const q = new URLSearchParams({ end: date, days: String(days) });
+    const r = await fetchFn(`${base}/api/product-hourly-sales?${q}`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.message || body.detail || `HTTP ${r.status}`);
+    return body;
+  }
+
   async function view({ sb, base, hash = "" } = {}) {
     const m = /[?&]date=(\d{4}-\d{2}-\d{2})/.exec(hash || "");
+    const dm = /[?&]days=(1|7|14|30)(?:&|$)/.exec(hash || "");
+    const days = dm ? Number(dm[1]) : 7;
     const { data: { session } } = await sb.auth.getSession();
     if (!session?.access_token) return `<div class="card">ERP 로그인이 필요해요</div>`;
     try {
-      return html(await load(m ? m[1] : "", { base, token: session.access_token }), { date: m ? m[1] : "" });
+      const ad = await load(m ? m[1] : "", { base, token: session.access_token });
+      const hourly = await loadHourly(m ? m[1] : ad.report_date, days, { base, token: session.access_token });
+      return html(ad, { date: m ? m[1] : ad.report_date, days, hourly });
     } catch (e) {
       return `<div class="card"><h2>광고 현황</h2><p class="as-miss" role="alert">광고 현황을 불러오지 못했어요: ${esc(e.message || e)} - 이전 값을 대신 보여 주지 않아요.</p>
         <p><a href="#/adprofit">상품별 광고·이익 ›</a></p></div>`;
     }
   }
 
-  root.AdStatusView = { html, view, load, accountHtml, campaignsHtml, reviewsHtml };
+  root.AdStatusView = { html, view, load, loadHourly, accountHtml, campaignsHtml, reviewsHtml, hourlyHtml };
 })(typeof window !== "undefined" ? window : globalThis);
