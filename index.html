@@ -41,42 +41,52 @@
       <span class="logo-sub">전자결재</span>
     </div>
     <nav class="nav" id="nav">
-      <div class="nav-label">오늘 할 일</div>
-      <a href="#/dashboard" data-route="dashboard" class="nav-item"><span class="nav-ico">🏠</span>대시보드</a>
-      <a href="#/calendar" data-route="calendar" class="nav-item"><span class="nav-ico">🗓️</span>공용 일정</a>
-      <a href="#/team" data-route="team" class="nav-item"><span class="nav-ico">🎯</span>우리 팀 목표</a>
-      <a href="#/aireport" data-route="aireport" class="nav-item"><span class="nav-ico">🤖</span>AI 아침 리포트</a>
-      <a href="#/tasks" data-route="tasks" class="nav-item"><span class="nav-ico">✅</span>업무 지시 <span id="badge-tasks" class="badge hidden">0</span></a>
-      <a href="#/inbox" data-route="inbox" class="nav-item"><span class="nav-ico">📥</span>결재 대기함 <span id="badge-inbox" class="badge hidden">0</span></a>
+      <!-- 2026-10-03 [대표 승인: ERP 7개 핵심 영역] 매출 · 매입 · 재고 · 자금 · 자동 입고 · 하루·월간 브리핑 · 광고 현황 + 업무·설정.
+           옛 주소(#/aireport · #/rginbound · #/shipmentplans · #/inventory · #/purchasereco · #/livesales)는 app.js route() 가 새 위치로 옮겨요. -->
+      <a href="#/dashboard" data-route="dashboard" class="nav-item"><span class="nav-ico">🏠</span>첫 화면</a>
 
-      <div class="nav-label">매일 입력</div>
-      <a href="#/sales" data-route="sales" class="nav-item"><span class="nav-ico">📊</span>매출 입력</a>
+      <div class="nav-label">① 매출</div>
+      <a href="#/sales" data-route="sales" class="nav-item"><span class="nav-ico">📊</span>매출</a>
+      <a href="#/unmatched" data-route="unmatched" class="nav-item"><span class="nav-ico">🧩</span>누락 매출</a>
+      <a href="#/voc" data-route="voc" class="nav-item"><span class="nav-ico">⭐</span>리뷰 · 고객문의 <span id="badge-voc" class="badge hidden">0</span></a>
+
+      <div class="nav-label">② 매입</div>
       <a href="#/po" data-route="po" class="nav-item"><span class="nav-ico">📦</span>발주서 <span id="badge-po" class="badge hidden">0</span></a>
       <a href="#/purchases" data-route="purchases" class="nav-item"><span class="nav-ico">🛒</span>매입 입력</a>
+      <a href="#/suppliers" data-route="suppliers" class="nav-item"><span class="nav-ico">🏭</span>매입 거래처</a>
+      <a href="#/procurement" data-route="procurement" class="nav-item"><span class="nav-ico">🚚</span>발주·물류 정보</a>
+      <a href="#/products" data-route="products" class="nav-item"><span class="nav-ico">🏷️</span>제품 마스터</a>
+
+      <div class="nav-label">③ 재고</div>
+      <a href="#/stockflow/stock" data-route="stockflow" data-tab="stock" class="nav-item"><span class="nav-ico">📦</span>재고 현황 · 재고금액</a>
+
+      <div class="nav-label">④ 자금</div>
       <a href="#/cash" data-route="cash" class="nav-item"><span class="nav-ico">💰</span>자금일보</a>
-
-      <div class="nav-label">확인 · 분석</div>
-      <a href="#/stockflow" data-route="stockflow" class="nav-item"><span class="nav-ico">📦</span>재고 · 발주 · 입고 <span id="badge-rginbound" class="badge hidden">0</span></a>
-      <a href="#/voc" data-route="voc" class="nav-item"><span class="nav-ico">⭐</span>리뷰 · 고객문의 <span id="badge-voc" class="badge hidden">0</span></a>
-      <a href="#/profit" data-route="profit" class="nav-item"><span class="nav-ico">💎</span>공헌이익</a>
-      <a href="#/adprofit" data-route="adprofit" class="nav-item"><span class="nav-ico">📣</span>상품별 광고·이익</a>
-      <a href="#/report" data-route="report" class="nav-item"><span class="nav-ico">📈</span>월별 리포트</a>
       <a href="#/vat" data-route="vat" class="nav-item"><span class="nav-ico">🧾</span>부가세</a>
-
-      <div class="nav-label">결재</div>
+      <a href="#/inbox" data-route="inbox" class="nav-item"><span class="nav-ico">📥</span>결재 대기함 <span id="badge-inbox" class="badge hidden">0</span></a>
       <a href="#/new" data-route="new" class="nav-item"><span class="nav-ico">✏️</span>지출결의서 작성</a>
       <a href="#/drafts" data-route="drafts" class="nav-item"><span class="nav-ico">📤</span>내 기안함</a>
       <a href="#/docs" data-route="docs" class="nav-item"><span class="nav-ico">📚</span>전체 문서함</a>
 
-      <div class="nav-label">기준 정보 (한 번 등록)</div>
-      <a href="#/products" data-route="products" class="nav-item"><span class="nav-ico">🏷️</span>제품 마스터</a>
-      <a href="#/suppliers" data-route="suppliers" class="nav-item"><span class="nav-ico">🏭</span>매입 거래처</a>
-      <a href="#/procurement" data-route="procurement" class="nav-item"><span class="nav-ico">🚚</span>발주·물류 정보</a>
+      <div class="nav-label">⑤ 자동 입고</div>
+      <a href="#/stockflow/rginbound" data-route="stockflow" data-tab="rginbound" class="nav-item"><span class="nav-ico">🚛</span>쿠팡 입고관리 <span id="badge-rginbound" class="badge hidden">0</span></a>
       <a href="#/restockapproval" data-route="restockapproval" class="nav-item"><span class="nav-ico">✅</span>재입고 후보 승인</a>
       <a href="#/suppliermailapproval" data-route="suppliermailapproval" class="nav-item"><span class="nav-ico">✉️</span>공급처 메일 발송 승인</a>
-      <a href="#/channels" data-route="channels" class="nav-item"><span class="nav-ico">🔑</span>판매채널·SCM 계정</a>
 
-      <div class="nav-label">시스템</div>
+      <div class="nav-label">⑥ 하루 · 월간 브리핑</div>
+      <a href="#/briefing" data-route="briefing" class="nav-item"><span class="nav-ico">📰</span>아침 보고서 · 월 결산</a>
+      <a href="#/profit" data-route="profit" class="nav-item"><span class="nav-ico">💎</span>공헌이익</a>
+      <a href="#/report" data-route="report" class="nav-item"><span class="nav-ico">📈</span>월별 리포트</a>
+
+      <div class="nav-label">⑦ 광고</div>
+      <a href="#/ads" data-route="ads" class="nav-item"><span class="nav-ico">📣</span>광고 현황</a>
+      <a href="#/adprofit" data-route="adprofit" class="nav-item"><span class="nav-ico">🧮</span>상품별 광고·이익</a>
+
+      <div class="nav-label">업무 · 설정</div>
+      <a href="#/tasks" data-route="tasks" class="nav-item"><span class="nav-ico">✅</span>업무 지시 <span id="badge-tasks" class="badge hidden">0</span></a>
+      <a href="#/calendar" data-route="calendar" class="nav-item"><span class="nav-ico">🗓️</span>공용 일정</a>
+      <a href="#/team" data-route="team" class="nav-item"><span class="nav-ico">🎯</span>우리 팀 목표</a>
+      <a href="#/channels" data-route="channels" class="nav-item"><span class="nav-ico">🔑</span>판매채널·SCM 계정</a>
       <a href="#/settings" data-route="settings" class="nav-item"><span class="nav-ico">⚙️</span>설정 · 알림</a>
 
       <!-- 2026-09-28 관리자 전용 도구: 승인 권한자(profiles.approver)만 노출. app.js applyAdminNav()가 me.approver 로 hidden 토글. 라우트/기능은 유지, 노출만 강화(축소). -->
@@ -137,7 +147,9 @@
 <script src="js/cm_recovery.js?v=2"></script>
 <script src="js/ad_product_profit.js?v=3"></script>
 <script src="js/bank_statement_upload.js?v=1"></script>
-<script src="js/app.js?v=164"></script>
+<script src="js/erp_home.js?v=1"></script>
+<script src="js/ad_status_view.js?v=1"></script>
+<script src="js/app.js?v=165"></script>
 <script src="js/sales_statistics_panel.js?v=4"></script>
 </body>
 </html>

@@ -31,7 +31,7 @@ check(/\n\s*wingreceiptfix: \{ title: "WING 직접입고 최종수량 정정"/.t
 const wrf = readFileSync(new URL("./js/wing_direct_receipt_fix.js", import.meta.url), "utf-8");
 check(/hash\.match\(\/\[\?&\]id=/.test(wrf) && /hash\.match\(\/\[\?&\]po=/.test(wrf), true, "화면이 hash 의 id·po 를 읽음");
 const idx = readFileSync(new URL("./index.html", import.meta.url), "utf-8");
-check(/js\/app\.js\?v=148/.test(idx), true, "app.js 캐시 버전 v=148");
+check(/js\/app\.js\?v=\d+/.test(idx), true, "app.js 캐시 버전 표시(숫자는 배포마다 올라감)");
 
 console.log(`\n${fail ? "FAIL" : "ALL PASS"} PASS ${pass} / FAIL ${fail}`);
 process.exit(fail ? 1 : 0);
