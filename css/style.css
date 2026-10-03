@@ -1048,10 +1048,20 @@ table.erp-table { width: 100%; border-collapse: separate; border-spacing: 0; fon
 .dash-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px; align-items: stretch; }
 .dash-slot { min-width: 0; display: flex; flex-direction: column; }
 .dash-slot > .dash-card { flex: 1 0 auto; }
+.dash-more { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 0 14px; min-width: 0; }
+.dash-more > summary { cursor: pointer; list-style: none; min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dash-more > summary::-webkit-details-marker { display: none; }
+.dash-more > summary span { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.dash-more > summary b { font-size: 14px; }
+.dash-more > summary small { color: var(--text-sub); font-size: 12px; }
+.dash-more > summary::after { content: "펼치기 ▾"; color: var(--brand); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.dash-more[open] { padding-bottom: 14px; }
+.dash-more[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 14px; }
+.dash-more[open] > summary::after { content: "접기 ▴"; }
 /* 2026-09-15 [사용자 지시] 순서: (운영 확인 필요) → 매출 요약 · 공헌이익·광고비 → 오늘 해야 할 일 · 재고·발주 → 입고·운송.
    공헌이익 카드 안 4칸(₩8,606,815 등)이 들어가도록 두 줄 모두 반반(6 · 6). */
 #dash-sales-slot, #dash-profit-slot { grid-column: span 6; }
-#dash-todo-slot, #dash-stock-slot { grid-column: span 6; }
+#dash-stock-slot { grid-column: span 6; }
 #dash-inbound-slot { grid-column: span 12; }
 .dash-card { min-width: 0; }
 .dash-card--error { border-top: 3px solid var(--red); }

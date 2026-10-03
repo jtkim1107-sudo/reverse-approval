@@ -350,14 +350,15 @@ const json = (status, body) => ({ status, json: async () => body });
   const dashJs = fs.readFileSync(new URL("./js/erp_dashboard.js", import.meta.url), "utf8");
   // 2026-09-29 매출 요약은 어제·그제(지난달 집계일 수 있음)만 - 기준일 행을 가진 집계로 같은 forDate(로켓그로스) 호출
   check(dash.includes("SalesMonthlySummary.forDate") && /forDate\((summary|srcOf\.get\(shown\)), shown, \{ rgOnly: true \}\)/.test(dashJs), "대시보드 매출 요약은 공통 집계(forDate · 로켓그로스)");
-  // 2026-09-15 [사용자 지시] 순서 변경: 운영 확인 필요 → 매출 요약 · 공헌이익 → 오늘 해야 할 일 · 재고·발주
+  // 2026-10-03 첫 화면 단순화: 한눈에 보기·실시간 매출만 바로 보이고, 중복 상세 카드는 접어 둠.
   // 2026-09-30 [사용자 지시] 운영 상태 카드는 맨 아래(다른 모든 카드·'다른 화면' 링크 뒤) - 나머지 순서는 그대로
   // 2026-10-03 [ERP 7개 영역] 맨 위 '한눈에 보기'(카톡 보고서 카드는 브리핑 화면으로) · 사이드바와 겹치던 '다른 화면' 링크 삭제
   check(dash.indexOf('id="dash-status-slot"') > dash.indexOf("DASH_SECTIONS.map") && dash.indexOf('id="dash-home-slot"') < dash.indexOf('id="dash-live-slot"')
-    && dash.indexOf('id="dash-home-slot"') > -1 && !dash.includes('<nav class="dash-more"')
+    && dash.indexOf('id="dash-home-slot"') > -1 && dash.includes('<details class="dash-more"')
     && dash.indexOf('id="dash-live-slot"') < dash.indexOf("DASH_SECTIONS.map")
-    && /const DASH_SECTIONS = \[\["dash-sales"[\s\S]*?"dash-profit"[\s\S]*?"dash-todo"[\s\S]*?"dash-stock"/.test(appSrc)
-    && dash.indexOf("rg-sales-statistics-mount") > 0, "한눈에 보기 → 실시간 매출 → 매출 요약 → 공헌이익 → 오늘 해야 할 일 → 재고 → 운영 상태(맨 아래)");
+    && /const DASH_SECTIONS = \[\["dash-sales"[\s\S]*?"dash-profit"[\s\S]*?"dash-stock"[\s\S]*?"dash-inbound"/.test(appSrc)
+    && !/const DASH_SECTIONS =[^;]+dash-todo/.test(appSrc)
+    && dash.indexOf("rg-sales-statistics-mount") > 0, "한눈에 보기 → 실시간 매출 → 접힌 상세(매출·공헌이익·재고·입고) → 운영 상태(맨 아래)");
   const head = sales.slice(sales.indexOf("<h2>매출 내역"), sales.indexOf("${refreshHtml}"));
   check(head.includes("SalesRefresh.buttonHtml") && head.indexOf("buttonHtml") < head.indexOf("</h2>"), "‘매출 내역’ 제목 옆 새로고침 버튼");
   check(sales.includes("monthlySalesRowsHtml(monthlySummary)"), "상품별·날짜별 집계 행 유지(주문 단건 나열로 되돌리지 않음)");

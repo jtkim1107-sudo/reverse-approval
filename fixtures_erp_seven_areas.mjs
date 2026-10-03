@@ -83,6 +83,12 @@ const dash = app.slice(app.indexOf("/* ---------- 화면: 대시보드 ---------
 check([dash.includes("ErpHome.load({ base: WING_SUBMIT_API_BASE"), dash.includes("ErpHome.errorHtml"), dash.includes('id="dash-status-slot"')], [true, true, true], "한눈에 보기 + 운영 상태(맨 아래) 유지");
 check(idx.indexOf("js/erp_home.js") > 0 && idx.indexOf("js/ad_status_view.js") > 0 && idx.indexOf("js/ad_status_view.js") < idx.indexOf("js/app.js"), true, "모듈이 app.js 보다 먼저");
 check(dash.includes("약 24시간"), false, "옛 '약 24시간' 안내 제거");
+check([dash.includes('<details class="dash-more"'), dash.includes("상세 현황 보기"), !dash.includes('<details class="dash-more" open')],
+      [true, true, true], "중복 상세 카드는 기본으로 접고 필요할 때 펼침");
+check([dash.includes('id="dash-live-slot"'), dash.indexOf('id="dash-status-slot"') > dash.indexOf('class="dash-more"')],
+      [true, true], "실시간 매출은 바로 표시 · 운영 상태는 맨 아래");
+check([dash.includes('sb.from("po_inbound_holds")'), dash.includes('put("dash-todo"')], [false, false],
+      "서버 한눈에 보기와 중복되던 오늘 할 일 조회·카드 제거");
 
 console.log("[6] 이동된 옛 화면의 중복 렌더러 제거");
 for (const gone of ["inventory", "purchasereco", "aireport", "rginbound", "shipmentplans"])

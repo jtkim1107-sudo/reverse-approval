@@ -1609,7 +1609,7 @@ function briefingCardHtml(b, dateStr, { detailed = false, fullProductList = null
 // 새로고침이 실패하면 0 으로 바꾸지 않고 마지막 정상값과 오류를 같이 보여줘요.
 // 팀 목표 카드·최근 문서·제품 마스터는 아래 '다른 화면' 링크로 옮겼어요(팀 목표 축하 기록은 팀 목표 화면에서).
 // 2026-09-15 [사용자 지시] 순서: 운영 상태(항상 맨 위) → 매출 요약 · 공헌이익 → 오늘 해야 할 일 · 재고·발주 → 입고·운송
-const DASH_SECTIONS = [["dash-sales", "매출 요약"], ["dash-profit", "공헌이익 · 광고비"], ["dash-todo", "오늘 해야 할 일"],
+const DASH_SECTIONS = [["dash-sales", "매출 요약"], ["dash-profit", "공헌이익 · 광고비"],
   ["dash-stock", "재고·발주"], ["dash-inbound", "입고·운송"]];
 let _dashGen = 0;
 const _dashLast = {};          // 영역 id → { html, at } 마지막 정상 화면
@@ -1622,7 +1622,10 @@ async function viewDashboard() {
     <div id="dash-home-slot">${_dashLast["dash-home"] ? _dashLast["dash-home"].html
       : `<section class="card eh" id="dash-home" aria-busy="true"><div class="card-head"><h2>한눈에 보기</h2></div><p class="eh-none">매출·공헌이익·재고금액·자금·광고를 불러오는 중…</p></section>`}</div>
     <div id="dash-live-slot" style="min-width:0">${_dashLast["dash-live"] ? _dashLast["dash-live"].html : ErpDashboard.loadingHtml("dash-live", "실시간 매출")}</div>
-    <div class="dash-grid">${DASH_SECTIONS.map(([id, t]) => `<div class="dash-slot" id="${id}-slot">${ErpDashboard.loadingHtml(id, t)}</div>`).join("")}</div>
+    <details class="dash-more" ontoggle="if(this.open)requestAnimationFrame(()=>ErpDashboard.fitKpis(document.getElementById('dash-sales-slot')))" >
+      <summary><span><b>상세 현황 보기</b><small>매출 · 공헌이익 · 재고 · 입고</small></span></summary>
+      <div class="dash-grid">${DASH_SECTIONS.map(([id, t]) => `<div class="dash-slot" id="${id}-slot">${ErpDashboard.loadingHtml(id, t)}</div>`).join("")}</div>
+    </details>
     <div id="dash-status-slot">${statusLast ? statusLast.html
       : `<section class="dash-status dash-status--ok" id="dash-status" aria-busy="true">${ErpUi.badge("muted", { text: "운영 상태 불러오는 중…", small: true })}</section>`}</div>
   </div>`;
@@ -1857,41 +1860,6 @@ async function dashboardHydrate() {
     put("dash-profit", ErpDashboard.profitHtml(model, { fmt, at, settlement }));
   }).catch(e => fail("dash-profit", "공헌이익 · 광고비", e));
 
-  // B. 오늘 해야 할 일 - 건수만 모아요(건수를 모르면 0 이 아니라 '확인 불가')
-  const docsP = sb.from("documents").select("*").eq("status", "progress").then(rows);
-  const posP = sb.from("purchase_orders").select("status,approval_line,current_step").then(rows);
-  const holdsP = sb.from("po_inbound_holds").select("*").eq("held", true).then(rows);
-  const exclP = sb.from("vendor_item_exclusions").select("kind,active").eq("active", true).then(rows);
-  const tasksP = sb.from("tasks").select("id", { count: "exact", head: true }).eq("assignee_id", me.id).eq("status", "open")
-    .then(r => { if (r.error) throw r.error; return r.count || 0; });
-  settled([docsP, posP, inboundP, holdsP, exclP, stockP, statusP, csP, tasksP]).then(([docs, pos, inb, holds, excl, stock, status, cs, tasks]) => {
-    const v = (x, f) => (x.ok && x.v != null ? f(x.v) : null);
-    const heldRows = holds.ok ? holds.v : [];
-    const reinb = heldRows.filter(h => InboundApproval.isReinboundHold(h)).length;
-    const exRows = excl.ok ? excl.v : [];
-    const exR = exRows.filter(e => e.kind === "RESTOCK_EXCLUDED").length;
-    const csS = cs.ok ? CsInquiries.summary(cs.v.rows) : null;
-    const collect = status.ok && status.v ? status.v.collectErrors : null;
-    const model = ErpDashboard.todoModel({
-      docs: v(docs, d => inboxOf(d).length),
-      po: v(pos, list => list.filter(p => p.status === "progress" && p.approval_line?.[p.current_step]?.userId === me.id).length),
-      inbound: v(inb, m => m.counts.pending),
-      reinbound: holds.ok ? heldRows.length : null, 
-      exclusion: excl.ok ? exRows.length : null, exclusionSub: exRows.length ? `재입고 제외 ${exR} · SKU 사용 보류 ${exRows.length - exR} · 설정 확인용` : "",
-      logistics: v(stock, m => m.logistics), stockCheck: v(stock, m => m.dataCheck), stockCheckSub: "재고 판단이 데이터 확인을 기다려요",
-      collect: collect ? collect.length : null, collectSub: collect ? collect.map(c => c.text).join(" · ") : "",
-      collectHref: collect && collect[0] ? collect[0].href : "#/sales",
-      collectTone: collect && collect.some(c => c.tone === "error") ? "error" : "check",
-      cs: csS ? csS.unanswered : null, csUrgent: csS ? csS.urgent : 0,
-      csSub: csS ? `새 문의 ${csS.pending} · 긴급 ${csS.urgent}` : "",
-      tasks: v(tasks, n => n),
-    });
-    if (holds.ok && heldRows.length !== reinb) {
-      const r = model.rows.find(x => x.key === "reinbound");
-      if (r) r.sub = `재입고 승인 ${reinb} · 사람이 건 자동입고 보류 ${heldRows.length - reinb}`;
-    }
-    put("dash-todo", ErpDashboard.todoHtml(model, { at }));
-  }).catch(e => fail("dash-todo", "오늘 해야 할 일", e));
 }
 
 /* ---------- 문서 목록 테이블 ---------- */
