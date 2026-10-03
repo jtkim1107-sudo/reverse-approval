@@ -29,8 +29,9 @@ check(/<div class="nav-label nav-admin nav-admin-label hidden">[^<]*관리자 �
 console.log("[2] '재입고 후보 승인'은 기준 정보 유지(nav-admin 아님), 3개 도구는 시스템 뒤로 이동");
 const mApp = index.match(/<a href="#\/restockapproval" data-route="restockapproval" class="([^"]*)"/);
 check(!!mApp && !/nav-admin/.test(mApp[1]) && /\bnav-item\b/.test(mApp[1]), true, "restockapproval: nav-item (nav-admin 아님)");
-const iBase = index.indexOf('기준 정보'), iSys = index.indexOf('>시스템<'), iApproval = index.indexOf('data-route="restockapproval"');
-check(iBase < iApproval && iApproval < iSys, true, "restockapproval 은 기준 정보~시스템 사이(기준 정보 그룹)");
+// 2026-10-03 [ERP 7개 영역] '재입고 후보 승인'은 ⑤ 자동 입고 그룹(관리자 도구 라벨 앞)
+const iBase = index.indexOf('⑤ 자동 입고'), iSys = index.indexOf('관리자 도구</div>'), iApproval = index.indexOf('data-route="restockapproval"');
+check(iBase > 0 && iBase < iApproval && iApproval < iSys, true, "restockapproval 은 ⑤ 자동 입고 그룹(관리자 도구 앞)");
 for (const r of ADMIN) check(index.indexOf(`data-route="${r}"`) > iSys, true, `${r} 은 시스템 라벨 뒤(기준 정보 밖)`);
 
 console.log("[3] 라우트/스크립트/기능 유지(삭제 아님)");

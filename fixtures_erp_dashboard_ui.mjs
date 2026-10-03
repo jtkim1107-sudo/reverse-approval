@@ -200,7 +200,11 @@ check([rgBody.includes("rgCountPlan(counts, p, ctx.loadBlock)"), dashSrc.include
 check(/dashboard: \{ title: "대시보드", render: viewDashboard, after: \(\) => dashboardHydrate\(\) \}/.test(app), true, "대시보드는 틀을 먼저 그리고 영역별로 채움");
 check(dashSrc.includes("_dashLast[id]") && dashSrc.includes("ErpDashboard.errorHtml(id, title"), true, "새로고침 실패 시 마지막 정상값 사용");
 const handlers = [...(dashSrc + modSrc).matchAll(/onclick="([^"(]+)\(/g)].map(x => x[1]);
-check([...new Set(handlers)].sort(), ["dashboardRefresh", "dashboardWingGuide", "downloadKakaoReport"], "[핵심] 대시보드 버튼은 화면 새로고침 · WING 안내 · 보고서 PNG 다운로드뿐");
+// 2026-10-03 [ERP 7개 영역] 카톡 아침 보고서 카드는 '하루·월간 브리핑'(#/briefing)으로 옮김 - 첫 화면은 '한눈에 보기'(js/erp_home.js, 링크만)
+check([...new Set(handlers)].sort(), ["dashboardRefresh", "dashboardWingGuide"], "[핵심] 대시보드 버튼은 화면 새로고침 · WING 안내뿐(보고서 PNG 는 브리핑 화면)");
+check([dashSrc.includes('id="dash-home-slot"'), dashSrc.includes("loadDashHome(gen)"), !dashSrc.includes('id="kakao-report-slot"'),
+       app.includes("function viewBriefing()") && app.includes('id="kakao-report-slot"')], [true, true, true, true],
+      "첫 화면 '한눈에 보기' + 카톡 보고서는 브리핑 화면으로 이동");
 // 2026-09-29 [사용자 지시: "실시간 매출 별도 탭을 대시보드로 - 'WING 판매데이터 다시 수집'도 대시보드 안에서"] 09-13 규칙('대시보드엔
 // 수집 버튼 없음')을 좁혀요: 수집 버튼은 '실시간 매출' 블록 안 1개뿐, 기존 SalesRefresh(확인창 → GCP)로만. 다른 영역엔 여전히 없음.
 const liveBlock = dashSrc.slice(dashSrc.indexOf("// H. 실시간 매출"), dashSrc.indexOf("// D+G. 공헌이익"));

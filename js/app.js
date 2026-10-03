@@ -531,6 +531,9 @@ const routes = {
   adprofit: { title: "상품별 광고·이익", render: () => (globalThis.AdProductProfit ? AdProductProfit.view() : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   vat: { title: "부가세", render: viewVat },
   report: { title: "월별 리포트", render: viewReport },
+  // 2026-10-03 [ERP 7개 영역 재정리] 6. 하루·월간 브리핑 · 7. 광고 현황(js/ad_status_view.js - VM /api/ad-status)
+  briefing: { title: "하루 · 월간 브리핑", render: viewBriefing, after: () => { loadKakaoReportStatus(); loadBriefingHistory(); } },
+  ads: { title: "광고 현황", render: () => (globalThis.AdStatusView ? AdStatusView.view({ sb, base: WING_SUBMIT_API_BASE, hash: location.hash }) : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
   cash: { title: "자금일보", render: viewCash },
   tasks: { title: "업무 지시", render: viewTasks },
   calendar: { title: "공용 일정", render: viewCalendar },
@@ -598,6 +601,14 @@ async function route() {
     hash = "dashboard";
     globalThis.__dashFocusLive = true;
   }
+  // 2026-10-03 [ERP 7개 영역 재정리] 통합·숨긴 화면의 옛 주소·북마크는 새 위치로(위 #/inventory 와 같은 replaceState 방식).
+  //   AI 아침 리포트 → 하루·월간 브리핑 · 단독 쿠팡 입고관리·입고 물류 최적화 → 자동 입고(재고·발주·입고의 쿠팡입고 탭)
+  const MOVED = { aireport: "briefing", rginbound: "stockflow/rginbound", shipmentplans: "stockflow/rginbound" };
+  const movedKey = hash.split("?")[0].split("/")[0];
+  if (MOVED[movedKey]) {
+    history.replaceState(null, "", `#/${MOVED[movedKey]}`);
+    hash = MOVED[movedKey];
+  }
   // 2026-09-27 deep link 의 쿼리(#/wingreceiptfix?id=…)는 라우트 이름·param 에서 떼요 - 쿼리까지 이름으로 보면
   // 라우트를 못 찾아 대시보드로 떨어졌어요. location.hash 는 그대로 두므로 화면이 id·po 를 계속 읽어요.
   const [name, param] = hash.split("?")[0].split("/");
@@ -605,7 +616,7 @@ async function route() {
   syncTodayState(); // 앱을 켜둔 채 자정을 넘겨도 '오늘'이 어제로 굳지 않도록
   document.getElementById("page-title").textContent = r.title;
   document.querySelectorAll(".nav-item").forEach(el =>
-    el.classList.toggle("active", el.dataset.route === name));
+    el.classList.toggle("active", el.dataset.route === name && (!el.dataset.tab || el.dataset.tab === (param || "stock"))));
   const content = document.getElementById("content");
   content.innerHTML = `<div class="card" style="color:var(--text-sub)">불러오는 중…</div>`;
   let html;
@@ -1613,15 +1624,10 @@ async function viewDashboard() {
   const statusLast = _dashLast["dash-status"];
   // 2026-09-30 [사용자 지시] '운영 상태 / 운영 확인 필요' 카드는 대시보드 맨 아래(다른 모든 카드·섹션 뒤) - 렌더 순서만, 내용·판정·버튼 그대로
   return `<div class="dash" id="dash-root">
-    <section class="card" id="kakao-report-slot" style="margin:14px 0">
-      <div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
-      <p style="color:var(--text-sub);font-size:13px">오늘 아침 보고 이미지 한 장을 확인하는 중입니다.</p>
-    </section>
+    <div id="dash-home-slot">${_dashLast["dash-home"] ? _dashLast["dash-home"].html
+      : `<section class="card eh" id="dash-home" aria-busy="true"><div class="card-head"><h2>한눈에 보기</h2></div><p class="eh-none">매출·공헌이익·재고금액·자금·광고를 불러오는 중…</p></section>`}</div>
     <div id="dash-live-slot" style="min-width:0">${_dashLast["dash-live"] ? _dashLast["dash-live"].html : ErpDashboard.loadingHtml("dash-live", "실시간 매출")}</div>
     <div class="dash-grid">${DASH_SECTIONS.map(([id, t]) => `<div class="dash-slot" id="${id}-slot">${ErpDashboard.loadingHtml(id, t)}</div>`).join("")}</div>
-    <nav class="dash-more" aria-label="다른 화면">
-      <a href="#/team">우리 팀 목표 ›</a><a href="#/inbox">결재 대기함 ›</a><a href="#/docs">전체 문서함 ›</a>
-      <a href="#/tasks">업무 지시 ›</a><a href="#/products">제품 마스터 ›</a><a href="#/voc/inquiries">고객문의 ›</a></nav>
     <div id="dash-status-slot">${statusLast ? statusLast.html
       : `<section class="dash-status dash-status--ok" id="dash-status" aria-busy="true">${ErpUi.badge("muted", { text: "운영 상태 불러오는 중…", small: true })}</section>`}</div>
   </div>`;
@@ -1643,89 +1649,32 @@ function dashboardWingGuide() {
       <li>로그인이 끝나면 서버가 실제 인증(재인증·다운로드 확인)을 다시 해요. 성공하면 위쪽 경고가 자동으로 사라져요.</li>
       <li>오늘 06:20 수집이 실패했다면 로그인 뒤 자동 복구가 한 번 다시 받아요(수동 실행 필요 없음).</li>
     </ol>
-    <p class="rg-muted">쿠키 남은 시간만으로는 정상으로 보지 않아요. 약 24시간 기준은 추정이에요.</p>`);
+    <p class="rg-muted">쿠키 남은 시간만으로는 정상으로 보지 않아요. WING 로그인은 로그인 시각부터 약 12시간 뒤 끝나요(관측) - 06:20 수집을 덮으려면 전날 19:20 이후 로그인.</p>`);
 }
 
-async function loadKakaoReportStatus() {
-  const slot = document.getElementById("kakao-report-slot");
-  if (!slot) return;
-  const reportDate = today();
+// 2026-10-03 [ERP 7개 영역 재정리] 첫 화면 '한눈에 보기' - VM /api/erp/home(아침 보고서와 같은 계산). 실패하면 실패라고(마지막 값 재사용 안 함)
+async function loadDashHome(gen) {
+  const slot = document.getElementById("dash-home-slot");
+  if (!slot || !globalThis.ErpHome) return;
   try {
     const { data: { session } } = await sb.auth.getSession();
     if (!session?.access_token) throw new Error("ERP 로그인이 필요합니다");
-    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/kakao-report/${reportDate}`, {
-      headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store",
-    });
-    if (!document.getElementById("kakao-report-slot")) return;
-    if (resp.status === 404) {
-      slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
-        <p style="font-size:13px;color:var(--text-sub)">${esc(reportDate)} 보고서는 아직 준비되지 않았습니다. 매일 오전 8시 전에 자동 생성됩니다.</p>`;
-      return;
-    }
-    if (!resp.ok) throw new Error(`조회 실패(HTTP ${resp.status})`);
-    const manifest = await resp.json();
-    const button = `<button class="btn sm secondary" onclick="downloadKakaoReport('combined')" ${manifest.combined ? "" : "disabled"}>
-      아침 보고서 한 장 받기${manifest.combined?.status === "확인 필요" ? " · 확인 필요" : ""}</button>`;
-    slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
-      <p style="font-size:13px;color:var(--text-sub);margin:0 0 12px">${esc(reportDate)} · 생성 ${esc(manifest.generated_at || "-")} · 매출·공헌이익·자금일보·광고현황을 한 장에 담았습니다. 보내기 전 확인 표시를 봐 주세요.</p>
-      <div>${button}</div>`;
+    const h = await ErpHome.load({ base: WING_SUBMIT_API_BASE, token: session.access_token });
+    if (gen !== _dashGen || !document.getElementById("dash-home-slot")) return;
+    const html = ErpHome.html(h);
+    _dashLast["dash-home"] = { html, at: Date.now() };
+    slot.innerHTML = html;
   } catch (e) {
-    if (document.getElementById("kakao-report-slot")) slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
-      <p style="font-size:13px;color:var(--red)">이미지 조회 실패: ${esc(String(e?.message || e))}</p>`;
+    if (gen !== _dashGen || !document.getElementById("dash-home-slot")) return;
+    delete _dashLast["dash-home"];
+    slot.innerHTML = ErpHome.errorHtml(String(e?.message || e));
   }
-}
-
-async function downloadKakaoReport(kind) {
-  if (kind !== "combined") return;
-  const { data: { session } } = await sb.auth.getSession();
-  if (!session?.access_token) return toast("ERP 로그인이 필요합니다");
-  const reportDate = today();
-  try {
-    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/kakao-report/${reportDate}/${kind}`, {
-      headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store",
-    });
-    if (!resp.ok) throw new Error(`다운로드 실패(HTTP ${resp.status})`);
-    const url = URL.createObjectURL(await resp.blob());
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `rebirth_${reportDate}_${kind}.png`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-  } catch (e) { toast(String(e?.message || e)); }
-}
-
-// 2026-10-01 월 최종 정산서 PNG - VM 비공개 보관(공개 저장소에 올리지 않음), ERP 로그인 JWT 로만 받음
-async function downloadMonthlySettlement(month) {
-  const { data: { session } } = await sb.auth.getSession();
-  if (!session?.access_token) return toast("ERP 로그인이 필요합니다");
-  if (!/^\d{4}-\d{2}$/.test(String(month || ""))) return toast("월 형식이 올바르지 않습니다");
-  try {
-    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/monthly-settlement/${month}/png`, {
-      headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store",
-    });
-    if (!resp.ok) throw new Error(resp.status === 404 ? `${month} 최종 정산서가 아직 없어요` : `다운로드 실패(HTTP ${resp.status})`);
-    const url = URL.createObjectURL(await resp.blob());
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `rebirth_coupang_settlement_${month}.png`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-  } catch (e) { toast(String(e?.message || e)); }
-}
-
-function prevMonthOf(ym) {
-  const [y, m] = String(ym).split("-").map(Number);
-  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
 }
 
 async function dashboardHydrate() {
   const gen = ++_dashGen;
   const at = new Date();
-  loadKakaoReportStatus();
+  loadDashHome(gen);
   const month = today().slice(0, 7), td = today(), yd = yesterday();
   const live = () => gen === _dashGen && document.getElementById("dash-root");
   const put = (id, html, ok = true) => {
@@ -12305,6 +12254,142 @@ async function deleteEvent(id) {
   closeModal();
   route();
 }
+
+/* ---------- 하루·월간 브리핑 (아침 보고서 · 월 최종 정산서) ---------- */
+async function loadKakaoReportStatus() {
+  const slot = document.getElementById("kakao-report-slot");
+  if (!slot) return;
+  const reportDate = today();
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session?.access_token) throw new Error("ERP 로그인이 필요합니다");
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/kakao-report/${reportDate}`, {
+      headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store",
+    });
+    if (!document.getElementById("kakao-report-slot")) return;
+    if (resp.status === 404) {
+      slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
+        <p style="font-size:13px;color:var(--text-sub)">${esc(reportDate)} 보고서는 아직 준비되지 않았습니다. 매일 오전 8시 전에 자동 생성됩니다.</p>`;
+      return;
+    }
+    if (!resp.ok) throw new Error(`조회 실패(HTTP ${resp.status})`);
+    const manifest = await resp.json();
+    const button = `<button class="btn sm secondary" onclick="downloadKakaoReport('combined')" ${manifest.combined ? "" : "disabled"}>
+      아침 보고서 한 장 받기${manifest.combined?.status === "확인 필요" ? " · 확인 필요" : ""}</button>`;
+    slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
+      <p style="font-size:13px;color:var(--text-sub);margin:0 0 12px">${esc(reportDate)} · 생성 ${esc(manifest.generated_at || "-")} · 매출·공헌이익·자금일보·광고현황을 한 장에 담았습니다. 보내기 전 확인 표시를 봐 주세요.</p>
+      <div>${button}</div>`;
+  } catch (e) {
+    if (document.getElementById("kakao-report-slot")) slot.innerHTML = `<div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
+      <p style="font-size:13px;color:var(--red)">이미지 조회 실패: ${esc(String(e?.message || e))}</p>`;
+  }
+}
+
+async function downloadKakaoReport(kind, date) {
+  if (kind !== "combined") return;
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session?.access_token) return toast("ERP 로그인이 필요합니다");
+  const reportDate = /^\d{4}-\d{2}-\d{2}$/.test(String(date || "")) ? date : today();
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/kakao-report/${reportDate}/${kind}`, {
+      headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store",
+    });
+    if (!resp.ok) throw new Error(`다운로드 실패(HTTP ${resp.status})`);
+    const url = URL.createObjectURL(await resp.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `rebirth_${reportDate}_${kind}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch (e) { toast(String(e?.message || e)); }
+}
+
+// 2026-10-03 [ERP 7개 영역 재정리] 6. 하루·월간 브리핑 - 아침 보고서(하루) · 공헌이익·월 결산·월별 리포트(월간)를 한 곳에.
+//   숫자는 새로 계산하지 않아요: 아침 보고서 PNG(VM) · 월 최종 정산서 PNG(VM) · 기존 화면 링크. 대시보드에 있던 카톡 보고서 카드를 옮겼어요.
+function viewBriefing() {
+  const month = today().slice(0, 7);
+  return `<div class="brief">
+    <section class="card" id="kakao-report-slot" style="margin:0 0 14px">
+      <div class="card-head"><h2>오전 8시 카톡 보고서</h2></div>
+      <p style="color:var(--text-sub);font-size:13px">오늘 아침 보고 이미지 한 장을 확인하는 중입니다.</p>
+    </section>
+    <section class="card" id="briefing-history"><div class="card-head"><h2>지난 아침 보고서</h2></div>
+      <p style="color:var(--text-sub);font-size:13px">최근 7일 보고서를 확인하는 중입니다.</p></section>
+    <section class="card" id="briefing-monthly"><div class="card-head"><h2>월간 브리핑</h2></div>
+      <ul class="brief-links">
+        <li><a href="#/profit">${Number(month.slice(5))}월 누적 잠정 공헌이익 · 확인할 일 ›</a></li>
+        <li><a href="#/report">월별 리포트(6개월 순매출 · 매입) ›</a></li>
+        <li><a href="#/ads">광고 현황(전일·7·14·30일) ›</a></li>
+      </ul>
+      <div class="brief-statements" id="briefing-statements"><p style="color:var(--text-sub);font-size:13px">월 최종 정산서 목록을 확인하는 중입니다.</p></div>
+    </section>
+  </div>`;
+}
+
+async function loadBriefingHistory() {
+  const box = document.getElementById("briefing-history");
+  const st = document.getElementById("briefing-statements");
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session?.access_token) return;
+  const H = { headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store" };
+  if (box) {
+    const days = Array.from({ length: 7 }, (_, i) => addDaysStr(today(), -(i + 1)));
+    const rows = await Promise.all(days.map(async d => {
+      try {
+        const r = await fetch(`${WING_SUBMIT_API_BASE}/api/kakao-report/${d}`, H);
+        if (r.status === 404) return { d, state: "없음" };
+        if (!r.ok) return { d, state: `조회 실패(HTTP ${r.status})` };
+        const m = await r.json();
+        return { d, state: m.combined?.status || "생성됨", at: m.generated_at, ok: !!m.combined };
+      } catch (e) { return { d, state: "조회 실패" }; }
+    }));
+    if (document.getElementById("briefing-history")) box.innerHTML = `<div class="card-head"><h2>지난 아침 보고서</h2></div>
+      <ul class="brief-hist">${rows.map(x => `<li><b>${esc(x.d)}</b> <span>${esc(x.state)}${x.at ? ` · 생성 ${esc(String(x.at).slice(5, 16).replace("T", " "))}` : ""}</span>
+        ${x.ok ? `<button class="btn sm secondary" onclick="downloadKakaoReport('combined','${esc(x.d)}')">받기</button>` : ""}</li>`).join("")}</ul>`;
+  }
+  if (st) {
+    try {
+      const r = await fetch(`${WING_SUBMIT_API_BASE}/api/monthly-settlement/list`, H);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const items = (await r.json()).items || [];
+      if (document.getElementById("briefing-statements")) st.innerHTML = items.length
+        ? `<h3 class="brief-h3">월 최종 정산서</h3><ul class="brief-hist">${items.map(x => `<li><b>${esc(x.month)}</b> <span>${esc(x.status || "")}</span>
+            ${x.png ? `<button class="btn sm secondary" onclick="downloadMonthlySettlement('${esc(x.month)}')">PNG 받기</button>` : ""}</li>`).join("")}</ul>`
+        : `<p style="color:var(--text-sub);font-size:13px">보관된 월 최종 정산서가 없어요.</p>`;
+    } catch (e) {
+      if (document.getElementById("briefing-statements")) st.innerHTML = `<p style="color:var(--red);font-size:13px">월 최종 정산서 목록 조회 실패: ${esc(String(e?.message || e))}</p>`;
+    }
+  }
+}
+
+// 2026-10-01 월 최종 정산서 PNG - VM 비공개 보관(공개 저장소에 올리지 않음), ERP 로그인 JWT 로만 받음
+async function downloadMonthlySettlement(month) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session?.access_token) return toast("ERP 로그인이 필요합니다");
+  if (!/^\d{4}-\d{2}$/.test(String(month || ""))) return toast("월 형식이 올바르지 않습니다");
+  try {
+    const resp = await fetch(`${WING_SUBMIT_API_BASE}/api/monthly-settlement/${month}/png`, {
+      headers: { Authorization: `Bearer ${session.access_token}` }, cache: "no-store",
+    });
+    if (!resp.ok) throw new Error(resp.status === 404 ? `${month} 최종 정산서가 아직 없어요` : `다운로드 실패(HTTP ${resp.status})`);
+    const url = URL.createObjectURL(await resp.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `rebirth_coupang_settlement_${month}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  } catch (e) { toast(String(e?.message || e)); }
+}
+
+function prevMonthOf(ym) {
+  const [y, m] = String(ym).split("-").map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, "0")}`;
+}
+
 
 /* ---------- 자금일보 ---------- */
 const CASH_CATS_IN = ["판매대금", "정산금", "대표 입금", "기타 입금"];
