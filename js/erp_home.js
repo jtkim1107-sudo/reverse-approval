@@ -24,15 +24,12 @@
       ${status ? `<span class="eh-st">${esc(status)}</span>` : ""}</a>`;
   }
 
-  /** 서버 응답 → 타일 7개(순서 = 대표 지시: 매출 · 공헌이익 · 재고금액 · 가용자금 · 입출금 예정 · 광고 성과 · 오늘 조치사항) */
+  /** 서버 응답 → 타일 8개(마지막 줄 = 오늘 조치사항 · 내 결재 대기) */
   function tiles(h) {
     const s = h.sales || {}, p = h.profit || {}, inv = h.inventory || {}, c = h.cash || {}, a = h.ads || {}, acts = h.actions || [];
     const d7 = a.d7 || {};
     const pending = h.pending_approvals || {};
-    const pendingText = pending.error
-      ? "결재 대기 확인 필요"
-      : (num(pending.count) === null ? "" : `결재 대기 ${num(pending.count)}건`);
-    const actionTitles = acts.filter(x => x.link !== "#/inbox").slice(0, 2).map(x => x.title);
+    const pendingCount = pending.error ? null : num(pending.count);
     const invSub = inv.total === null || inv.total === undefined
       ? esc(inv.error || "재고·원가 확인 필요")
       : `${esc(inv.products)}개 상품 · 입고 예정분 ${esc(won(inv.incoming_value))}${(inv.cost_unconfirmed || []).length ? ` · 원가 미확정 ${inv.cost_unconfirmed.length}` : ""}${(inv.missing_cost || []).length + (inv.missing_qty || []).length ? ` · 제외 ${(inv.missing_cost || []).length + (inv.missing_qty || []).length}` : ""}`;
@@ -54,8 +51,10 @@
              sub: d7.complete ? `7일 ROAS ${esc(roas(d7.roas))} · 광고비율 ${esc(pct(d7.ad_cost_ratio))}` : "7일 자료 확인 필요",
              status: a.campaign_fresh === false ? "캠페인 수치 최신 아님" : a.status }),
       tile({ id: "actions", title: "오늘 조치사항", value: `${acts.length}건`, href: "#dash-home-actions",
-             sub: esc([pendingText, ...actionTitles].filter(Boolean).join(" · ") || "운영 조치 없음"),
-             status: pending.error || acts.some(x => x.level === "alert") ? "확인 필요" : "" }),
+             sub: acts.length ? esc(acts.slice(0, 2).map(x => x.title).join(" · ")) : "운영 조치 없음",
+             status: acts.some(x => x.level === "alert") ? "확인 필요" : "" }),
+      tile({ id: "approvals", title: "결재 대기", value: pendingCount === null ? "확인 필요" : `${Math.trunc(pendingCount)}건`, href: "#/inbox",
+             sub: "내 결재 차례인 문서", status: pending.error ? "확인 필요" : (pendingCount > 0 ? "결재 필요" : "대기 없음") }),
     ].join("");
   }
 
@@ -64,11 +63,6 @@
     const out = { ...(h || {}), actions: [...((h && h.actions) || [])] };
     const n = num(count);
     out.pending_approvals = { count: error ? null : Math.max(0, Math.trunc(n || 0)), error: !!error };
-    if (error) {
-      out.actions.push({ level: "warn", title: "결재 대기 건수 확인 필요", detail: "결재 대기 화면에서 직접 확인해 주세요", link: "#/inbox" });
-    } else if (n > 0) {
-      out.actions.push({ level: "action", title: `결재 대기 ${Math.trunc(n)}건`, detail: "내 결재 차례인 문서를 확인해 주세요", link: "#/inbox" });
-    }
     return out;
   }
 
@@ -79,16 +73,11 @@
       <b>${icon[x.level] || "•"} ${esc(x.title)}</b><small>${esc(x.detail || "")}</small></a></li>`).join("")}</ul>`;
   }
 
-  function pendingApprovalLink(pending) {
-    if (!pending || pending.error || num(pending.count) !== 0) return "";
-    return `<a class="eh-inbox-link" href="#/inbox">결재 대기 0건 확인 <span aria-hidden="true">→</span></a>`;
-  }
-
   function html(h) {
     return `<section class="card eh" id="dash-home" aria-labelledby="eh-h">
       <div class="card-head"><h2 id="eh-h">한눈에 보기</h2><span class="eh-at">계산 ${esc(String(h.generated_at || "").slice(11, 16))} · 아침 보고서와 같은 계산</span></div>
       <div class="eh-grid">${tiles(h)}</div>
-      <div id="dash-home-actions"><h3 class="eh-h3">오늘 조치사항(운영)</h3>${actionsHtml(h.actions)}${pendingApprovalLink(h.pending_approvals)}</div>
+      <div id="dash-home-actions"><h3 class="eh-h3">오늘 조치사항(운영)</h3>${actionsHtml(h.actions)}</div>
     </section>`;
   }
 
@@ -103,5 +92,5 @@
     return r.json();
   }
 
-  root.ErpHome = { load, html, errorHtml, tiles, actionsHtml, withPendingApprovals, pendingApprovalLink };
+  root.ErpHome = { load, html, errorHtml, tiles, actionsHtml, withPendingApprovals };
 })(typeof window !== "undefined" ? window : globalThis);

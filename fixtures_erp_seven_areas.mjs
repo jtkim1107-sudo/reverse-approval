@@ -57,8 +57,8 @@ const home = {
   actions: [{ level: "alert", title: "WING 로그인 필요", detail: "x", link: "#/settings" }, { level: "action", title: "자동 입고 승인 대기 1건", detail: "y", link: "#/stockflow/rginbound" }],
 };
 const t = H.html(home);
-const order = ["eh-sales", "eh-profit", "eh-inventory", "eh-cash", "eh-plans", "eh-ads", "eh-actions"].map(id => t.indexOf(`id="${id}"`));
-check(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), true, "타일 7개 순서: 매출 · 공헌이익 · 재고금액 · 가용자금 · 입출금 예정 · 광고 · 오늘 조치사항");
+const order = ["eh-sales", "eh-profit", "eh-inventory", "eh-cash", "eh-plans", "eh-ads", "eh-actions", "eh-approvals"].map(id => t.indexOf(`id="${id}"`));
+check(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1])), true, "타일 8개 순서: 마지막 줄에 오늘 조치사항 · 결재 대기");
 check(["₩919,970", "−₩128,856", "₩11,916,700", "₩16,369,265", "₩5,740,662 / ₩12,922,280", "₩54,590 · ROAS 896%", "2건"].map(x => t.includes(x)), Array(7).fill(true), "표시 값");
 check([t.includes("15일 지남"), t.includes("통장 최신화 필요"), t.includes("캠페인 수치 최신 아님"), t.includes("원가 미확정 2")], [true, true, true, true], "기준 시각·최신 아님 표시");
 const empty = H.html({ sales: {}, profit: { valid: false, notes: ["최신 잠정 공헌이익을 계산할 수 없습니다."] }, inventory: { total: null, error: "재고 판단 캐시 없음" }, cash: {}, ads: {}, actions: [] });
@@ -66,13 +66,13 @@ check([empty.includes("₩0"), (empty.match(/확인 필요/g) || []).length >= 5
 check(H.errorHtml("HTTP 503").includes("이전 값을 대신 보여 주지 않아요"), true, "조회 실패 문구");
 const pending = H.withPendingApprovals(home, { count: 3 });
 const pendingHtml = H.html(pending);
-check([pending.actions.length, pendingHtml.includes("결재 대기 3건"), pendingHtml.includes('href="#/inbox"'), pendingHtml.includes(">3건</b>")],
-      [3, true, true, true], "내 결재 차례 문서를 오늘 조치사항 건수·목록에 합치고 결재 대기로 연결");
+check([pending.actions.length, pendingHtml.includes('id="eh-approvals" href="#/inbox"'), pendingHtml.includes("결재 대기"), pendingHtml.includes(">3건</b>")],
+      [2, true, true, true], "내 결재 차례 문서를 오늘 조치사항과 분리한 카드로 표시");
 const nonePending = H.html(H.withPendingApprovals(home, { count: 0 }));
-check([nonePending.includes("결재 대기 0건"), nonePending.includes('class="eh-inbox-link" href="#/inbox"'), nonePending.includes(">2건</b>")],
-      [true, true, true], "결재 대기 0건도 숨기지 않고 결재 대기 화면으로 연결");
+check([nonePending.includes('id="eh-approvals" href="#/inbox"'), nonePending.includes(">0건</b>"), nonePending.includes("대기 없음"), nonePending.includes(">2건</b>")],
+      [true, true, true, true], "결재 대기 0건도 독립 카드로 표시하고 결재 대기 화면으로 연결");
 const failedPending = H.html(H.withPendingApprovals(home, { error: true }));
-check([failedPending.includes("결재 대기 건수 확인 필요"), failedPending.includes('href="#/inbox"')], [true, true], "결재 조회 실패를 0건으로 오인하지 않고 확인 경로 제공");
+check([failedPending.includes('id="eh-approvals" href="#/inbox"'), failedPending.includes(">확인 필요</b>")], [true, true], "결재 조회 실패를 0건으로 오인하지 않고 독립 카드에 표시");
 
 console.log("[4] 광고 현황 - 최신 아님 · 잠정 · 원가 확인 필요");
 const adm = {

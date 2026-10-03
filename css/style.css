@@ -1484,8 +1484,6 @@ details.cms-sub .card { box-shadow: none; border: 1px solid var(--line); }
 .eh-acts small { color: var(--text-sub); font-size: 12px; }
 .eh-a-alert a { background: #fdeceb; } .eh-a-warn a { background: #fff8eb; } .eh-a-action a { background: #eaf6ef; }
 .eh-none { color: var(--text-sub); font-size: 13px; } .eh-fail { color: var(--red); font-size: 13px; }
-.eh-inbox-link { display: inline-flex; align-items: center; gap: 4px; margin-top: 8px; color: var(--primary); font-size: 12.5px; font-weight: 700; text-decoration: none; }
-.eh-inbox-link:hover { text-decoration: underline; }
 
 /* 광고 현황(js/ad_status_view.js) */
 .as .card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
