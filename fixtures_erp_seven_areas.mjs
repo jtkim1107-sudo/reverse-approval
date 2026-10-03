@@ -91,6 +91,15 @@ const ah = A.html(adm);
 check([ah.includes("2026-09-29</b> 자료예요(최신 아님"), ah.includes("원가 확인 필요"), ah.includes("잠정"), ah.includes("7일 없음") || ah.includes("1일 없음")], [true, true, true, true], "최신 아님 · 원가 확인 필요 · 누락 기간");
 check([ah.includes("₩0"), ah.includes("광고 설정을 바꾸지 않아요"), ah.includes("10-06까지 보류"), ah.includes("10-07에 비교")], [false, true, true, true], "자동 변경 없음 · 대표 보류 · 비교 대기");
 check(ah.includes('href="#/adprofit"'), true, "상품별 광고·이익(기존 쿠팡광고 탭)과 연결");
+const hourly = { status: "정상", period: ["2026-09-26", "2026-10-02"], days: 7,
+  totals: { qty: 9, amount: 99000, orders: 5, peak_hour: 15 }, coverage: { timed_rows: 5, automated_rows_without_time: 0 },
+  basis: "쿠팡 주문 결제시각(KST) 기준", products: [{ product_id: "p", code: "A", name: "상품A", spec: "1개", qty: 9, amount: 99000, avg_daily_qty: 9/7,
+    hours: Array.from({length:24}, (_,i) => ({ hour:i, qty:i===15?9:0, amount:i===15?99000:0, orders:i===15?5:0 })) }] };
+const hh = A.html(adm, { date: "2026-10-02", days: 7, hourly });
+check([hh.includes("상품별 1시간 판매"), hh.includes("상품A"), hh.includes("15:00~16:00"), hh.includes("₩99,000"), hh.includes("시간대 광고매출이나 시간대 ROAS를 추정하지 않아요")],
+      [true, true, true, true, true], "상품별 시간대 판매 · 근거 · 광고 일자료와 구분");
+const hm = A.hourlyHtml({...hourly, status:"확인 필요", coverage:{timed_rows:5, automated_rows_without_time:2}}, {date:"2026-10-02",days:7});
+check([hm.includes("자동수집 주문 2줄"), hm.includes("재수집이 필요")], [true,true], "결제시각 누락을 0으로 숨기지 않음");
 
 console.log("[5] 대시보드 연결");
 const dash = app.slice(app.indexOf("/* ---------- 화면: 대시보드 ---------- */"), app.indexOf("/* ---------- 문서 목록 테이블 ---------- */"));
