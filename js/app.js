@@ -522,10 +522,7 @@ const routes = {
   sales: { title: "매출 입력", render: viewSales, after: () => addSaleRow() },
   po: { title: "발주서", render: viewPurchaseOrders },
   podoc: { title: "발주서", render: viewPODoc },
-  rginbound: { title: "쿠팡 입고관리", render: viewRgInbound },
   purchases: { title: "매입 입력", render: viewPurchases, after: () => addBuyRow() },
-  inventory: { title: "재고 현황", render: viewInventory },
-  purchasereco: { title: "발주 추천", render: viewPurchaseReco },
   profit: { title: "공헌이익", render: viewProfit },
   // 2026-09-16 상품별 광고·이익(js/ad_product_profit.js) - 광고센터 보고서 올리기·조회만(광고 조작 없음)
   adprofit: { title: "상품별 광고·이익", render: () => (globalThis.AdProductProfit ? AdProductProfit.view() : "<div class='card'>화면 파일을 불러오지 못했어요</div>") },
@@ -537,11 +534,9 @@ const routes = {
   cash: { title: "자금일보", render: viewCash },
   tasks: { title: "업무 지시", render: viewTasks },
   calendar: { title: "공용 일정", render: viewCalendar },
-  aireport: { title: "AI 아침 리포트", render: viewAiReport },
   team: { title: "우리 팀 목표", render: viewTeam },
   settings: { title: "설정 · 알림", render: viewSettings },
   doc: { title: "문서 상세", render: viewDocDetail },
-  shipmentplans: { title: "입고 물류 최적화", render: viewShipmentPlans },
   stockflow: { title: "재고 · 발주 · 입고", render: viewStockFlow },
   voc: { title: "리뷰 · 고객문의", render: viewVoc },
   unmatched: { title: "누락 매출", render: viewUnmatchedSales },
@@ -2983,17 +2978,6 @@ function productOptions(sel, mode) {
   }).join("");
 }
 
-function erpSummaryCards(rows, label) {
-  const total = rows.reduce((s, r) => s + Number(r.amount), 0);
-  return `
-    <div class="grid-stats">
-      <div class="stat"><div class="stat-label">${erpMonth} ${label} 합계</div>
-        <div class="stat-value blue">₩${fmt(total)}</div></div>
-      <div class="stat"><div class="stat-label">${erpMonth} ${label} 건수</div>
-        <div class="stat-value">${rows.length}건</div></div>
-    </div>`;
-}
-
 function monthPicker() {
   return `<input type="month" value="${erpMonth}" style="border:1.5px solid var(--line);border-radius:9px;padding:8px 12px"
     onchange="if(this.value){erpMonth=this.value;route()}else{this.value=erpMonth}">`;
@@ -4108,12 +4092,6 @@ async function getStockFlowPurchaseReco() {
   }
   return stockFlowCache.purchaseReco;
 }
-async function getStockFlowErpBase() {
-  if (!stockFlowCache.erpBase) {
-    stockFlowCache.erpBase = await loadErpBase();
-  }
-  return stockFlowCache.erpBase;
-}
 async function getStockFlowRgData() {
   if (!stockFlowCache.rgData) {
     stockFlowCache.rgData = await Promise.all([
@@ -5167,138 +5145,6 @@ async function renderStockVelocityTable(preloaded, poInfo) {
     </div>`;
 }
 
-/* ---------- 재고 현황 ----------
-   2026-09-04: "재고 · 발주 · 입고" 통합 화면(#/stockflow)의 1번 탭으로도
-   재사용돼요. preloadedErpBase/preloadedPurchaseReco를 주면(스택플로우
-   컨테이너가 미리 불러온 데이터) 그걸 그대로 쓰고, 안 주면(기존 #/inventory
-   단독 라우트) 예전과 완전히 동일하게 직접 조회해요 - 기존 동작 변경 없음.
-
-   판매속도·발주예상 표(purchase_recommendations 기반)는 여기로 새로 옮겨온
-   부분이에요(예전엔 발주추천 화면에 있었음) - "무엇이 언제 부족해지는가"는
-   재고현황 몫, "얼마나 발주할까"는 발주추천 몫으로 역할을 나눴어요(사용자
-   요청). 두 표를 억지로 한 행으로 합치지 않았어요(현재재고 계산 방식이
-   서로 다른 두 소스라 - 로컬 실시간 계산 vs GCP 배치 스냅샷 - 임의로 하나로
-   합치지 말라는 지시를 그대로 반영). */
-async function viewInventory(preloadedErpBase, preloadedPurchaseReco, preloadedPoInfo) {
-  const { buys, sales } = preloadedErpBase || await loadErpBase();
-
-  // 재고 관리는 사입 낱개 상품만 (위탁은 공급처 재고, 연동 세트는 낱개 재고에 포함됨)
-  const stockProducts = erpProducts.filter(p => tradeTypeOf(p) === "사입" && !isSetProd(p));
-  const consignCount = erpProducts.length - stockProducts.length;
-  // 매입·판매 수량은 loadErpBase가 계산한 값을 그대로 쓴다 — 세트 판매가 낱개 수량으로 환산되어 있음
-  const inv = stockProducts.map(p => {
-    const st = erpStock[p.id] || { stock: 0, inHouse: 0, atCoupang: 0, lastCost: 0, bought: 0, sold: 0 };
-    return { p, ...st, value: st.stock * st.lastCost };
-  });
-
-  // 2026-09-07 [ERP 재고현황 UI 완전 분리, 사용자 명시 실측 사고 - "39" 오인]
-  // 아래 표의 (구)"쿠팡" 컬럼은 purchase_recommendations(로켓그로스 live/
-  // 스냅샷 재고)와 전혀 무관한 별도 계산(총매입-총판매+이동 기록, Coupang API를
-  // 전혀 안 씀)이에요 - 실측으로 실제 사용자가 이 장부값(39)을 쿠팡 실재고로
-  // 오인한 사고가 있었음. *** 사용자 명시: 두 값을 절대 합치거나 서로 맞추지
-  // 않음(서로 다른 데이터) *** - "ERP 장부재고"(매입-판매 장부)와 "쿠팡
-  // 실재고"(Coupang RG API live/snapshot)를 완전히 별개 컬럼으로 분리하고,
-  // 기존에 있던 "총재고"(둘을 합산한 값)는 아예 제거함. purchase_recommendations는
-  // 이미 로드돼 있으므로(재고현황 탭 진입 시 항상 preloadedPurchaseReco를 줌)
-  // product_id -> 로켓그로스 live/스냅샷 현재재고를 새 조회 없이 그대로 매핑만 함.
-  const rgLiveByProductId = {};
-  (preloadedPurchaseReco?.data || []).forEach(r => {
-    if (r.channel === "rocket_growth" && r.product_id) rgLiveByProductId[r.product_id] = r;
-  });
-  const totalValue = inv.reduce((s, r) => s + r.value, 0);
-  const totalCoupang = inv.reduce((s, r) => s + r.atCoupang, 0);
-  const totalInHouse = inv.reduce((s, r) => s + r.inHouse, 0);
-  // 쿠팡 실재고 요약 카드용 - RG 매핑이 있는 상품만, live/snapshot 건수도 같이 셈
-  // (사용자 명시 "서로 다른 데이터" 원칙 - 합계도 장부합과 절대 안 섞음).
-  const rgLiveRows = Object.values(rgLiveByProductId);
-  const rgLiveTotal = rgLiveRows.reduce((s, r) => s + (r.current_stock || 0), 0);
-  const rgLiveCount = rgLiveRows.filter(r => r.stock_source === "COUPANG_RG_LIVE").length;
-  const rgSnapshotCount = rgLiveRows.filter(r => r.stock_source !== "COUPANG_RG_LIVE" && r.current_stock != null).length;
-  const recentTransfers = erpTransfers.slice(0, 20);
-
-  return `
-    <div class="grid-stats">
-      <div class="stat"><div class="stat-label">재고 평가액 (최근 매입가 기준)</div>
-        <div class="stat-value blue">₩${fmt(totalValue)}</div></div>
-      <div class="stat"><div class="stat-label">자사창고 재고</div>
-        <div class="stat-value">${fmt(totalInHouse)}개</div></div>
-      <div class="stat"><div class="stat-label">ERP 장부재고(쿠팡, 매입-판매 계산값)</div>
-        <div class="stat-value amber">${fmt(totalCoupang)}개</div></div>
-      <div class="stat"><div class="stat-label">🚀 쿠팡 실재고 합계(RG API)</div>
-        <div class="stat-value" style="color:var(--brand)">${fmt(rgLiveTotal)}개</div>
-        <small style="color:var(--text-sub);font-size:11px">실시간 ${rgLiveCount}종 · 스냅샷 ${rgSnapshotCount}종</small></div>
-      <div class="stat" onclick="location.hash='#/products'"><div class="stat-label">위탁 제품 (재고 제외)</div>
-        <div class="stat-value">${consignCount}종</div></div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>제품별 재고 (자사창고 / ERP 장부 / 쿠팡 실재고)</h2>
-        <div style="display:flex;gap:8px">
-          <button class="btn sm" onclick="openTransferModal()">🚚 쿠팡 재고 이동</button>
-          <button class="btn sm secondary" onclick="location.hash='#/purchases'">＋ 매입 입력</button>
-        </div></div>
-      <p style="font-size:12.5px;color:var(--text-sub);margin:-4px 0 12px">
-        <b>ERP 장부재고</b>와 <b>쿠팡 실재고</b>는 서로 다른 기준의 서로 다른 데이터예요(하나를 다른
-        하나에 맞추지 않습니다) — <b>ERP 장부재고</b>는 매입 입력 - 판매 + 이동 기록을 누적 계산한
-        값(Coupang API 조회 아님), <b>쿠팡 실재고</b>는 Coupang 로켓그로스 API를 직접 조회한 값이에요.
-        실제 쿠팡 재고를 확인할 땐 반드시 <b>쿠팡 실재고</b> 컬럼을 보세요.
-      </p>
-      <div class="table-wrap rtable"><table>
-        <thead><tr><th>제품</th><th class="num">총 매입</th><th class="num">총 판매</th><th class="num">자사재고</th><th class="num" title="매입-판매+이동 누적 장부값(Coupang API 조회 아님)">ERP 장부재고</th><th class="num" title="Coupang 로켓그로스 API 직접 조회(live 우선, 실패 시 BigQuery snapshot)">🚀 쿠팡 실재고</th><th class="num">최근 매입단가</th><th class="num">재고 금액</th></tr></thead>
-        <tbody>${inv.length ? inv.map(r => {
-          const rg = rgLiveByProductId[r.p.id];
-          return `
-          <tr>
-            <td class="rt-title"><b>${esc(r.p.name)}</b><br><small style="color:var(--text-sub)">${esc(r.p.code)} · ${esc(r.p.spec)}</small></td>
-            <td class="num" data-label="🚀 쿠팡 실재고" style="order:-5">${rgLiveStockCellHtml(rg)}</td>
-            <td class="num" data-label="ERP 장부재고" style="order:-4;color:${r.atCoupang < 0 ? "var(--red)" : "var(--amber)"}">${fmt(r.atCoupang)}</td>
-            <td class="num" data-label="자사재고" style="color:${r.inHouse < 0 ? "var(--red)" : "var(--text)"}">${fmt(r.inHouse)}</td>
-            <td class="num" data-label="총 매입">${fmt(r.bought)}</td>
-            <td class="num" data-label="총 판매">${fmt(r.sold)}</td>
-            <td class="num" data-label="최근 매입단가">₩${fmt(r.lastCost)}</td>
-            <td class="num" data-label="재고 금액">₩${fmt(r.value)}</td>
-          </tr>`;
-        }).join("") : `<tr><td colspan="8" class="empty rt-empty">제품이 없습니다</td></tr>`}
-        </tbody>
-      </table></div>
-      ${(() => {
-        // 이동 기록 없이 쿠팡에서 팔린 수량 — 그만큼 자사창고 재고가 부풀려져 보인다
-        const ut = Object.entries(erpStock).filter(([, s]) => (s.coupangUntracked || 0) > 0);
-        return ut.length ? `<div style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:12px;margin-top:12px;font-size:13px">
-          <b style="color:#d9480f">⚠️ 이동 기록 없이 팔린 쿠팡 재고가 있습니다</b><br>
-          ${ut.map(([id, s]) => `${esc(prodName(id))} ${fmt(s.coupangUntracked)}개`).join(", ")}<br>
-          창고에서 쿠팡으로 보낸 기록이 빠지면 <b>자사창고 재고가 그만큼 부풀려집니다</b>.
-          <a onclick="openTransferModal()" style="color:var(--brand);cursor:pointer;font-weight:600">이동 기록 남기기 →</a>
-        </div>` : "";
-      })()}
-      <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ <b>🚀 쿠팡 실재고</b>는 쿠팡 로켓그로스 API를 직접 조회한 실제 재고예요(가능하면 실시간 🟢, 안 되면 자동으로 BigQuery 스냅샷 🔵으로 대체 - 대체된 값도 항상 출처를 표시함) — 로켓그로스 상품의 실제 쿠팡 재고를 확인할 땐 반드시 이 컬럼을 보세요.<br>
-        ※ <b>ERP 장부재고</b>는 매입 입력 - 판매 + 쿠팡 재고 이동 기록을 그대로 누적한 값이에요(쿠팡 API 조회 아님) — 로켓그로스처럼 공급처가 쿠팡 물류센터로 직접 보내 이동 기록 자체가 없는 경우 실제 재고와 크게 다를 수 있어요. <b>두 컬럼은 서로 다른 데이터라 일부러 합치거나 서로 맞추지 않습니다.</b><br>
-        ※ 창고에서 쿠팡 물류센터로 보낸 수량은 <b>🚚 쿠팡 재고 이동</b>으로 기록하세요.<br>
-        ※ <b>풀필먼트 채널</b>(쿠팡 로켓그로스 등) 매출은 쿠팡 재고에서, 그 외(쿠팡 판매자배송 포함) 매출은 자사창고에서 차감됩니다.<br>
-        ※ 숫자가 음수면 이동/매입 기록이 누락된 것입니다. 위탁 상품은 이 화면에 표시되지 않습니다.<br>
-        ※ <b>구성이 지정된 세트상품</b>의 판매는 낱개 상품 재고에서 자동 차감되므로, 이 표에는 낱개 상품만 나옵니다.
-      </p>
-    </div>
-    ${await renderStockVelocityTable(preloadedPurchaseReco, preloadedPoInfo)}
-    <div class="card">
-      <h2>쿠팡 재고 이동 내역 (최근 20건)</h2>
-      <div class="table-wrap rtable"><table>
-        <thead><tr><th>일자</th><th>품목</th><th>구분</th><th class="num">수량</th><th>메모</th><th>입력자</th><th></th></tr></thead>
-        <tbody>${recentTransfers.length ? recentTransfers.map(t => `
-          <tr>
-            <td class="rt-title"><b>${esc(prodName(t.product_id))}</b></td>
-            <td data-label="구분">${t.kind === "쿠팡입고" ? '<span class="chip mine">창고→쿠팡</span>' : '<span class="chip waiting">쿠팡→창고</span>'}</td>
-            <td class="num" data-label="수량">${fmt(t.qty)}</td>
-            <td data-label="일자">${esc(t.date)}</td>
-            <td data-label="메모">${esc(t.memo)}</td>
-            <td data-label="입력자">${esc(t.created_by)}</td>
-            <td><button class="btn sm danger" onclick="deleteErpRow('stock_transfers','${t.id}')">삭제</button></td>
-          </tr>`).join("") : `<tr><td colspan="7" class="empty rt-empty">이동 내역이 없습니다</td></tr>`}
-        </tbody>
-      </table></div>
-    </div>`;
-}
-
 function openTransferModal() {
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
@@ -5563,84 +5409,6 @@ async function viewShipmentPlans() {
         </div>
       </div>`;
   }).join("");
-}
-
-// 2026-09-04: "재고 · 발주 · 입고" 통합 화면의 2번 탭으로도 재사용돼요.
-// preloaded를 주면(스톡플로우 컨테이너가 재고현황 탭과 공유하는 동일한
-// purchase_recommendations 조회 결과) 재조회 없이 그대로 쓰고, 안 주면
-// (기존 #/purchasereco 단독 라우트) 예전과 동일하게 직접 조회해요.
-//
-// 표 컬럼은 "발주 의사결정"에 필요한 것만 남겼어요(공급처/추천수량/BOX/
-// 예상PLT/발주근거/PO상태) - 최근7일·30일판매/일평균/예상소진일/안전재고
-// 같은 "언제 부족해지는가" 컬럼은 재고현황 탭(renderStockVelocityTable)으로
-// 옮겼어요(중복 제거, 사용자 지시 반영). "발주예상일"도 재고현황 쪽 몫으로
-// 옮겼습니다.
-async function viewPurchaseReco(preloaded, preloadedPoInfo) {
-  const { data, error } = preloaded || await sb.from("purchase_recommendations").select("*");
-  prRecoCache = data || [];
-  prRecoSelected = new Set();   // 화면을 새로 열 때마다 선택 초기화(최신 데이터 기준으로 다시 선택)
-  if (error) {
-    return `<div class="card"><p class="empty">발주추천 데이터를 불러오지 못했습니다.</p></div>`;
-  }
-
-  // "PO 상태"/"기존 발주 확인 필요" 판정용 - 2026-09-07부터 재고현황 탭과
-  // 동일한 loadPoInfoByVid() 결과를 공유(중복 조회/판정 불일치 제거).
-  // preloadedPoInfo가 없으면(방어적으로) 직접 조회.
-  prRecoPoInfo = preloadedPoInfo || await loadPoInfoByVid();
-  prRecoPoStatusByVid = prRecoPoInfo.latestByVid;
-  // 2026-09-02 추가(stale-row 대응): is_active=false는 product_master에서 더 이상 ACTIVE가
-  // 아니게 된 상품(판매종료 등)의 과거 계산 이력이에요 - 기본 화면/통계에서는 제외하고,
-  // 아래 상태 필터에서 "비활성/제외 상품"을 선택했을 때만 보여줘요(물리 DELETE가 없어서
-  // 이력 조회 자체는 항상 가능 - 숨김일 뿐 삭제 아님).
-  const activeCache = prRecoCache.filter(r => r.is_active !== false);
-  const inactiveCount = prRecoCache.length - activeCache.length;
-  const calcAt = activeCache[0]?.calculated_at || prRecoCache[0]?.calculated_at;
-  const total = activeCache.length;
-  const need = activeCache.filter(r => r.status === "ORDER_REQUIRED").length;
-  const ok = activeCache.filter(r => r.status === "STOCK_SUFFICIENT").length;
-  const lack = total - need - ok;
-
-  return `
-    <div class="grid-stats">
-      <div class="stat"><div class="stat-label">전체 상품</div><div class="stat-value">${total}종</div></div>
-      <div class="stat"><div class="stat-label">🔴 발주 필요</div><div class="stat-value" style="color:var(--red)">${need}종</div></div>
-      <div class="stat"><div class="stat-label">🟢 재고 충분</div><div class="stat-value" style="color:var(--green)">${ok}종</div></div>
-      <div class="stat"><div class="stat-label">⚪ 데이터 부족</div><div class="stat-value" style="color:var(--text-sub)">${lack}종</div></div>
-    </div>
-    <div class="card">
-      <div class="card-head"><h2>제품별 발주 추천</h2></div>
-      <p style="font-size:12.5px;color:var(--text-sub);margin-bottom:12px">
-        GCP 서버가 쿠팡 판매속도·재고·리드타임 기준으로 계산한 결과예요(이 화면은 계산을
-        새로 하지 않고 그 결과만 보여줘요). 최종 계산: <b>${calcAt ? esc(new Date(calcAt).toLocaleString("ko-KR")) : "기록 없음"}</b>
-        ${calcAt ? ` <span style="color:var(--text-sub)">— 자동 갱신은 아직 꺼져있어 실시간 값이 아닐 수 있어요</span>` : ""}
-        ${inactiveCount ? ` <span style="color:var(--text-sub)">— ⚫ 비활성/제외 상품 ${inactiveCount}건은 기본 화면에서 숨겨져 있어요(아래 상태 필터에서 확인 가능)</span>` : ""}
-      </p>
-      <div class="searchbar" style="margin-bottom:14px">
-        <input placeholder="상품명 검색" value="${esc(prRecoFilter.q)}"
-          oninput="prRecoFilter.q=this.value;refreshPrRecoTable()">
-        <select onchange="prRecoFilter.group=this.value;refreshPrRecoTable()">
-          <option value="">전체 상태</option>
-          <option value="발주필요" ${prRecoFilter.group === "발주필요" ? "selected" : ""}>🔴 발주 필요</option>
-          <option value="재고충분" ${prRecoFilter.group === "재고충분" ? "selected" : ""}>🟢 재고 충분</option>
-          <option value="데이터부족" ${prRecoFilter.group === "데이터부족" ? "selected" : ""}>⚪ 데이터 부족</option>
-          <option value="비활성제외" ${prRecoFilter.group === "비활성제외" ? "selected" : ""}>⚫ 비활성/제외 상품(${inactiveCount})</option>
-        </select>
-      </div>
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap">
-        <span style="font-size:12.5px;color:var(--text-sub)">🔴 발주 필요 상품만 체크박스로 선택할 수 있어요 - 선택 후 공급처별로 나눠서 발주서 초안을 미리보기(dry-run)할 수 있어요.</span>
-        <button class="btn sm" id="pr-draft-btn" disabled onclick="openPODraftModal()">📝 발주서 초안 만들기 (0건 선택)</button>
-      </div>
-      <div id="pr-reco-table">${prRecoTableHtml(filteredPrReco())}</div>
-      <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ 최근7일·30일 판매량/일평균/예상소진일/발주예상일 같은 "재고 상태" 정보는
-        <a onclick="location.hash='#/stockflow/stock'" style="color:var(--brand);cursor:pointer">재고 현황 탭</a>에서 볼 수 있어요.<br>
-        ※ 옵션(색상 등)이 있는 상품은 상품명 아래 작은 글씨로 옵션명이 같이 표시돼요.<br>
-        ※ ⚫ <b>비활성/제외 상품</b>은 product_master에서 더 이상 ACTIVE가 아니게 된(판매종료 등) 상품의 과거 계산 이력이에요 - 삭제되지 않고 상태 필터로 언제든 다시 볼 수 있어요.<br>
-        ※ <b>PO 상태</b>는 이 상품의 vendor_item_id로 만들어진 가장 최근 발주서 상태예요(있으면) - 여러 건이 있어도 최신 1건만 표시돼요.<br>
-        ※ <b>⚠️ 기존 발주 확인 필요</b>(그레이) — 발주가 필요한 상품인데 이미 결재대기/승인/발주완료/부분입고 상태인 발주서가 있어요. 중복 발주를 막기 위해 체크박스로 새 발주서 초안에 선택할 수 없어요 - <b>PO 상태</b> 칸의 발주서를 먼저 확인하세요.<br>
-        ※ <b>발주서 초안 만들기</b>는 아직 미리보기(dry-run)까지만 가능해요 - 실제 발주서 생성은 검토 후 다음 단계에서 열립니다. 그 전까지 발주는 <b>발주서</b> 메뉴에서 직접 작성하세요.
-      </p>
-    </div>`;
 }
 
 function filteredPrReco() {
@@ -7947,12 +7715,6 @@ async function _saveAndRenderLoadFillProposal(poId, poItemId, el, chosen1pltOpti
   }
 }
 
-async function chooseAndSave1pltOption(poId, poItemId, chosen1pltOption) {
-  const el = document.getElementById("po-load-fill-proposal");
-  if (!el) return;
-  await _saveAndRenderLoadFillProposal(poId, poItemId, el, chosen1pltOption);
-}
-
 async function decidePOLoadFillProposal(poId, poItemId, decision) {
   const { data: { session } } = await sb.auth.getSession().catch(() => ({ data: {} }));
   const jwt = session?.access_token;
@@ -10027,8 +9789,6 @@ function rgApplyPreflightGateToModal() {
       대체 입고신청(PRE-FLIGHT) 생성은 서버 플래그 <code>WING_INBOUND_PREFLIGHT_ENABLED</code>가 꺼져 있어 <b>차단</b>돼 있어요 — 켜지기 전에는 이 버튼이 동작하지 않습니다.</div>`);
   }
 }
-
-function pickRgRetrySlotGated(index) { pickRgRetrySlot(index); }
 
 // 자동 제안 요청 - 서버가 실제 WING 슬롯(읽기)을 조회해 같은 센터의 가장 빠른 슬롯을
 // 제안으로 기록해요. 대체 plan은 만들지 않아요(auto_prepare=false 고정).
