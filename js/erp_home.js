@@ -79,11 +79,16 @@
       <b>${icon[x.level] || "•"} ${esc(x.title)}</b><small>${esc(x.detail || "")}</small></a></li>`).join("")}</ul>`;
   }
 
+  function pendingApprovalLink(pending) {
+    if (!pending || pending.error || num(pending.count) !== 0) return "";
+    return `<a class="eh-inbox-link" href="#/inbox">결재 대기 0건 확인 <span aria-hidden="true">→</span></a>`;
+  }
+
   function html(h) {
     return `<section class="card eh" id="dash-home" aria-labelledby="eh-h">
       <div class="card-head"><h2 id="eh-h">한눈에 보기</h2><span class="eh-at">계산 ${esc(String(h.generated_at || "").slice(11, 16))} · 아침 보고서와 같은 계산</span></div>
       <div class="eh-grid">${tiles(h)}</div>
-      <div id="dash-home-actions"><h3 class="eh-h3">오늘 조치사항(운영)</h3>${actionsHtml(h.actions)}</div>
+      <div id="dash-home-actions"><h3 class="eh-h3">오늘 조치사항(운영)</h3>${actionsHtml(h.actions)}${pendingApprovalLink(h.pending_approvals)}</div>
     </section>`;
   }
 
@@ -98,5 +103,5 @@
     return r.json();
   }
 
-  root.ErpHome = { load, html, errorHtml, tiles, actionsHtml, withPendingApprovals };
+  root.ErpHome = { load, html, errorHtml, tiles, actionsHtml, withPendingApprovals, pendingApprovalLink };
 })(typeof window !== "undefined" ? window : globalThis);
