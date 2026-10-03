@@ -54,7 +54,7 @@
              sub: acts.length ? esc(acts.slice(0, 2).map(x => x.title).join(" · ")) : "운영 조치 없음",
              status: acts.some(x => x.level === "alert") ? "확인 필요" : "" }),
       tile({ id: "approvals", title: "결재 대기", value: pendingCount === null ? "확인 필요" : `${Math.trunc(pendingCount)}건`, href: "#/inbox",
-             sub: "내 결재 차례인 문서", status: pending.error ? "확인 필요" : (pendingCount > 0 ? "결재 필요" : "대기 없음") }),
+             sub: "내 결재 차례인 문서", status: pending.error ? "확인 필요" : (pendingCount > 0 ? "결재 필요" : "") }),
     ].join("");
   }
 
