@@ -1510,7 +1510,12 @@ details.cms-sub .card { box-shadow: none; border: 1px solid var(--line); }
 .brief-h3 { font-size: 14px; margin: 12px 0 4px; }
 @media (max-width: 640px) {
   .eh-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .eh-v { font-size: 16px; }
+  /* 두 열 카드에서 제목 줄 수가 달라도 금액·설명·상태의 시작선을 맞춰요. */
+  .eh-tile { gap: 4px; }
+  .eh-t { min-height: 2.9em; line-height: 1.45; }
+  .eh-v { min-height: 2.6em; font-size: 16px; line-height: 1.3; }
+  .eh-s { min-height: 4.2em; }
+  .eh-st { min-height: 1.4em; }
   .as-camp th, .as-camp td { font-size: 12px; }
 }
 
