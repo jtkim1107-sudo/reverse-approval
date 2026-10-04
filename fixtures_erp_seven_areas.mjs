@@ -64,6 +64,9 @@ check([t.includes("15일 지남"), t.includes("통장 최신화 필요"), t.incl
 const empty = H.html({ sales: {}, profit: { valid: false, notes: ["최신 잠정 공헌이익을 계산할 수 없습니다."] }, inventory: { total: null, error: "재고 판단 캐시 없음" }, cash: {}, ads: {}, actions: [] });
 check([empty.includes("₩0"), (empty.match(/확인 필요/g) || []).length >= 5, empty.includes("재고 판단 캐시 없음")], [false, true, true], "값 없음 → 확인 필요(0원 아님)");
 check(H.errorHtml("HTTP 503").includes("이전 값을 대신 보여 주지 않아요"), true, "조회 실패 문구");
+check([app.includes("loadInventoryValueBreakdown"), app.includes('data-label="개당 원가"'),
+  app.includes('data-label="현재 재고금액"'), app.includes("입고 후 예상금액")], [true, true, true, true],
+  "재고·발주 표에 상품별 원가·재고금액과 합계 표시");
 const pending = H.withPendingApprovals(home, { count: 3 });
 const pendingHtml = H.html(pending);
 check([pending.actions.length, pendingHtml.includes('id="eh-approvals" href="#/inbox"'), pendingHtml.includes("결재 대기"), pendingHtml.includes(">3건</b>")],

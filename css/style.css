@@ -1551,3 +1551,9 @@ details.cms-sub .card { box-shadow: none; border: 1px solid var(--line); }
   .area-tab { padding: 8px 10px; font-size: 12px; }
 }
 .stockflow-actions { display: flex; justify-content: flex-end; margin: 0 0 10px; }
+.inventory-money-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:12px 0; padding:12px; border:1px solid var(--border); border-radius:12px; background:var(--bg-subtle,#f8fafc); }
+.inventory-money-summary div { display:flex; flex-direction:column; gap:4px; }
+.inventory-money-summary span { color:var(--text-sub); font-size:12px; }
+.inventory-money-summary b { font-size:18px; }
+.inventory-money-summary small { grid-column:1/-1; color:var(--text-sub); }
+@media (max-width:720px) { .inventory-money-summary { grid-template-columns:1fr; } .inventory-money-summary small { grid-column:auto; } }

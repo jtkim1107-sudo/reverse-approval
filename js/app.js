@@ -4405,6 +4405,8 @@ async function viewInventoryDecisions() {
   // 2026-09-13 [ERP UI 정리] 위쪽 핵심 요약(누르면 그 상태만) · 재고 상태와 자동화 상태 분리 · 구역(재고/입고/상태/추천) ·
   // 상품 열 고정 · 720px 이하 카드. 숫자·판정은 서버 값 그대로(화면이 다시 계산하지 않음).
   const prodIndex = await loadInventoryProductIndex();
+  const inventoryValue = await loadInventoryValueBreakdown();
+  const valueByProduct = new Map(((inventoryValue && inventoryValue.items) || []).map(x => [String(x.product_id), x]));
   const sorted = sortInventoryDecisionsByBrand(filtered, prodIndex);
   const filterClick = key => `inventoryDecisionFilter = (inventoryDecisionFilter === '${key}' ? null : '${key}'); route()`;
   // 2026-09-28 [대표 지시] 의도적 보류(계절·입고 미정)는 '자동화 막힘'과 분리해서 센다 - 실제 조치 필요만 '자동화 막힘'.
@@ -4430,6 +4432,11 @@ async function viewInventoryDecisions() {
     const recoText = d.recommended_order_qty_ea ? `${fmt(d.recommended_order_qty_ea)}개${ProcurementInput.vatChipHtml(invVatOf(d))}`
       : inventoryReferenceShortageHtml(d);
     const p = prodIndex[d.product_id] || null;
+    const money = valueByProduct.get(String(d.product_id || ""));
+    const unitCostText = money && money.unit_cost != null ? won(money.unit_cost) : "확인 필요";
+    const stockValueText = money && money.value != null ? won(money.value) : "확인 필요";
+    const incomingValueText = money && money.incoming_qty && money.unit_cost != null
+      ? `<div class="erp-sub">예정금액 ${won(Number(money.incoming_qty) * Number(money.unit_cost))}</div>` : "";
     const s = d.shared_inventory;
     const rel = s ? (s.role === "child" ? { role: "child", parentName: s.base_product_name, setQty: s.set_qty } : { role: "base" }) : null;
     const listing = [d.product_name, d.option_name].filter(Boolean).join(" · ");
@@ -4446,14 +4453,24 @@ async function viewInventoryDecisions() {
       <tr data-clickable onclick="${open}">
         <td class="erp-sticky erp-card-head">${nameCell}</td>
         <td class="num erp-sep" data-label="현재재고">${esc(stockText)}</td>
+        <td class="num" data-label="개당 원가">${esc(unitCostText)}</td>
+        <td class="num" data-label="현재 재고금액">${esc(stockValueText)}</td>
         <td class="num" data-label="판매속도(30일)">${velocityText}</td>
         <td class="erp-nowrap" data-label="재고전망">${esc(inventoryOutlookText(d))}</td>
-        <td class="erp-sep erp-incoming" data-label="입고예정">${inventoryIncomingText(d)}</td>
+        <td class="erp-sep erp-incoming" data-label="입고예정">${inventoryIncomingText(d)}${incomingValueText}</td>
         <td class="erp-sep erp-status" data-label="재고 상태">${ErpUi.decisionBadge(d)}</td>
         <td class="erp-status" data-label="자동화 상태">${ErpUi.automationBadge(d)}</td>
         <td class="num erp-sep erp-reco" data-label="추천발주"><div>${recoText}</div></td>
       </tr>`;
   }).join("");
+
+  const inventoryMoneySummary = inventoryValue && inventoryValue.total != null ? `
+    <div class="inventory-money-summary" aria-label="재고금액 합계">
+      <div><span>현재 재고금액</span><b>${won(inventoryValue.total)}</b></div>
+      <div><span>입고 예정금액</span><b>${won(inventoryValue.incoming_value || 0)}</b></div>
+      <div><span>입고 후 예상금액</span><b>${won(Number(inventoryValue.total) + Number(inventoryValue.incoming_value || 0))}</b></div>
+      <small>원가·부가세 제외 · 대시보드와 같은 계산${inventoryValue.complete === false ? " · 일부 원가/수량 확인 필요" : ""}</small>
+    </div>` : `<p class="erp-help">재고금액 확인 필요${inventoryValue && inventoryValue.error ? ` · ${esc(inventoryValue.error)}` : ""}</p>`;
 
   return `
     <div class="card">
@@ -4465,20 +4482,32 @@ async function viewInventoryDecisions() {
       </div>
       ${cacheHealthHtml}
       ${summaryHtml}
+      ${inventoryMoneySummary}
       <details class="erp-help"><summary>표 보는 법</summary>
         <b>재고 상태</b>는 재고·판매·입고예정으로 낸 판단이고, <b>자동화 상태</b>는 정식 추천 발주수량·자동 발주·WING 입고 초안이
         막혔는지예요(예: 물류정보 입력 필요). 둘은 따로 판단해요. 판매속도는 최근 30일(오늘 제외) 로켓그로스 순판매수량 ÷ 30,
         판매자배송은 빼요. 행이나 [상세]를 누르면 라이브재고·판매이력·기존발주·입고예정·예측 근거를 볼 수 있어요.</details>
       <div class="erp-table-wrap"><table class="erp-table erp-cards inv-decision-grid">
         <thead>
-          <tr class="erp-grp"><th class="erp-sticky"></th><th colspan="3" class="erp-grp-sep">재고</th><th class="erp-grp-sep">입고</th>
+          <tr class="erp-grp"><th class="erp-sticky"></th><th colspan="5" class="erp-grp-sep">재고</th><th class="erp-grp-sep">입고</th>
             <th colspan="2" class="erp-grp-sep">상태</th><th class="erp-grp-sep">추천</th></tr>
-          <tr><th class="erp-sticky">상품</th><th class="num erp-sep">현재재고</th><th class="num" title="최근 30일(오늘 제외) 로켓그로스 순판매수량 ÷ 30 · 판매자배송 제외">판매속도(30일)</th>
+          <tr><th class="erp-sticky">상품</th><th class="num erp-sep">현재재고</th><th class="num">개당 원가</th><th class="num">현재 재고금액</th><th class="num" title="최근 30일(오늘 제외) 로켓그로스 순판매수량 ÷ 30 · 판매자배송 제외">판매속도(30일)</th>
             <th>재고전망</th><th class="erp-sep">입고예정</th><th class="erp-sep">재고 상태</th><th>자동화 상태</th><th class="num erp-sep">추천발주</th></tr>
         </thead>
-        <tbody>${rowsHtml || `<tr><td colspan="8" class="empty">데이터 없음</td></tr>`}</tbody>
+        <tbody>${rowsHtml || `<tr><td colspan="10" class="empty">데이터 없음</td></tr>`}</tbody>
       </table></div>
     </div>`;
+}
+
+async function loadInventoryValueBreakdown() {
+  try {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session?.access_token || !globalThis.ErpHome) return { total: null, error: "ERP 로그인이 필요합니다" };
+    const home = await ErpHome.load({ base: WING_SUBMIT_API_BASE, token: session.access_token });
+    return home.inventory || { total: null, error: "재고금액 자료 없음" };
+  } catch (e) {
+    return { total: null, error: String(e?.message || e) };
+  }
 }
 
 // 2026-09-13 [ERP UI 정리] 상품 칸에 ERP 코드·이름을 보여주려고 제품 마스터를 읽어요(읽기만 · 새로고침 전까지 재사용).
