@@ -4376,6 +4376,7 @@ function inventorySharedInventoryBadge(d) {
 }
 
 async function viewInventoryDecisions() {
+  const won = value => `₩${fmt(Math.round(Number(value) || 0))}`;
   if (!inventoryDecisionsCache) {
     const forceRefresh = _inventoryDecisionsForceRefreshNext;
     _inventoryDecisionsForceRefreshNext = false;
