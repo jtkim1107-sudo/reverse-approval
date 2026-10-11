@@ -185,6 +185,8 @@
       items.push({ key: "mail", tone: "none", text: "입고 메일 폴러 정보 없음" });
       items.push({ key: "poller", tone: "none", text: "자동입고 폴러 정보 없음" });
     }
+    // 사용자 요청: 대시보드 WING 인증 경고는 표시하지 않는다. 수집 실패 표시는 유지한다.
+    for (let i = items.length - 1; i >= 0; i--) if (items[i].key === "wing" || items[i].key === "next") items.splice(i, 1);
     const problems = items.filter(i => ["error", "check"].includes(i.tone));
     return { items, problems, tone: worstTone(problems.map(p => p.tone)), collectErrors: items.filter(i => i.collect) };
   }
