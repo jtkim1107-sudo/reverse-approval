@@ -16,6 +16,16 @@
   const md = s => (s ? String(s).slice(5, 10).replace("-", "/") : "");
   const tone = st => (/확인 필요|실패|미완|없음/.test(String(st || "")) ? "warn" : "ok");
 
+  // 대시보드 표시만 정리한다. 서버 인증·수집 상태와 경고 기록은 유지한다.
+  function displayActions(actions) {
+    return (actions || []).filter(x => !/^WING (로그인|상태|인증)/.test(String(x.title || ""))).map(x => {
+      if (/^공헌이익 확인할 항목/.test(String(x.title || ""))) {
+        return { ...x, title: "공헌이익 계산 상태 확인", detail: "정산 대기·원가 이력·수수료 등 계산 근거를 확인하세요.", why: "정산 대기·원가 이력·수수료 등 계산 근거를 확인하세요." };
+      }
+      return x;
+    });
+  }
+
   function tile({ id, title, value, sub, status, href, neg }) {
     return `<a class="eh-tile eh-${tone(status)}" id="eh-${id}" href="${esc(href)}">
       <span class="eh-t">${esc(title)}</span>
@@ -26,7 +36,7 @@
 
   /** 서버 응답 → 타일 8개(마지막 줄 = 오늘 조치사항 · 내 결재 대기) */
   function tiles(h) {
-    const s = h.sales || {}, p = h.profit || {}, inv = h.inventory || {}, c = h.cash || {}, a = h.ads || {}, acts = h.actions || [];
+    const s = h.sales || {}, p = h.profit || {}, inv = h.inventory || {}, c = h.cash || {}, a = h.ads || {}, acts = displayActions(h.actions);
     const d7 = a.d7 || {};
     const pending = h.pending_approvals || {};
     const pendingCount = pending.error ? null : num(pending.count);
@@ -67,6 +77,7 @@
   }
 
   function actionsHtml(acts) {
+    acts = displayActions(acts);
     if (!acts || !acts.length) return `<p class="eh-none">운영 조치사항이 없어요.</p>`;
     const icon = { alert: "⛔", warn: "⚠", action: "✅", info: "ℹ" };
     return `<ul class="eh-acts">${acts.map(x => `<li class="eh-a-${esc(x.level)}"><a href="${esc(x.link || "#/dashboard")}">
