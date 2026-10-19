@@ -12330,13 +12330,15 @@ async function viewCash() {
     .sort((x, y) => (y.created_at || "").localeCompare(x.created_at || ""));
   const accName = id => { const a = cashAccounts.find(x => x.id === id); return a ? a.name : "?"; };
 
-  // ===== 향후 45일 자금 예측 (다음 달 20일 매입대금까지 포함) =====
+  // ===== 다음 달 20일까지 자금 예측 =====
   // 실제 잔액에는 '오늘까지 실제로 오간 돈'만 포함 (미래 날짜 거래는 아직 통장에 없음)
   const futureTxns = cashTxns.filter(t => t.date > today());
   const curBal = cashAccounts.reduce((s, a) =>
     s + Number(a.initial_balance) + cashTxns.filter(t => t.account_id === a.id && t.date <= today())
       .reduce((ss, t) => ss + (t.kind === "입금" ? 1 : -1) * Number(t.amount), 0), 0);
-  const occ = planOccurrences(cashPlans, today(), 45);
+  const forecastEnd = ripacoEstimatedPayDate(today());
+  const forecastDays = Math.round((new Date(forecastEnd + "T00:00:00Z") - new Date(today() + "T00:00:00Z")) / 86400000);
+  const occ = planOccurrences(cashPlans, today(), forecastDays);
   let runBal = curBal;
   const projRows = occ.map(o => {
     runBal += (o.kind === "입금" ? 1 : -1) * Number(o.amount);
@@ -12361,7 +12363,7 @@ async function viewCash() {
         <div class="stat-value green">₩${fmt(tot.dayIn)}</div></div>
       <div class="stat"><div class="stat-label">당일 출금</div>
         <div class="stat-value red">₩${fmt(tot.dayOut)}</div></div>
-      <div class="stat"><div class="stat-label">들어올 돈 (45일)</div>
+      <div class="stat"><div class="stat-label">들어올 돈 (다음 달 20일까지)</div>
         <div class="stat-value green">+₩${fmt(planIn)}</div></div>
     </div>
 
@@ -12419,24 +12421,24 @@ async function viewCash() {
     </div>
 
     <div class="card" ${minRow && minRow.bal < 0 ? 'style="border:2px solid var(--red)"' : ""}>
-      <div class="card-head"><h2>📅 들어올 돈 · 나갈 돈 (향후 45일)</h2>
+      <div class="card-head"><h2>📅 들어올 돈 · 나갈 돈 (${esc(forecastEnd)}까지)</h2>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button class="btn sm" onclick="openPlanModal('입금')">＋ 들어올 돈</button>
           <button class="btn sm secondary" onclick="openPlanModal('출금')">＋ 나갈 돈</button>
           ${minRow && minRow.bal < 0
             ? `<span class="chip rejected">⚠️ ${esc(minRow.occDate.slice(5))} 자금 부족 예상</span>`
-            : '<span class="chip approved">45일 내 이상 없음</span>'}
+            : '<span class="chip approved">기간 내 부족 예상 없음</span>'}
         </div></div>
       <p style="font-size:13px;color:var(--text-sub);margin:-4px 0 12px">
         들어올 돈·나갈 돈의 <b>예정</b>을 등록하면, 자금이 언제 부족해질지 미리 보여줍니다.</p>
       <div class="grid-stats">
         <div class="stat"><div class="stat-label">현재 잔액</div>
           <div class="stat-value blue">₩${fmt(curBal)}</div></div>
-        <div class="stat"><div class="stat-label">45일 내 예정 입금</div>
+        <div class="stat"><div class="stat-label">다음 달 20일까지 예정 입금</div>
           <div class="stat-value green">+₩${fmt(planIn)}</div></div>
-        <div class="stat"><div class="stat-label">45일 내 예정 출금</div>
+        <div class="stat"><div class="stat-label">다음 달 20일까지 예정 출금 · 매입월 다음 달 20일 지급</div>
           <div class="stat-value red">−₩${fmt(planOut)}</div></div>
-        <div class="stat"><div class="stat-label">45일 후 예상 잔액</div>
+        <div class="stat"><div class="stat-label">다음 달 20일 예상 잔액</div>
           <div class="stat-value ${curBal + planIn - planOut < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut)}</div></div>
       </div>
 
@@ -12451,7 +12453,7 @@ async function viewCash() {
             <td class="num" style="color:${r.kind === "입금" ? "var(--green)" : "var(--red)"}">${r.kind === "입금" ? "+" : "−"}₩${fmt(r.amount)}</td>
             <td class="num" style="font-weight:800;color:${r.bal < 0 ? "var(--red)" : "var(--text)"}">₩${fmt(r.bal)}</td>
             <td><button class="btn sm danger" onclick="deleteErpRow('cash_plans','${r.id}')">삭제</button></td>
-          </tr>`).join("") : `<tr><td colspan="5" class="empty">향후 45일 예정된 입출금이 없습니다 — 결제 예정·정산 예정을 등록해 두세요</td></tr>`}
+          </tr>`).join("") : `<tr><td colspan="5" class="empty">다음 달 20일까지 예정된 입출금이 없습니다 — 결제 예정·정산 예정을 등록해 두세요</td></tr>`}
         </tbody>
       </table></div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
