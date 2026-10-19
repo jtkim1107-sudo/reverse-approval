@@ -4701,12 +4701,16 @@ async function loadInvWingDirectSection(productId) {
   // 평범한 컬럼 읽기 - 이 조회는 그 스위치를 켜지 않고도(꺼진 채로) 안전하게 할 수 있다.
   const shipmentIds = [...new Set(data.map(r => r.wing_inbound_id).filter(Boolean))];
   let linkedPoByShipment = {};
+  let errorShipmentIds = new Set();
   let linkLookupFailed = false;
   if (shipmentIds.length) {
     const { data: linkedPos, error: linkErr } = await sb.from("purchase_orders")
-      .select("po_no,wing_direct_shipment_id").in("wing_direct_shipment_id", shipmentIds);
+      .select("po_no,wing_direct_shipment_id,memo").in("wing_direct_shipment_id", shipmentIds);
     if (linkErr) linkLookupFailed = true;
-    else if (linkedPos) linkedPoByShipment = Object.fromEntries(linkedPos.map(p => [p.wing_direct_shipment_id, p.po_no]));
+    else if (linkedPos) {
+      linkedPoByShipment = Object.fromEntries(linkedPos.map(p => [p.wing_direct_shipment_id, p.po_no]));
+      errorShipmentIds = new Set(linkedPos.filter(p => (p.memo || "").includes("[ERP_INBOUND_ERROR_CONFIRMED]")).map(p => p.wing_direct_shipment_id));
+    }
   }
   // 2026-09-18 [WING 신청 취소 확인] WING 이 CANCELLED/FAILED 를 안 보내는(INIT_COMPLETED 로 남는)
   // 실제 취소 신청을 권한자가 신청 ID별로 확인·기록한 것 - linkLookupFailed 와 같은 원칙으로 조회
@@ -4722,7 +4726,8 @@ async function loadInvWingDirectSection(productId) {
   }
   let linkedPendingTotal = 0;
   const rows = data.map(r => {
-    const dead = DEAD.has(r.wing_status);
+    const inboundError = errorShipmentIds.has(r.wing_inbound_id);
+    const dead = DEAD.has(r.wing_status) || inboundError;
     const pending = Math.max(0, Number(r.requested_qty || 0) - Number(r.received_qty || 0));
     const linkedPoNo = linkedPoByShipment[r.wing_inbound_id];
     const override = overridesByShipment[r.wing_inbound_id];
@@ -4750,7 +4755,7 @@ async function loadInvWingDirectSection(productId) {
     return `<tr>
       <td><code style="font-size:11.5px">${esc(r.wing_inbound_id)}</code>${linkedPoNo
         ? `<br><span class="chip approved" style="font-size:10.5px;margin-top:2px;display:inline-block">🔗 ${esc(linkedPoNo)} 연결</span>` : ""}</td>
-      <td>${esc(r.wing_status || "-")}${statusBadge}</td>
+      <td>${esc(inboundError ? (Number(r.received_qty || 0) > 0 ? "입고 오류·실입고 충돌 확인 필요" : "입고 오류 (사용자 확인)") : (!dead && pending > 0 && r.expected_date ? (r.expected_date < new Date(Date.now() + 9 * 3600000).toISOString().slice(0, 10) ? "입고 지연 · " : "입고 예정 · ") + r.expected_date : r.wing_status || "-"))}${statusBadge}</td>
       <td class="num">${fmt(r.requested_qty)}</td>
       <td class="num" style="color:var(--green)">${fmt(r.received_qty)}</td>
       <td class="num" style="color:${dead || cancelled ? "var(--text-sub)" : pending > 0 ? "var(--amber)" : "var(--text-sub)"}">${dead ? "—" : cancelled ? "취소 확인(제외)" : fmt(pending)}${needsReview
