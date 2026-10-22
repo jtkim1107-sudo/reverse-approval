@@ -395,7 +395,7 @@
       sb.from("products").select("id,code,name,tax_type"),
       sb.from("cash_plans").select("*"),
       sb.from("cash_txns").select("*").gte("date", "2026-09-01"),
-      sb.from("inbound_plans").select("id,purchase_order_id,preflight_status,last_error_code,last_error_message,rejection_code,rejection_reason,submit_status,recovery_status,resubmission_of_plan_id,retry_of_plan_id"),
+      sb.from("inbound_plans").select("id,purchase_order_id,internal_status,preflight_status,last_error_code,last_error_message,rejection_code,rejection_reason,submit_status,recovery_status,resubmission_of_plan_id,retry_of_plan_id"),
       sb.from("inbound_freight_costs").select("*"),
       sb.from("settings").select("value").eq("key", "vat").maybeSingle(),
     ]);

@@ -219,6 +219,10 @@ check("자금일보와 같은 계산임을 명시", text(html).includes("자금�
 check("쓰기·발송 호출 없음", [".insert(", ".update(", ".delete(", ".upsert(", ".rpc(", "fetch(", "XMLHttpRequest", "sendBeacon"]
       .filter(w => readFileSync(SRC, "utf8").includes(w)), []);
 check("조회는 select 만", (readFileSync(SRC, "utf8").match(/\.from\("[a-z_]+"\)\.select\(/g) || []).length >= 8, true);
+// 현재/과거 오류를 가르려면 internal_status 가 꼭 필요해요(빠뜨리면 취소된 계획을 '지금 오류'로 봅니다)
+check("입고 계획 조회에 판정용 칼럼이 다 들어 있음",
+      ["internal_status", "recovery_status", "resubmission_of_plan_id", "retry_of_plan_id", "preflight_status"]
+        .filter(c => !new RegExp(`inbound_plans"\\)\\.select\\("[^"]*${c}`).test(readFileSync(SRC, "utf8"))), []);
 check("app.js 는 발주서 화면 맨 위에 카드만 끼움", [APP.includes("PurchasePayments.load(sb"), APP.includes("${payHtml}")], [true, true]);
 check("index.html 에 스크립트 등록(app.js 보다 먼저)",
       [IDX.includes("js/purchase_payments.js"), IDX.indexOf("js/purchase_payments.js") < IDX.indexOf("js/app.js")], [true, true]);
