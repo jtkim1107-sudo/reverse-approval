@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+const ctx={};vm.createContext(ctx);const src=fs.readFileSync(new URL('./js/purchase_payments.js',import.meta.url),'utf8');vm.runInContext(src,ctx);
+const model=ctx.PurchasePayments.model;
+const base={today:'2026-10-22',products:[{id:'p',tax_type:'과세'}],vat:{enabled:true,purchaseCostIncludesVat:false}};
+let m=model({...base,pos:[{id:'a',date:'2026-08-01',status:'done'}],items:[{po_id:'a',product_id:'p',qty:10,unit_cost:100}],purchases:[{id:'p1',po_id:'a',product_id:'p',date:'2026-08-02',qty:10,amount:1000}]});
+assert.equal(m.due.total,0,'historical paid purchase must not become an unmatched forecast');
+const common={...base,pos:[{id:'a',po_no:'A',date:'2026-10-01',status:'canceled',wing_direct_shipment_id:'w'}],items:[{po_id:'a',product_id:'p',qty:60,unit_cost:100}],wingInbounds:[{wing_inbound_id:'w',product_id:'p',wing_created_at:'2026-09-30T23:59:38Z',requested_qty:60,received_qty:40,wing_status:'STOWING'}]};
+m=model(common);assert.equal(m.sourceGaps[0].payMonth,'2026-11-20');
+const rows=m.rows||m.groups;assert.equal(rows.find(r=>r.fromSource).inbound.remain,20);assert.equal(rows.find(r=>r.fromSource).inbound.state,'PARTIAL');
+m=model({...base,pos:[{id:'a',date:'2026-10-01',status:'done'}],purchases:[{id:'p1',po_id:'a',product_id:'p',date:'2026-10-02',amount:1000}],freights:[{purchase_order_id:'a',basis:'ACTUAL',status:'ACTIVE',gross_amount:220},{purchase_order_id:'a',basis:'ACTUAL',status:'SUPERSEDED',gross_amount:999}]});assert.equal(m.due.freightConfirmed,220);
+assert.match(src,/freights, wingInbounds, settings\]\.find/);
+console.log('PASS: historical purchases, Korean month boundary, partial inbound, actual freight field, void freight, query failure propagation');
