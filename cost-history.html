@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>상품 원가 이력 등록</title>
+<style>body{font-family:system-ui;background:#f5f6fa;color:#202638;margin:32px auto;padding:20px;max-width:760px}label{display:block;margin:16px 0}input,textarea,select,button{font:inherit;padding:10px;box-sizing:border-box}input,textarea,select{display:block;width:100%}button{cursor:pointer}pre{white-space:pre-wrap;background:white;padding:16px;border-radius:12px}a{color:#4553ce}</style>
+</head><body><a href="./#/profit">← 공헌이익</a><h1>상품 원가 이력 등록</h1>
+<p>ERP에 로그인한 승인 권한자만 확정할 수 있습니다. 기존 원가 이력은 덮어쓰지 않습니다.</p>
+<form id="form">
+<label>상품 코드<input id="code" required autocomplete="off"></label>
+<button type="button" id="lookup">상품과 기존 이력 확인</button>
+<pre id="product">상품 코드를 입력하세요.</pre>
+<label>상품 1개(판매 구성 1개)의 원가<input id="value" type="number" min="0" step="0.000001" required></label>
+<label>부가세 기준<select id="vat"><option value="EXCLUDED">VAT 제외</option><option value="INCLUDED">VAT 포함</option></select></label>
+<label>적용 시작일<input id="date" type="date" required></label>
+<label>확정 근거<textarea id="reason" minlength="5" required></textarea></label>
+<button id="save" disabled>원가 이력 등록·확정</button></form>
+<pre id="status" role="status">로그인 확인 중…</pre>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="js/cost_history.js"></script></body></html>
