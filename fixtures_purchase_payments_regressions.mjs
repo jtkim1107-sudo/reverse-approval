@@ -17,5 +17,5 @@ assert.equal(paidQty.due.total,6600);assert.equal(paidQty.sourceGaps[0].received
 const invalid=model({...common,items:[{...common.items[0],memo:'PAYMENT_CONFIRMED_QTY=600'}]});assert.equal(invalid.due.total,4400);
 console.log('PASS: user-confirmed payable quantity preserves physical receipt and rejects over-order marker');
 const direct=model({...base,purchases:[{id:'direct1',date:'2026-10-01',product_id:'p',amount:1000,qty:10}],plans:[{date:'2026-11-20',kind:'출금',amount:1100,memo:'AUTO_PURCHASE_TERMS=2026-10:direct1'}]});
-assert.equal(direct.reconcile.ok,true);assert.equal(direct.groups[0].plan.amount,1100);assert.equal(ctx.PurchasePayments.cashAdjustments(direct).filter(p=>p.amount!==0).length,0);
+assert.equal(direct.reconcile.ok,true);assert.equal(direct.rows[0].plan.amount,1100);assert.equal(ctx.PurchasePayments.cashAdjustments(direct).filter(p=>p.amount!==0).length,0);
 console.log('PASS: direct purchase uses the same identifier as server scheduled payment');
