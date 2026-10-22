@@ -5914,9 +5914,12 @@ async function cmSettlementState(month, sales, ads, fixed, { withRecovery = fals
     if (sw !== "ON") return { mode: "ERROR", error: "화면 스위치 설정을 읽지 못했어요" };
     const cur = await CmSettlement.loadCurrent(sb, month);
     if (cur && cur.error) return { mode: "ERROR", error: cur.error };
-    if (!cur || !cur.MAIN) return { mode: "EMPTY" };
     // 2026-09-16 최신 자료 기여액(월 공통비 차감 전) - 확정 공헌이익과 *다른 숫자*라 따로 싣고, 확정값을 덮지 않아요.
+    // 2026-10-22 [대표 지시] 그 달 '정산자료 기준' 확정 결과가 아직 없어도 최신 잠정 스냅샷은 조회해요.
+    //   예전엔 여기서 바로 EMPTY 로 돌려보내 잠정 공헌이익이 있어도 화면이 '결과 없음'만 보여 줬습니다.
+    //   확정으로 둔갑시키지 않고(잠정·자료일 표시 그대로) 없는 값을 0원으로 채우지도 않아요.
     const contribution = CmSettlement.loadContribution ? await CmSettlement.loadContribution(sb) : null;
+    if (!cur || !cur.MAIN) return { mode: "EMPTY", cur, contribution };
     return { mode: "PRIMARY", cur, contribution, recovery: withRecovery ? await cmRecoveryState(month, cur) : null };
   } catch (e) {
     return { mode: "ERROR", error: String(e && e.message || e) };
@@ -6204,11 +6207,13 @@ async function viewProfit() {
     ? CmSettlement.primaryHtml(curView, { month: erpMonth, recovery: cms.recovery, controls })
     : CmSettlement.noticeHtml(cms.mode, { month: erpMonth, error: cms.error, controls });
   // 2026-09-16 최신 자료 기여액(월 공통비 차감 전) - 확정 공헌이익 카드 아래 별도 카드. 이름·표를 섞지 않아요.
-  const contribHtml = cms.mode === "PRIMARY" && CmSettlement.contributionHtml
-    ? CmSettlement.contributionHtml(cms.contribution, { confirmed: cms.cur.MAIN }) : "";
-  const newestFirst = cms.mode === "PRIMARY" && cms.contribution && cms.contribution.detail
+  // 2026-10-22 확정 결과가 없는 달에도 최신 잠정 카드를 보여 줘요(확정값이 없으면 '없음'으로 두고 0원으로 만들지 않아요).
+  const confirmedMain = (cms.cur && cms.cur.MAIN) || null;
+  const contribHtml = cms.mode !== "OFF" && cms.mode !== "ERROR" && cms.contribution && CmSettlement.contributionHtml
+    ? CmSettlement.contributionHtml(cms.contribution, { confirmed: confirmedMain }) : "";
+  const newestFirst = cms.contribution && cms.contribution.detail
     && cms.contribution.detail.provisional_cm && cms.contribution.detail.provisional_cm.is_confirmed === false
-    && String(cms.contribution.detail.period_end) > String(cms.cur.MAIN.period_end);
+    && (!confirmedMain || String(cms.contribution.detail.period_end) > String(confirmedMain.period_end));
   // 2026-09-30 공헌이익 화면 단순 보기(사용자 승인 목업): 이 달 최신 잠정 공헌이익이 있으면 4칸 + 한 줄 흐름 + 확인할 일만 먼저,
   // 계산표·광고비·반품·운송비·출처는 '상세보기', 저장된 스냅샷은 '이전 계산 보기'로 접어요. 숫자·계산은 그대로(표현만).
   // 검산이 맞지 않거나 다른 달이면 아래 기존 화면 그대로.
@@ -6222,7 +6227,8 @@ async function viewProfit() {
 function profitSimpleHtml(cms, { adInfo, mainHtml, tail }) {
   const c = cms.contribution;
   const d = c && !c.error && c.detail;
-  if (cms.mode !== "PRIMARY" || !globalThis.CmSimple || !d || d.month !== erpMonth) return "";
+  // 2026-10-22 확정 결과가 없는 달(EMPTY)에도 최신 잠정 계산이 있으면 단순 보기를 그려요 - 제목·배지는 '잠정' 그대로.
+  if (!["PRIMARY", "EMPTY"].includes(cms.mode) || !globalThis.CmSimple || !d || d.month !== erpMonth) return "";
   const m = CmSimple.model(d);
   if (!m.ok) { console.warn("공헌이익 단순 보기 생략:", m.why); return ""; }
   const updated = CmSettlement.kstTime(c.lastSuccessAt);

@@ -128,6 +128,17 @@ check("설정 메뉴에 기존 함수 그대로(openAdModal · openFixedModal ·
       ["openAdModal()", "openFixedModal()", "monthPicker()", "AdCosts.refreshButtonHtml"].every(w => app.slice(app.indexOf("function profitSimpleHtml")).includes(w)), true);
 check("스크립트·스타일 등록", [idx.includes("js/cm_simple.js"), idx.indexOf("js/cm_simple.js") < idx.indexOf("js/app.js"), css.includes(".cms-flow")], [true, true, true]);
 check("새 탭·메뉴 없음", /data-route="cm/.test(idx), false);
+// 2026-10-22 [대표 지시] 그 달 '정산자료 기준' 확정 결과가 없어도(EMPTY) 최신 잠정 스냅샷은 조회·표시해요.
+//   예전엔 cmSettlementState 가 EMPTY 에서 바로 돌아가 잠정 공헌이익이 있어도 화면이 '결과 없음'만 보여 줬습니다.
+const stateFn = app.slice(app.indexOf("async function cmSettlementState"), app.indexOf("async function cmRecoveryState"));
+check("EMPTY 에서도 잠정 스냅샷을 먼저 조회", [/const contribution = [\s\S]*?loadContribution[\s\S]*?\n\s*if \(!cur \|\| !cur\.MAIN\) return \{ mode: "EMPTY", cur, contribution \}/.test(stateFn),
+                                        /return \{ mode: "EMPTY" \};/.test(stateFn)], [true, false]);
+const simpleFn = app.slice(app.indexOf("function profitSimpleHtml"), app.indexOf("let profitAdsCache"));
+check("단순 보기는 PRIMARY·EMPTY 에서만(OFF·ERROR 제외)", /\["PRIMARY", "EMPTY"\]\.includes\(cms\.mode\)/.test(simpleFn), true);
+const viewFn = app.slice(app.indexOf("const curView = "), app.indexOf("function profitSimpleHtml"));
+check("확정값이 없으면 null 로 넘기고 0원으로 만들지 않음", [/confirmedMain = \(cms\.cur && cms\.cur\.MAIN\) \|\| null/.test(viewFn),
+                                                    /confirmed: confirmedMain/.test(viewFn), /cms\.cur\.MAIN\.period_end/.test(viewFn)], [true, true, false]);
+check("확정 카드는 그대로 '결과 없음' 안내를 유지(둔갑 금지)", /cms\.mode === "PRIMARY"\s*\n?\s*\? CmSettlement\.primaryHtml/.test(app), true);
 
 console.log("[2026-10-01] 세이버 VAT 포함 확정 → 확인할 일·건수 제외 / 이전 중간 스냅샷 제목");
 {
