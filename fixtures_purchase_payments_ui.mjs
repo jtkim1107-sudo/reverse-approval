@@ -220,8 +220,10 @@ check("지난 오류는 접어서 배지로만", text(PP.cardHtml(pastRow)).incl
 console.log("\n[8-5] 자금일보 연결 - 예상 출금·대조표(같은 계산, 이중 합산 없음)");
 const linked = PP.model({ ...base, pos: [PO, PO17], items: [...ITEMS, ...IT17] });
 check("예상 출금 목록을 자금일보에 그대로 넘김",
-      linked.estimatedPlans.map(x => [x.date, x.kind, x.amount, x.estimate, !!x.poNo]),
-      [["2026-11-20", "출금", EST17, true, true]]);
+      linked.estimatedPlans.map(x => [x.date, x.occDate, x.kind, x.amount, x.estimate, !!x.poNo]),
+      [["2026-11-20", "2026-11-20", "출금", EST17, true, true]]);
+check("자금일보 흐름표가 쓰는 occDate 가 있어야 날짜 칸이 비지 않아요",
+      linked.estimatedPlans.every(x => !!x.occDate), true);
 check("cash_plans 에 이미 있는 확정분은 예상으로 다시 넣지 않음",
       linked.estimatedPlans.filter(x => x.poNo === PO.po_no).length, 0);
 check("[핵심] 매입을 넣으면 예상이 사라져 이중 합산이 안 됨(멱등 전환)", (() => {

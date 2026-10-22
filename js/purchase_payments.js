@@ -292,7 +292,7 @@
     //   같은 발주가 매입 입력되면 그 금액만큼 예상이 줄고 확정(cash_plans)으로 옮겨 가 이중 합산이 되지 않습니다.
     const planKeys = new Set(auto.map(p => (String(p.memo || "").match(/AUTO_PURCHASE_TERMS=([^\s|]+)/) || [])[1]).filter(Boolean));
     const estimatedPlans = rows.filter(r => r.basis === "ORDER" && !r.hold && r.goods > 0 && !planKeys.has(r.key))
-      .map(r => ({ date: r.payDate, kind: "출금", amount: r.goods, estimate: true, key: r.key,
+      .map(r => ({ date: r.payDate, occDate: r.payDate, kind: "출금", amount: r.goods, estimate: true, key: r.key,
                    poNo: r.po && r.po.po_no, supplier: r.supplier,
                    title: `${r.supplier} ${r.month} 발주 예상 매입대금 (${(r.po && r.po.po_no) || ""})`,
                    note: "매입 입력 전이라 예상이에요 - 매입을 넣으면 확정 예정출금으로 바뀌어요" }));
