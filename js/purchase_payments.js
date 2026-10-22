@@ -298,7 +298,7 @@
       const po = pos.find(x => x.po_no === g.po) || null;
       rows.push({ key: `src:${g.inbound}:${g.product}`, month: g.date.slice(0, 7), poId: po ? po.id : `src:${g.inbound}`,
         basis: "ORDER", fromSource: true, purchases: [], firstDate: g.date, supplier: (po && po.supplier) || "",
-        goods: g.amount, qty: g.received, hold: false, po, items: [], route: "쿠팡 직접입고 → ERP 미등록",
+        goods: g.amount, qty: g.received, hold: false, po, items: [{ _name: g.name, qty: g.received, unit_cost: g.unit, amount: g.received * g.unit }], route: "쿠팡 직접입고 → ERP 미등록",
         inbound: { ordered: g.requested, got: g.received, remain: Math.max(g.requested - g.received, 0), state: g.received < g.requested ? "PARTIAL" : "DONE", plans: 0, observed: g.received,
                    errors: 0, errorReason: "", errorKind: "", checks: 0, checkReason: "", pastErrors: 0,
                    pastReasons: [], pastEvidence: [g.evidence] },
