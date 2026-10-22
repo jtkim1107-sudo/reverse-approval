@@ -265,6 +265,8 @@
       //   (상품·수량이 같다는 이유만으로 다른 발주에 붙이지 않아요. 상품 마스터 원가도 쓰지 않습니다.)
       const poItem = po ? (items || []).find(i => i.po_id === po.id && i.product_id === w.product_id && num(i.unit_cost) > 0) : null;
       const provable = !!(poItem && got > 0);
+      const confirmedQty = Number((String(poItem?.memo || "").match(/PAYMENT_CONFIRMED_QTY=(\d+)/) || [])[1] || 0);
+      const payableQty = provable && confirmedQty > 0 && confirmedQty <= num(poItem.qty) ? Math.max(got, confirmedQty) : got;
       const qtyMismatch = provable && num(poItem.qty) !== num(w.requested_qty);
       // 단가 '근거' 만 모아요 - 상품 마스터 원가(판매 원가)를 매입 단가로 대입하지 않습니다.
       const unitFromOrders = [...new Set((items || []).filter(i => i.product_id === w.product_id && num(i.unit_cost) > 0)
@@ -273,13 +275,13 @@
         .map(x => num(x.unit_cost)))];
       sourceGaps.push({ date: when, product: (prodById[w.product_id] || {}).code || w.vendor_item_id,
                         name: (prodById[w.product_id] || {}).name || "",
-                        requested: num(w.requested_qty), received: got, status: st, kind,
+                        requested: num(w.requested_qty), received: got, payableQty, status: st, kind,
                         request: req, inbound: inb, po: po ? po.po_no : null,
                         payMonth: got > 0 ? nextTwentieth(when) : null,
                         unitEvidence: [...new Set(unitFromOrders.concat(unitFromPurchases))],
                         included: provable, provable, qtyMismatch,
                         unit: poItem ? num(poItem.unit_cost) : null,
-                        amount: provable ? payableOf(got * num(poItem.unit_cost), prodById[w.product_id], vat) : null,
+                        amount: provable ? payableOf(payableQty * num(poItem.unit_cost), prodById[w.product_id], vat) : null,
                         evidence: provable
                           ? `발주서 ${po.po_no} 품목 단가 ${fmt(poItem.unit_cost)}원 · 이 입고번호로 연결된 발주서${qtyMismatch ? ` · 발주 ${fmt(poItem.qty)} ≠ 신청 ${fmt(w.requested_qty)}(수량 확인 필요)` : ""}`
                           : "단가·귀속 근거가 확정되지 않았어요",
@@ -298,13 +300,13 @@
       const po = pos.find(x => x.po_no === g.po) || null;
       rows.push({ key: `src:${g.inbound}:${g.product}`, month: g.date.slice(0, 7), poId: po ? po.id : `src:${g.inbound}`,
         basis: "ORDER", fromSource: true, purchases: [], firstDate: g.date, supplier: (po && po.supplier) || "",
-        goods: g.amount, qty: g.received, hold: false, po, items: [{ _name: g.name, qty: g.received, unit_cost: g.unit, amount: g.received * g.unit }], route: "쿠팡 직접입고 → ERP 미등록",
+        goods: g.amount, qty: g.payableQty, hold: false, po, items: [{ _name: g.name, qty: g.payableQty, unit_cost: g.unit, amount: g.payableQty * g.unit }], route: "쿠팡 직접입고 → ERP 미등록",
         inbound: { ordered: g.requested, got: g.received, remain: Math.max(g.requested - g.received, 0), state: g.received < g.requested ? "PARTIAL" : "DONE", plans: 0, observed: g.received,
                    errors: 0, errorReason: "", errorKind: "", checks: 0, checkReason: "", pastErrors: 0,
                    pastReasons: [], pastEvidence: [g.evidence] },
         freight: { records: 0, confirmed: false, owns: true, amount: 0, estimate: 0 },
         plan: null, payDate: g.payMonth, base: g.amount, purchaseIds: [], matchKeys: [g.inbound, g.request].filter(Boolean),
-        orderMonth: g.date.slice(0, 7), basisNote: `원천 입고 ${g.date} · 매입 원장 미등록`,
+        orderMonth: g.date.slice(0, 7), basisNote: `신청 ${g.date} · 지급대상 ${fmt(g.payableQty)}개 / 입고 ${fmt(g.received)}개 · 매입 원장 미등록`,
         linkNotes: g.qtyMismatch ? ["수량 확인"] : [], evidenceNote: g.evidence,
         outstandingBasis: "상품대금 기준(운반비 미확정)" });
     });

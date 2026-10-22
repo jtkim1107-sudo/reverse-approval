@@ -12,3 +12,7 @@ const rows=m.rows||m.groups;assert.equal(rows.find(r=>r.fromSource).inbound.rema
 m=model({...base,pos:[{id:'a',date:'2026-10-01',status:'done'}],purchases:[{id:'p1',po_id:'a',product_id:'p',date:'2026-10-02',amount:1000}],freights:[{purchase_order_id:'a',basis:'ACTUAL',status:'ACTIVE',gross_amount:220},{purchase_order_id:'a',basis:'ACTUAL',status:'SUPERSEDED',gross_amount:999}]});assert.equal(m.due.freightConfirmed,220);
 assert.match(src,/freights, wingInbounds, settings\]\.find/);
 console.log('PASS: historical purchases, Korean month boundary, partial inbound, actual freight field, void freight, query failure propagation');
+const paidQty=model({...common,items:[{...common.items[0],memo:'PAYMENT_CONFIRMED_QTY=60 | 사용자 확인'}]});
+assert.equal(paidQty.due.total,6600);assert.equal(paidQty.sourceGaps[0].received,40);assert.equal(paidQty.sourceGaps[0].payableQty,60);
+const invalid=model({...common,items:[{...common.items[0],memo:'PAYMENT_CONFIRMED_QTY=600'}]});assert.equal(invalid.due.total,4400);
+console.log('PASS: user-confirmed payable quantity preserves physical receipt and rejects over-order marker');
