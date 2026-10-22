@@ -117,8 +117,10 @@ check("취소·반려 발주는 잠정 줄을 만들지 않음(기존 정책 보
       [PP.model({ pos: [{ ...PO, status: "canceled" }], items: ITEMS, vat: VAT, today: TODAY }).rows.length,
        PP.model({ pos: [{ ...PO, status: "rejected" }], items: ITEMS, vat: VAT, today: TODAY }).rows.length], [0, 0]);
 const html = PP.cardHtml(m);
-check("한 줄에 발주·입고·지급 상태가 따로 보임",
-      ["입고 완료", "지급 예정"].map(w => text(html).includes(w)), [true, true]);
+check("한 줄에 발주·입고·지급 상태가 '글자로 구분' 되어 보임",
+      ["발주 입고 완료", "입고 입고 완료", "지급 예정"].map(w => text(html).includes(w)), [true, true, true]);
+check("매입 입력 전 줄은 예정일에 (예상) 을 붙임",
+      text(PP.cardHtml(PP.model({ ...base, purchases: [], plans: [] }))).includes("(예상)"), true);
 check("다음 할 일 문장", PP.nextTodo(m.rows[0]).length > 0, true);
 check("결재 대기면 결재부터", PP.nextTodo({ ...m.rows[0], po: { status: "progress" } }), "결재 올린 발주서를 승인·반려 처리");
 

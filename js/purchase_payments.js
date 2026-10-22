@@ -174,15 +174,15 @@
 
   function stateCell(r) {
     const po = r.po;
-    const orderBadge = po ? badge(PO_KIND[po.status] || "pending", PO_LABEL[po.status] || po.status)
+    const orderBadge = po ? badge(PO_KIND[po.status] || "pending", `발주 ${PO_LABEL[po.status] || po.status}`, "발주서 결재·진행 상태")
       : badge("muted", "발주서 없음", "매입 원장만 있는 건이에요");
     const [ik, it] = INBOUND_TEXT[r.inbound.state] || INBOUND_TEXT.UNKNOWN;
-    const inBadge = po ? badge(ik, it, `발주 ${fmt(r.inbound.ordered)} · 입고 ${fmt(r.inbound.got)}`) : "";
+    const inBadge = po ? badge(ik, `입고 ${it}`, `발주 ${fmt(r.inbound.ordered)} · 입고 ${fmt(r.inbound.got)}`) : "";
     const errBadge = r.inbound.errors ? badge("error", "입고 오류", r.inbound.errorReason) : "";
     const payBadge = { SCHEDULED: ["info", "지급 예정"], OVERDUE: ["pending", "지급 확인 필요"],
                        PARTIAL: ["pending", "일부 지급"], PAID: ["ok", "지급 완료"],
-                       NOT_PURCHASED: ["muted", "매입 입력 전"] }[r.payState];
-    return `<div class="pp-states">${orderBadge}${inBadge}${errBadge}${badge(payBadge[0], payBadge[1])}</div>`;
+                       NOT_PURCHASED: ["muted", "지급 매입 입력 전"] }[r.payState];
+    return `<div class="pp-states">${orderBadge}${inBadge}${errBadge}${badge(payBadge[0], payBadge[1], "통장 매칭이 확인된 지급만 차감해요")}</div>`;
   }
 
   function nextTodo(r) {
@@ -221,13 +221,16 @@
           <span class="pp-sub">${esc(title)} · ${esc(first)}${esc(more)} · ${fmt(r.qty)}개</span>
         </div>
         <div class="pp-amt"><b>${won(r.goods)}</b><span class="pp-sub">상품대금(VAT 포함)</span></div>
-        <div class="pp-pay"><b>${esc(r.payDate)}</b><span class="pp-sub">미지급 ${won(r.outstanding)}</span></div>
+        <div class="pp-pay"><b>${esc(r.payDate)}${r.basis === "ORDER" ? " <small>(예상)</small>" : ""}</b>
+          <span class="pp-sub">미지급 ${won(r.outstanding)}</span></div>
         ${stateCell(r)}
       </summary>
       <div class="pp-detail">
         <div class="pp-facts">
           <div><span>기준</span><b>${r.basis === "PURCHASE" ? "매입 원장" : "발주서(매입 입력 전 잠정)"}${r.basisNote ? ` · ${esc(r.basisNote)}` : ""}</b></div>
-          <div><span>지급 예정일</span><b>${esc(r.payDate)} <small>매입월 ${esc(r.month)} 다음 달 20일</small></b></div>
+          <div><span>지급 예정일</span><b>${esc(r.payDate)} <small>${r.basis === "ORDER"
+            ? `발주월 ${esc(r.month)} 기준 예상 - 매입 입력하면 매입월 기준으로 확정돼요`
+            : `매입월 ${esc(r.month)} 다음 달 20일`}</small></b></div>
           <div><span>상품대금</span><b>${won(r.goods)} <small>VAT 포함</small></b></div>
           <div><span>운반비</span><b>${r.freight.confirmed ? `${won(r.freight.amount)} <small>실제 청구 · 한 번만 반영</small>`
             : r.freight.records ? `<span class="pp-warn">미확정</span> <small>예상 ${won(r.freight.estimate)} · 잔액에 넣지 않았어요</small>`
