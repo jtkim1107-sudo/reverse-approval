@@ -27,6 +27,19 @@
   const signed = n => (Number(n) > 0 ? "+" : Number(n) < 0 ? "−" : "") + fmt(Math.abs(Number(n || 0)));
   // 쿠팡 수익 현황과 같은 비용 이름(서버 결과의 입고비 = 쿠팡 입출고비, 풀필먼트비 = 쿠팡 배송비 - 금액은 같고 이름만)
   const costName = t => String(t ?? "").replace(/풀필먼트비/g, "배송비").replace(/입고비/g, "입출고비");
+  /** 2026-10-22 [대표 승인] 요약에 보여 줄 '물류·공통비 합계' - 월 공통비와 판매분 입고 운반비의 *원액*을 더해 반올림.
+   *  표시만 합치는 것이고 계산·차감은 그대로예요(공헌이익은 기여액에서 둘을 각각 한 번씩만 뺍니다 - 이중 차감 아님).
+   *  운반비를 못 구한 결과(잠정값 없음)는 합계를 만들지 않고 null - 월 공통비만으로 '합계'라고 적지 않아요.
+   *  세부 내역(월 공통비 항목 · 판매분 입고 운반비)은 상세·펼침 영역에만 둡니다. */
+  const freightExact = p => (p && p.inbound_freight_exact != null ? p.inbound_freight_exact
+    : p && p.inbound_freight != null ? p.inbound_freight : null);
+  const logisticsTotal = (p, m) => {
+    const mt = p && p.monthly_cost_exact != null ? p.monthly_cost_exact
+      : p && p.monthly_cost != null ? p.monthly_cost : (m && m.available ? m.total : null);
+    const fr = freightExact(p);
+    return mt == null || fr == null ? null : Math.round(Number(mt) + Number(fr));
+  };
+  const LOGISTICS_PARTS = "입출고비 · 배송비 · 보관비 · 세이버/구독 · 판매분 입고 운반비";
   /** 저장 시각(UTC 등 시간대 포함 ISO) → Asia/Seoul 'YYYY-MM-DD HH:mm KST'. 시간대 표시가 없으면 UTC 로 봐요. */
   function kstTime(iso) {
     const s = String(iso || "");
@@ -493,7 +506,7 @@
       <tbody>
         ${rev.map(row).join("")}
         ${rest.map(row).join("")}
-        <tr class="cmv2-total"><th scope="row">= 월 공통비 차감 전 기여액 <small>공헌이익 아님</small></th>
+        <tr class="cmv2-total"><th scope="row">= 물류·공통비 차감 전 기여액 <small>공헌이익 아님</small></th>
           <td class="num"><b class="${Number(d.subtotal_before_monthly) < 0 ? "cmv2-neg" : ""}">${won(d.subtotal_before_monthly)}</b></td>
           <td></td><td class="cmv2-st"><span class="cmv2-prov">잠정</span></td></tr>
         <tr><th scope="row">− 월 공통비 <small>입출고비 · 배송비 · 보관비 · 세이버/구독</small></th>
@@ -531,7 +544,7 @@
     const midSnap = snapEnd && !snapOk && String(d.period_end || "") > String(snapEnd).slice(0, 10) ? md(snapEnd) : "";
     return `
     <section class="card cmv2 cmv2-contrib" id="cmv2-contrib" aria-labelledby="cmc-h" data-period-end="${esc(d.period_end)}">
-      <div class="card-head"><h2 id="cmc-h">최신 자료 공헌이익 <span class="cmv2-tag">${p ? "잠정 · 확정 전" : "월 공통비 차감 전"}</span></h2></div>
+      <div class="card-head"><h2 id="cmc-h">최신 자료 공헌이익 <span class="cmv2-tag">${p ? "잠정 · 확정 전" : "물류·공통비 차감 전"}</span></h2></div>
       <p class="cmv2-meta">기간 <b>${esc(d.period_start)} ~ ${esc(d.period_end)}</b> · 최신 자료 기준일 <b>${esc(d.latest_data_date)}</b>
         · 갱신 ${esc(kstTime(c.lastSuccessAt))}${d.run_id ? ` · 실행 ${esc(String(d.run_id).slice(0, 8))}` : ""}</p>
       ${stale ? `<p class="cmv2-fail" role="alert">${chip("COST_UNREGISTERED", { text: "갱신 실패" })} ${esc(stale)}</p>` : ""}
@@ -540,22 +553,24 @@
         <div class="stat cmv2-stat-main"><div class="stat-label">최신 잠정 공헌이익 <span class="cmv2-prov">확정 아님</span></div>
           <div class="stat-value${Number(p.amount) < 0 ? " red" : ""}">${won(p.amount)}</div>
           <div class="cmv2-stat-sub">${esc(p.period_start)}~${esc(p.period_end)} · 월 확정(승인) 전이에요</div></div>` : ""}
-        <div class="stat${p ? "" : " cmv2-stat-main"}"><div class="stat-label">월 공통비 차감 전 기여액 <span class="cmv2-prov">잠정</span></div>
+        <div class="stat${p ? "" : " cmv2-stat-main"}"><div class="stat-label">물류·공통비 차감 전 기여액 <span class="cmv2-prov">잠정</span></div>
           <div class="stat-value${Number(d.subtotal_before_monthly) < 0 ? " red" : ""}">${won(d.subtotal_before_monthly)}</div>
           <div class="cmv2-stat-sub">${esc(d.period_start)}~${esc(d.period_end)} · 공헌이익이 아니에요</div></div>
         <div class="stat"><div class="stat-label">${confirmed && confirmed.confirmed ? "월 확정 공헌이익" : midSnap ? `이전 중간 스냅샷(${esc(midSnap)})` : "저장된 월 공헌이익"} <small>${confirmed && confirmed.confirmed ? "확정" : midSnap ? "현재값 아님" : "잠정 스냅샷"}</small></div>
           <div class="stat-value">${confirmed ? won(confirmed.cm) : d.confirmed_cm ? won(d.confirmed_cm.cm) : `<span class="cmv2-none">없음</span>`}</div>
           <div class="cmv2-stat-sub">${confPeriod ? esc(confPeriod) : d.confirmed_cm ? `~${esc(String(d.confirmed_cm.period_end).slice(5))}` : "—"} 기준 · 이 카드가 덮어쓰지 않아요</div></div>
-        <div class="stat"><div class="stat-label">월 공통비</div>
-          <div class="stat-value${m.available ? "" : " amber"}">${m.available ? won(m.total) : "자료 없음"}</div>
-          <div class="cmv2-stat-sub">${esc(m.range || "")}${m.available ? "" : ` · ${esc(MISSING_TEXT[m.status] || m.status || "")}`}</div></div>
+        <div class="stat"><div class="stat-label">물류·공통비 합계</div>
+          <div class="stat-value${logisticsTotal(p, m) == null ? " amber" : ""}">${logisticsTotal(p, m) == null ? "자료 없음" : won(logisticsTotal(p, m))}</div>
+          <div class="cmv2-stat-sub">${esc(m.range || "")}${logisticsTotal(p, m) == null
+            ? ` · ${esc(MISSING_TEXT[m.status] || m.status || (m.available ? "판매분 입고 운반비 확인 필요" : ""))}`
+            : ` · ${LOGISTICS_PARTS}`}</div></div>
       </div>
       ${p ? `
-      <p class="cmv2-note"><b>위 금액은 아직 확정이 아닙니다.</b> ${esc(p.period_start)}~${esc(p.period_end)} 자료로 월 공통비(${won(p.monthly_cost)})와 판매분 입고 운반비(${won(p.inbound_freight || 0)})를 뺀
+      <p class="cmv2-note"><b>위 금액은 아직 확정이 아닙니다.</b> ${esc(p.period_start)}~${esc(p.period_end)} 자료로 물류·공통비 합계(${won(logisticsTotal(p, m))})를 뺀
         <b>잠정</b> 공헌이익이에요. 월 마감 승인(월 확정)을 거치지 않았고, 저장된 공헌이익 스냅샷을 덮지도 않아요.
         ${p.settlement_closed ? "" : `아직 정산이 끝나지 않은 날(${(p.open_cycle_days || []).map(esc).join(", ")})이 있어 수수료가 더 바뀔 수 있어요.`}</p>
       <p class="cmv2-note">확정으로 쓰려면 남은 확인이 필요해요: ${(p.confirm_blocked_reasons || []).map(esc).join(" · ") || "-"}</p>` : `
-      <p class="cmv2-note"><b>이 금액은 공헌이익이 아닙니다.</b> 월 공통비(입출고비·배송비·보관비·세이버/구독)를 아직 빼지 않은 금액이에요.
+      <p class="cmv2-note"><b>이 금액은 공헌이익이 아닙니다.</b> 물류·공통비(${LOGISTICS_PARTS})를 아직 빼지 않은 금액이에요.
         빠진 자료를 0원으로 만들거나 하루 평균으로 나눠 채우지 않아요 - 월 공통비 조회가 들어오면 그때 확정 공헌이익이 ${esc(d.period_end)} 까지 늘어납니다.</p>`}
       ${whyHtml(d.reasons)}
       <details class="cmv2-det"><summary>계산 내역 (${fmt((d.rows || {}).orders)}건 주문 · ${fmt((d.rows || {}).cancels)}건 취소)</summary>
@@ -609,18 +624,18 @@
     const monthlyItems = m.available && Array.isArray(m.items) ? m.items : [];
     return `<div class="cmv2-dcontrib">
       <div class="cmv2-dmain-top">
-        <span class="cmv2-dmain-label">${p ? "최신 잠정 공헌이익" : "월 공통비 차감 전 기여액"}
+        <span class="cmv2-dmain-label">${p ? "최신 잠정 공헌이익" : "물류·공통비 차감 전 기여액"}
           <small>최신 자료 ${esc(d.latest_data_date)} 까지 · ${p ? "확정 아님" : "공헌이익 아님"}</small></span>
         <b class="cmv2-dmain-amt${Number(p ? p.amount : d.subtotal_before_monthly) < 0 ? " cmv2-neg" : ""}">${won(p ? p.amount : d.subtotal_before_monthly)}</b>
         <span class="cmv2-prov">${p ? "확정 전" : "잠정"}</span>
       </div>
       <div class="cmv2-dcosts">
-        <details class="cmv2-dcost-detail"><summary><span>월 공통비 (내역)</span><b>${p ? won(p.monthly_cost) : m.available ? won(m.total) : "자료 없음"}</b></summary>
-          ${monthlyItems.length ? `<div class="cmv2-dcost-parts">${monthlyItems.map(it => `<div><span>${esc(costName(it.label))}</span><b>${won(it.amount)}</b></div>`).join("")}</div>`
+        <details class="cmv2-dcost-detail"><summary><span>물류·공통비 합계 (내역)</span><b>${logisticsTotal(p, m) == null ? "자료 없음" : won(logisticsTotal(p, m))}</b></summary>
+          ${monthlyItems.length || p ? `<div class="cmv2-dcost-parts">${monthlyItems.map(it => `<div><span>${esc(costName(it.label))}</span><b>${won(it.amount)}</b></div>`).join("")}
+            ${p ? `<div><span>판매분 입고 운반비 <small>리파코 → 쿠팡창고</small></span><b>${won(p.inbound_freight || 0)}</b></div>` : ""}</div>`
             : `<p class="cmv2-note">${m.available ? "항목별 금액은 다음 계산 결과부터 표시됩니다." : "월 공통비 자료가 아직 없어요."}</p>`}
         </details>
-        <div><span>판매분 입고 운반비 <small>리파코 → 쿠팡창고</small></span><b>${p ? won(p.inbound_freight || 0) : "확인 필요"}</b></div>
-        <div><span>기여액 <small>월 공통비·입고 운반비 차감 전</small></span><b>${won(p ? p.subtotal_before_monthly : d.subtotal_before_monthly)}</b></div>
+        <div><span>기여액 <small>물류·공통비 차감 전</small></span><b>${won(p ? p.subtotal_before_monthly : d.subtotal_before_monthly)}</b></div>
         ${tossLineHtml(d.toss)}
         <div><span>갱신</span><b>${esc(kstTime(c.lastSuccessAt)) || "확인 필요"}</b></div>
       </div>
@@ -646,7 +661,7 @@
       <small>${esc(p.period_start)}~${esc(p.period_end)} · 확정 전</small></summary>
       <table class="dash-cm dash-provisional-table" aria-label="${title}"><tbody>
         ${d.lines.map(x => row(costName(x.label), x.amount)).join("")}
-        ${row("월 공통비·입고 운반비 차감 전 기여액", d.subtotal_before_monthly, "공헌이익 아님", "dash-cm-total")}
+        ${row("물류·공통비 차감 전 기여액", d.subtotal_before_monthly, "공헌이익 아님", "dash-cm-total")}
         ${row("월 공통비", -Number(p.monthly_cost), "입출고비 · 배송비 · 보관비 · 세이버/구독")}
         ${row("판매분 입고 운반비", -Number(p.inbound_freight), "판매된 수량에 배분")}
         ${row(`${month >= 1 && month <= 12 ? `${month}월` : "이번 달"} 잠정 공헌이익`, p.amount, "확정 전", "dash-cm-total")}

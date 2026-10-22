@@ -67,7 +67,7 @@ check("확정 공헌이익 ₩205,663 그대로 표시", html.includes("₩205,6
 check("기여액 기준일 09-15", html.includes("2026-09-15"), true);
 check("확정 기준 기간 09-01~09-13 표시", html.includes("09-01~09-13"), true);
 check("'공헌이익이 아니다'를 분명히", html.includes("이 금액은 공헌이익이 아닙니다"), true);
-check("주 숫자 이름은 '월 공통비 차감 전 기여액'", html.includes("월 공통비 차감 전 기여액"), true);
+check("주 숫자 이름은 '물류·공통비 차감 전 기여액'", html.includes("물류·공통비 차감 전 기여액"), true);
 check("갱신 시각 표시(KST)", /갱신 2026-09-16 \d{2}:\d{2} KST/.test(html), true);
 check("보관 경로(재현성) 표시", html.includes("cm_contribution_runs/2026-09-15__ddbb6d3a"), true);
 check("계산 버전 표시", html.includes("cm_contribution_v1"), true);
@@ -102,7 +102,7 @@ const dash = CM.dashboardContributionHtml(good);
 check("기여액 한 줄", dash.includes("₩2,722,604"), true);
 check("최신 자료 기준일", dash.includes("최신 자료 2026-09-15 까지"), true);
 check("'공헌이익 아님' 표시", dash.includes("공헌이익 아님"), true);
-check("월 공통비 자료 없음 표시", dash.includes("월 공통비 (내역)</span><b>자료 없음"), true);
+check("물류·공통비 자료 없음 표시", dash.includes("물류·공통비 합계 (내역)</span><b>자료 없음"), true);
 check("결과 없으면 아무것도 안 그림", CM.dashboardContributionHtml(null), "");
 
 console.log("\n[7] 최신 잠정 공헌이익 - 확정과 명확히 구분");
@@ -127,7 +127,7 @@ check("저장 스냅샷을 덮지 않는다고 명시", ph.includes("저장된 �
 check("저장된 확정값 ₩205,663 은 그대로 함께", ph.includes("₩205,663"), true);
 // 2026-10-01 승인 전 저장값이 최신 계산보다 앞선 날까지면 '이전 중간 스냅샷(M/D) · 현재값 아님'
 check("승인 전 저장값을 확정으로 부르지 않음(중간 스냅샷 표시)", /이전 중간 스냅샷\(\d+\/\d+\)/.test(ph) && ph.includes("현재값 아님") && !ph.includes("월 확정 공헌이익"), true);
-check("월 공통비 금액도 보여 줌", ph.includes("₩2,453,157"), true);
+check("물류·공통비 합계를 보여 줌(운반비 0원이면 월 공통비와 같은 값)", ph.includes("₩2,453,157"), true);
 check("미마감 정산일 안내", ph.includes("2026-09-14") && ph.includes("2026-09-15"), true);
 check("확정에 필요한 남은 확인 표시", ph.includes("정산 진행 중"), true);
 check("갱신 시각 표시", /갱신 2026-09-16 \d{2}:\d{2} KST/.test(ph), true);
@@ -145,10 +145,22 @@ const freightHtml = CM.contributionHtml(freightProv, { confirmed: CONFIRMED_MAIN
 check("판매분 입고 운반비를 별도 차감", freightHtml.includes("판매된 수량에 배분") && freightHtml.includes("−₩345,004"), true);
 check("운반비를 뺀 잠정 공헌이익 표시", freightHtml.includes("−₩75,557"), true);
 const dashFreight = CM.dashboardContributionHtml(freightProv);
-check("대시보드 비용·기여액·갱신을 정렬된 네 행으로 표시", [dashFreight.includes("월 공통비 (내역)"), dashFreight.includes("판매분 입고 운반비"), dashFreight.includes("기여액"), dashFreight.includes("갱신")], [true, true, true, true]);
-check("같은 잠정 결과의 월 공통비·운반비·기여액", ["₩2,453,157", "₩345,004", "₩2,722,604"].map(t => dashFreight.includes(t)), [true, true, true]);
+check("대시보드 비용·기여액·갱신을 정렬된 행으로 표시", [dashFreight.includes("물류·공통비 합계 (내역)"), dashFreight.includes("판매분 입고 운반비"), dashFreight.includes("기여액"), dashFreight.includes("갱신")], [true, true, true, true]);
+// 2026-10-22 [대표 승인] 요약은 합계 하나 - 월 공통비 2,453,157 + 운반비 345,004 = 2,798,161
+check("요약은 물류·공통비 합계 한 줄, 기여액은 그대로", ["₩2,798,161", "₩2,722,604"].map(t => dashFreight.includes(t)), [true, true]);
+check("세부 내역(운반비)은 펼침 안에만", [dashFreight.includes("₩345,004"), /class="cmv2-dcost-parts"[\s\S]{0,400}판매분 입고 운반비/.test(dashFreight)], [true, true]);
+check("요약 줄에 운반비를 따로 세우지 않음", /<\/details>[\s\S]{0,200}판매분 입고 운반비/.test(dashFreight), false);
 check("월 공통비를 세부 항목으로 펼침", [dashFreight.includes('class="cmv2-dcost-detail"'), dashFreight.includes("입출고비</span><b>₩1,200,000"), dashFreight.includes("배송비</span><b>₩1,253,157")], [true, true, true]);
-check("운반 구간과 기여액 차감 기준을 명시", [dashFreight.includes("리파코 → 쿠팡창고"), dashFreight.includes("월 공통비·입고 운반비 차감 전")], [true, true]);
+check("운반 구간과 기여액 차감 기준을 명시", [dashFreight.includes("리파코 → 쿠팡창고"), dashFreight.includes("물류·공통비 차감 전")], [true, true]);
+// 원액(소수점)이 있으면 각각 반올림해서 더하지 않고, 더한 뒤 한 번만 반올림해요(합성 수치).
+//   1,000,000.40 + 2,000,000.30 = 3,000,000.70 → ₩3,000,001 (각각 반올림하면 ₩3,000,000 이 되어 1원 어긋남)
+const exactProv = { ...pg, detail: { ...pg.detail,
+  monthly_cost: { ...pg.detail.monthly_cost, total: 1000000.4 },
+  provisional_cm: { ...PROV.provisional_cm, amount: 111111, monthly_cost: 1000000, monthly_cost_exact: 1000000.4,
+                    inbound_freight: 2000000, inbound_freight_exact: 2000000.3 } } };
+check("원액을 더한 뒤 한 번만 반올림", CM.dashboardContributionHtml(exactProv).includes("₩3,000,001"), true);
+check("각각 반올림한 값으로 보여 주지 않음", CM.dashboardContributionHtml(exactProv).includes("₩3,000,000<"), false);
+check("공헌이익 값은 그대로(운반비 이중 차감 없음)", CM.contributionHtml(exactProv, {}).includes("₩111,111"), true);
 const breakdown = CM.dashboardProvisionalBreakdownHtml(freightProv);
 check("잠정 내역에 같은 기간·금액·원천 항목 표시", [breakdown.includes("9월 잠정 공헌이익 내역"), breakdown.includes("2026-09-01~2026-09-15"), breakdown.includes("−₩75,557"), breakdown.includes("로켓그로스 판매"), breakdown.includes("−₩345,004")], [true, true, true, true, true]);
 check("월 공통비·운반비를 각각 한 번 표시", [(breakdown.match(/<th scope="row">월 공통비<small>/g) || []).length, (breakdown.match(/<th scope="row">판매분 입고 운반비<small>/g) || []).length], [1, 1]);
