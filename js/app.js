@@ -12489,6 +12489,11 @@ async function viewCash() {
           <div class="stat-value ${curBal + planIn - planOut - planOutEst < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut - planOutEst)}</div>
           <small style="color:var(--text-sub);font-size:11.5px">확정만 반영하면 ₩${fmt(curBal + planIn - planOut)}</small></div>
       </div>
+      ${payModel && !payModel.error && payModel.carry && payModel.carry.count ? `<p style="margin:10px 0 0;padding:10px 12px;
+        border:1px solid var(--amber);background:var(--amber-bg);border-radius:9px;font-size:12.5px;line-height:1.7">
+        ⚠ <b>이월 미지급 ₩${fmt(payModel.carry.total)}</b> - 지급일이 지났는데 통장에서 확인되지 않은 금액이에요
+        (${payModel.carry.dates.map(x => `${esc(x.date)} ₩${fmt(x.amount)}`).join(" · ")}).
+        날짜가 지나 아래 미래 예측에는 들어가지 않습니다 - 통장에서 지급을 확인하거나 예정을 다시 잡아 주세요.</p>` : ""}
       ${payModel && !payModel.error ? `<p style="color:var(--text-sub);font-size:12.5px;margin:10px 0 0;line-height:1.7">
         발주 화면과 같은 계산이에요(매입월 다음 달 20일 · VAT 포함 · 운반비 별도).
         ${payModel.due.date ? `${esc(payModel.due.date)} 기준 확정 ₩${fmt(payModel.due.confirmed.total)} ·

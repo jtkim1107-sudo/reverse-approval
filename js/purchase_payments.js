@@ -243,6 +243,8 @@
     rows.forEach(r => {
       const got = alloc.byKey.get(r.key) || { amount: 0, txns: [] };
       r.paid = got.txns;
+      r.paidPast = got.txns.filter(t => ymd(t.date) <= today).reduce((a, t) => a + num(t.amount), 0);
+      r.paidFuture = got.txns.filter(t => ymd(t.date) > today).reduce((a, t) => a + num(t.amount), 0);
       r.paidAllocated = got.amount;
       r.paidAmount = Math.min(got.amount, r.base);        // 총액 상한 - 발주 금액보다 더 빼지 않아요
       r.overPaid = Math.max(got.amount - r.base, 0);
@@ -302,19 +304,26 @@
     rows.forEach(r => {
       if (r.hold) return;
       const d = byDate[r.payDate] || (byDate[r.payDate] = { date: r.payDate, confirmed: 0, estimated: 0,
-                                                           freightConfirmed: 0, paid: 0, outstanding: 0, cash: 0 });
+                                                           freightConfirmed: 0, paid: 0, paidFuture: 0,
+                                                           outstanding: 0, cash: 0 });
       d[r.basis === "PURCHASE" ? "confirmed" : "estimated"] += r.goods;
       d.freightConfirmed += r.freight.confirmed ? r.freight.amount : 0;
       d.paid += r.paidAmount;
+      d.paidFuture += Math.min(r.paidFuture, r.paidAmount);
       d.outstanding += r.outstanding;
     });
     auto.forEach(p => {
       const d = byDate[ymd(p.date)] || (byDate[ymd(p.date)] = { date: ymd(p.date), confirmed: 0, estimated: 0,
-                                                                freightConfirmed: 0, paid: 0, outstanding: 0, cash: 0 });
+                                                                freightConfirmed: 0, paid: 0, paidFuture: 0,
+                                                                outstanding: 0, cash: 0 });
       d.cash += num(p.amount);
     });
     const schedule = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
-      .map(d => ({ ...d, match: Math.abs(d.confirmed - d.cash) <= 1 }));
+      .map(d => ({ ...d, match: Math.abs(d.confirmed - d.cash) <= 1, overdue: d.date < today }));
+    // 지급일이 지났는데 통장에서 확인이 안 된 금액 - 미래 예측에는 안 들어가니 '이월 미지급' 으로 따로 보여 줘요.
+    const carryRows = schedule.filter(d => d.overdue && d.outstanding > 0);
+    const carry = { total: carryRows.reduce((a, d) => a + d.outstanding, 0), count: carryRows.length,
+                    dates: carryRows.map(d => ({ date: d.date, amount: d.outstanding, cash: d.cash, confirmed: d.confirmed })) };
 
     // ① 쿠팡 원천에서 출발한 역대조 - 실제 입고됐는데 ERP 매입·발주에 없는 건을 찾아요.
     //    금액은 단가 근거가 없어 잡지 않아요(0원으로 확정하지 않습니다 - 수량·상태만 알려 줘요).
@@ -336,10 +345,19 @@
       const kind = got > 0
         ? (po ? "취소·반려 발주인데 실제 입고됨" : "매입·발주 없이 실제 입고됨")
         : "신청만 있고 아직 입고 없음";
+      // 단가 '근거' 만 모아요 - 상품 마스터 원가(판매 원가)를 매입 단가로 대입하지 않습니다.
+      const unitFromOrders = [...new Set((items || []).filter(i => i.product_id === w.product_id && num(i.unit_cost) > 0)
+        .map(i => num(i.unit_cost)))];
+      const unitFromPurchases = [...new Set(purchases.filter(x => x.product_id === w.product_id && num(x.unit_cost) > 0)
+        .map(x => num(x.unit_cost)))];
       sourceGaps.push({ date: when, product: (prodById[w.product_id] || {}).code || w.vendor_item_id,
+                        name: (prodById[w.product_id] || {}).name || "",
                         requested: num(w.requested_qty), received: got, status: st, kind,
                         request: req, inbound: inb, po: po ? po.po_no : null,
-                        note: "금액은 단가 근거가 없어 잡지 않았어요(0원 확정 아님)" });
+                        payMonth: got > 0 ? nextTwentieth(when) : null,
+                        unitEvidence: [...new Set(unitFromOrders.concat(unitFromPurchases))],
+                        included: false,
+                        note: "금액은 단가 근거가 확정되지 않아 잡지 않았어요(0원 확정 아님)" });
     });
     const sourceSummary = {
       total: sourceGaps.length,
@@ -352,7 +370,7 @@
     const ambiguousIds = new Set(alloc.ambiguous.map(a => a.id));
     const unverified = (txns || []).filter(t => t.kind === "출금" && ymd(t.date) >= "2026-09-01"
       && !matchedIds.has(t.id)).length;
-    return { rows, due, reconcile, schedule, estimatedPlans, sourceGaps, sourceSummary, unverifiedPayouts: unverified, ambiguousPayouts: alloc.ambiguous,
+    return { rows, due, reconcile, schedule, carry, estimatedPlans, sourceGaps, sourceSummary, unverifiedPayouts: unverified, ambiguousPayouts: alloc.ambiguous,
              overPaid: rows.filter(r => r.overPaid > 0).map(r => ({ po: r.po && r.po.po_no, over: r.overPaid })),
              asOf: today };
   }
@@ -480,6 +498,9 @@
           실제 나갈 금액은 매입 입력·운반비 청구·통장 대사로 바뀔 수 있어요. ${esc(m.reconcile.note)}</p>
         ${d.hold.count ? `<p class="pp-note">보류 ${d.hold.count}건은 합계에서 뺐어요: ${d.hold.items.map(h =>
           `${esc(h.po || "")} ${won(h.amount)}(${esc(h.reason)})`).join(" · ")}</p>` : ""}
+        ${m.carry && m.carry.count ? `<p class="pp-note pp-warn">⚠ 지급일이 지났는데 통장 확인이 안 된 <b>이월 미지급 ${won(m.carry.total)}</b>
+          (${m.carry.dates.map(x => `${esc(x.date)} ${won(x.amount)}`).join(" · ")}).
+          자금일보 미래 예측에는 들어가지 않는 금액이에요 - 지급 여부를 통장에서 확인해 주세요.</p>` : ""}
         ${m.ambiguousPayouts.length ? `<p class="pp-note pp-warn">⚠ 어느 발주 지급인지 하나로 정해지지 않아 차감하지 않은 출금 ${m.ambiguousPayouts.length}건:
           ${m.ambiguousPayouts.slice(0, 3).map(a => `${esc(a.date)} ${won(a.amount)}(${esc(a.reason)})`).join(" · ")}</p>` : ""}
         ${m.overPaid.length ? `<p class="pp-note pp-warn">⚠ 발주 금액보다 많은 출금이 걸린 건 ${m.overPaid.length}건 - 초과분은 차감하지 않았어요.</p>` : ""}
@@ -488,16 +509,21 @@
       ${m.sourceSummary && m.sourceSummary.total ? `<div class="pp-recon">
         <p class="pp-note pp-warn">⚠ 쿠팡 원천 대조: 실제 입고·신청인데 ERP 매입·발주에 없는 건 ${fmt(m.sourceSummary.total)}건
           (이미 입고된 것 ${fmt(m.sourceSummary.received)}건 · 수량 ${fmt(m.sourceSummary.receivedQty)}개).
-          단가 근거가 없어 금액은 잡지 않았어요 - <b>0원 확정이 아닙니다.</b></p>
+          단가 근거가 확정되지 않아 금액은 잡지 않았어요 - <b>0원 확정이 아닙니다.</b>
+          그래서 위 지급 예정 합계는 <b>현재 연결분만의 잠정액</b>이에요.</p>
         <details class="pp-row"><summary><div class="pp-main"><b>원천에 있는데 ERP 에 없는 입고</b>
           <span class="pp-sub">쿠팡 직접입고 기록에서 출발해 역으로 맞춰 본 결과예요</span></div></summary>
           <div class="pp-detail"><table class="pp-items"><thead><tr><th>신청일</th><th>상품</th><th class="num">신청</th>
-            <th class="num">입고</th><th>상태</th><th>분류</th></tr></thead><tbody>
-            ${m.sourceGaps.map(g => `<tr><td>${esc(g.date)}</td><td>${esc(g.product || "")}</td>
+            <th class="num">입고</th><th>상태</th><th>분류 · 지급월 후보 · 단가 근거</th></tr></thead><tbody>
+            ${m.sourceGaps.map(g => `<tr><td>${esc(g.date)}</td><td>${esc(g.product || "")}<small class="pp-sub">${esc(String(g.name).slice(0, 18))}</small></td>
               <td class="num">${fmt(g.requested)}</td><td class="num">${fmt(g.received)}</td>
-              <td>${esc(g.status)}</td><td>${esc(g.kind)}${g.po ? ` <small>(${esc(g.po)})</small>` : ""}</td></tr>`).join("")}
+              <td>${esc(g.status)}</td><td>${esc(g.kind)}${g.po ? ` <small>(${esc(g.po)})</small>` : ""}
+                <small class="pp-sub">${g.payMonth ? `지급월 후보 ${esc(g.payMonth)} · ` : ""}단가 근거 ${g.unitEvidence.length
+                  ? g.unitEvidence.map(won).join(" / ") : "없음"} · 금액 미포함</small></td></tr>`).join("")}
           </tbody></table>
-          <p class="pp-note">신청번호·입고번호로 매입 원장·발주를 찾아본 결과입니다. 금액을 넣으려면 공급처 단가가 필요해요.</p></div>
+          <p class="pp-note">신청번호·입고번호로 매입 원장·발주를 찾아본 결과입니다. <b>이 금액은 위 합계에 들어 있지 않아요</b> -
+            지금 합계는 '연결된 것만' 의 잠정액입니다. 단가 근거가 여럿이거나 없으면 추정하지 않았어요.
+            상품 마스터 원가(판매 원가)는 매입 단가로 쓰지 않습니다.</p></div>
         </details></div>` : `<p class="pp-note">✓ 쿠팡 직접입고 원천과 ERP 매입·발주가 모두 연결돼 있어요(누락 0건).</p>`}
       <p class="pp-note">통장 출금에 발주번호·매입 번호가 적혀 있지 않으면 지급으로 차감하지 않아요(지금 확인 안 된 출금 ${fmt(m.unverifiedPayouts)}건).
         실제 송금·발주 전송·입고 신청은 이 화면에서 하지 않습니다.</p>
@@ -514,22 +540,30 @@
     const out = [];
     m.schedule.forEach(d => {
       if ((from && d.date < from) || (to && d.date > to)) return;
-      m.rows.filter(r => r.payDate === d.date && r.basis === "ORDER" && !r.hold && r.goods > 0
-                         && !(r.plan && r.plan.id))
-        .forEach(r => out.push({ date: d.date, occDate: d.date, kind: "출금", amount: r.goods, estimate: true,
+      const items = [];
+      m.rows.filter(r => r.payDate === d.date && r.basis === "ORDER" && !r.hold && r.goods > 0 && !(r.plan && r.plan.id))
+        .forEach(r => items.push({ date: d.date, occDate: d.date, kind: "출금", amount: r.goods, estimate: true,
           type: "ESTIMATE", key: r.key, poNo: r.po && r.po.po_no, supplier: r.supplier,
           title: `${r.supplier} ${r.month} 발주 예상 매입대금 (${(r.po && r.po.po_no) || ""})`,
           note: "매입 입력 전이라 예상이에요 - 매입을 넣으면 확정 예정출금으로 바뀌어요" }));
-      if (d.freightConfirmed > 0) out.push({ date: d.date, occDate: d.date, kind: "출금", amount: d.freightConfirmed,
+      if (d.freightConfirmed > 0) items.push({ date: d.date, occDate: d.date, kind: "출금", amount: d.freightConfirmed,
         estimate: true, type: "FREIGHT", title: `입고 운반비(실제 청구) ${d.date} 지급분`,
-        note: "확정된 운반비예요 - 자금일보 매입대금 예정출금에는 들어 있지 않아 따로 더해요" });
-      const missing = d.confirmed - d.cash;
-      if (missing > 0.5) out.push({ date: d.date, occDate: d.date, kind: "출금", amount: missing, estimate: true,
-        type: "PLAN_MISSING", title: `매입대금 예정출금 미생성분 ${d.date}`,
-        note: "매입은 입력됐는데 자금일보 예정출금이 아직 만들어지지 않은 금액이에요(이 화면에서 만들지 않아요)" });
-      if (d.paid > 0) out.push({ date: d.date, occDate: d.date, kind: "입금", amount: d.paid, estimate: true,
-        type: "PAID_OFFSET", title: `이미 확인된 지급 되돌림 ${d.date}`,
-        note: "통장에서 확인된 지급이라 잔액에 이미 반영돼 있어요 - 예정출금에서 그만큼 빼 줍니다" });
+        note: "확정된 운반비예요 - 매입대금 예정출금에는 들어 있지 않아 따로 더해요" });
+      // 남은 차이를 '한 줄' 로 맞춰요 - cash_plans 가 총액이든 이미 깎인 순액이든 결과가 같아요(이중 차감 없음).
+      //   미래 날짜로 확인된 지급은 아직 통장에서 안 나갔으니 예측에서는 그대로 나갈 돈으로 둡니다.
+      const target = d.outstanding + (d.paidFuture || 0);
+      const emitted = items.reduce((a, x) => a + x.amount, 0);
+      const diff = Math.round(target - d.cash - emitted);
+      if (Math.abs(diff) > 0.5) {
+        const why = [];
+        if (d.confirmed > d.cash) why.push("예정출금 미생성분");
+        if (d.paid - (d.paidFuture || 0) > 0) why.push("통장에서 확인된 지급 차감");
+        items.push({ date: d.date, occDate: d.date, kind: "출금", amount: diff, estimate: true, type: "RECONCILE",
+          title: `${diff < 0 ? "예정출금 감액" : "예정출금 보정"} ${d.date}`,
+          note: `${why.join(" · ") || "자금일보 예정출금과 발주 화면 미지급의 차이"} - 이 화면에서 cash_plans 를 만들거나 고치지 않아요`
+        });
+      }
+      out.push(...items);
     });
     return out;
   }

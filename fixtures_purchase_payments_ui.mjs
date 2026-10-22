@@ -322,7 +322,11 @@ const cashTotalAt = (m, date) => {
     .reduce((a, o) => a + (o.kind === "입금" ? -1 : 1) * o.amount, 0);
   return cash + adj;
 };
-const screenTotalAt = (m, date) => (m.schedule.find(d => d.date === date) || {}).outstanding || 0;
+// 자금일보 예측이 반영해야 할 금액 = 미지급 + 아직 통장에서 안 나간(미래 날짜) 확인 지급
+const screenTotalAt = (m, date) => {
+  const d = m.schedule.find(x => x.date === date) || {};
+  return (d.outstanding || 0) + (d.paidFuture || 0);
+};
 const compare = (label, cfg, date) => {
   const m = PP.model(cfg);
   check(label, [cashTotalAt(m, date), screenTotalAt(m, date), cashTotalAt(m, date) === screenTotalAt(m, date)],
@@ -331,29 +335,63 @@ const compare = (label, cfg, date) => {
 };
 compare("① 확정 운반비가 있는 날 - 양쪽 같은 잔액",
         { ...base, freights: [{ id: "f1", purchase_order_id: "po1", basis: "ACTUAL", gross: 132000 }] }, "2026-11-20");
-compare("② 부분 지급이 있는 날 - 양쪽 같은 잔액",
-        { ...base, txns: [{ id: "t1", kind: "출금", date: "2026-11-20", amount: 300000, memo: "리버스-발주-2026-018 1차" }] }, "2026-11-20");
+compare("② 부분 지급(이미 통장에서 나감)이 있는 날 - 양쪽 같은 잔액",
+        { ...base, txns: [{ id: "t1", kind: "출금", date: "2026-10-01", amount: 300000, memo: "리버스-발주-2026-018 1차" }] }, "2026-11-20");
+check("② 과거 지급은 예정출금을 그만큼 줄임", (() => {
+  const m2 = PP.model({ ...base, txns: [{ id: "t1", kind: "출금", date: "2026-10-01", amount: 300000, memo: "리버스-발주-2026-018 1차" }] });
+  return [cashTotalAt(m2, "2026-11-20"), PLAN_AMOUNT - 300000];
+})(), [PLAN_AMOUNT - 300000, PLAN_AMOUNT - 300000]);
+compare("②-2 미래 날짜 지급은 아직 안 나갔으니 예측에 남음",
+        { ...base, txns: [{ id: "t1", kind: "출금", date: "2026-11-25", amount: 300000, memo: "리버스-발주-2026-018 1차" }] }, "2026-11-20");
 compare("③ 예상(매입 전 발주)이 섞인 날 - 양쪽 같은 잔액",
         { ...base, pos: [PO, PO17], items: [...ITEMS, ...IT17] }, "2026-11-20");
-compare("④ 부분 매입 + 운반비 + 부분 지급이 모두 있는 날",
+compare("④ 부분 매입 + 운반비 + 과거 부분 지급이 모두 있는 날",
         { ...halfCfg, freights: [{ id: "f1", purchase_order_id: "po1", basis: "ACTUAL", gross: 132000 }],
-          txns: [{ id: "t1", kind: "출금", date: "2026-11-20", amount: 300000, memo: "리버스-발주-2026-018 1차" }] }, "2026-11-20");
+          txns: [{ id: "t1", kind: "출금", date: "2026-10-01", amount: 300000, memo: "리버스-발주-2026-018 1차" }] }, "2026-11-20");
 compare("⑤ 확정 plan 이 아직 없는 날(예정출금 미생성) - 미생성분을 항목으로 더해 같은 잔액",
         { ...base, plans: [] }, "2026-11-20");
 const mm = compare("⑥ 다월 발주 - 뒤 달도 같은 잔액",
         { ...base, purchases: [...PURCHASES, { id: "pur-9", po_id: "po1", product_id: "p1", date: "2026-11-05",
           qty: 10, unit_cost: 6500, amount: 65000, supplier: "리파코 주식회사", _name: "x" }] }, "2026-12-20");
-check("미생성분 항목에 사유를 적고 cash_plans 를 만들지 않음", (() => {
+check("예정출금 미생성분은 보정 한 줄로 더하고 cash_plans 를 만들지 않음", (() => {
   const adj = PP.cashAdjustments(PP.model({ ...base, plans: [] }), { from: "2026-11-20", to: "2026-11-20" });
-  const x = adj.find(o => o.type === "PLAN_MISSING");
-  return [!!x, x.amount, x.note.includes("만들지 않아요")];
-})(), [true, PLAN_AMOUNT, true]);
-check("확인된 지급은 '입금' 방향 조정으로 이중 차감 방지", (() => {
-  const adj = PP.cashAdjustments(PP.model({ ...base, txns: [{ id: "t1", kind: "출금", date: "2026-11-20",
+  const x = adj.find(o => o.type === "RECONCILE");
+  return [!!x, x.amount, x.note.includes("만들거나 고치지 않아요"), x.note.includes("미생성분")];
+})(), [true, PLAN_AMOUNT, true, true]);
+// 2026-10-22 Codex 지적: 기지급을 '입금' 으로 올리면 예측 잔액에 다시 더해져요 - 출금 감액으로만 반영합니다.
+check("[핵심] 확인된 지급은 출금 감액(음수)으로만 - 입금으로 올리지 않음", (() => {
+  const adj = PP.cashAdjustments(PP.model({ ...base, txns: [{ id: "t1", kind: "출금", date: "2026-10-01",
     amount: 300000, memo: "리버스-발주-2026-018 1차" }] }), { from: "2026-11-20", to: "2026-11-20" });
-  const x = adj.find(o => o.type === "PAID_OFFSET");
-  return [x.kind, x.amount];
-})(), ["입금", 300000]);
+  const x = adj.find(o => o.type === "RECONCILE");
+  return [adj.some(o => o.kind === "입금"), x.kind, x.amount];
+})(), [false, "출금", -300000]);
+check("cash_plans 가 이미 순액(지급분 차감됨)이어도 이중 차감 없음", (() => {
+  const m2 = PP.model({ ...base, plans: [{ ...PLANS[0], amount: PLAN_AMOUNT - 300000 }],
+    txns: [{ id: "t1", kind: "출금", date: "2026-10-01", amount: 300000, memo: "리버스-발주-2026-018 1차" }] });
+  const adj = PP.cashAdjustments(m2, { from: "2026-11-20", to: "2026-11-20" });
+  const total = (PLAN_AMOUNT - 300000) + adj.reduce((a, o) => a + o.amount, 0);
+  return [total, screenTotalAt(m2, "2026-11-20"), adj.length];
+})(), [PLAN_AMOUNT - 300000, PLAN_AMOUNT - 300000, 0]);
+check("미래 날짜로 확인된 지급은 예측에서 빼지 않음(아직 안 나갔어요)", (() => {
+  const m2 = PP.model({ ...base, txns: [{ id: "t1", kind: "출금", date: "2026-11-25", amount: 300000,
+    memo: "리버스-발주-2026-018 1차" }] });
+  const adj = PP.cashAdjustments(m2, { from: "2026-11-20", to: "2026-11-20" });
+  return [adj.filter(o => o.type === "RECONCILE").length, m2.schedule[0].paidFuture];
+})(), [0, 300000]);
+
+console.log("\n[8-8b] 기한 지난 미지급 이월");
+const overdueM = PP.model({ ...base, today: "2026-11-25" });
+check("지급일이 지난 미지급은 carry 로 따로 모음",
+      [overdueM.carry.count, overdueM.carry.total, overdueM.carry.dates[0].date], [1, PLAN_AMOUNT, "2026-11-20"]);
+check("이월 금액을 화면에 적고 미래 예측과 구분",
+      [text(PP.cardHtml(overdueM)).includes("이월 미지급"),
+       text(PP.cardHtml(overdueM)).includes("미래 예측에는 들어가지 않는")], [true, true]);
+check("이월은 미래 예측 조정에 포함되지 않음",
+      PP.cashAdjustments(overdueM, { from: "2026-11-25", to: "2026-12-31" }).length, 0);
+check("자금일보도 같은 carry 를 보여 줌", ["payModel.carry", "이월 미지급"].filter(w => !APP.includes(w)), []);
+check("지급이 다 끝난 날은 이월에 없음",
+      PP.model({ ...base, today: "2026-11-25", txns: [{ id: "t1", kind: "출금", date: "2026-11-20",
+        amount: PLAN_AMOUNT, memo: "리버스-발주-2026-018 전액" }] }).carry.count, 0);
 
 console.log("\n[8-9] 쿠팡 원천 역대조 - 매입·발주에 없는 실제 입고 검출");
 const WD = [
@@ -380,6 +418,16 @@ check("취소된 발주인데 실제 입고된 건도 잡아냄", (() => {
                      wing_inbound_id: "I9", requested_qty: 50, received_qty: 50, stowed_qty: 50, wing_status: "STOWING" }] });
   return x.sourceGaps.map(g => [g.kind, g.po, g.received]);
 })(), [["취소·반려 발주인데 실제 입고됨", "WING검토-취소", 50]]);
+check("미연결 건에 지급월 후보·단가 근거를 건별로 남김", (() => {
+  const g = srcM.sourceGaps.find(x => x.request === "R1");
+  return [g.payMonth, g.unitEvidence, g.included];
+})(), ["2026-11-20", [6500], false]);
+check("단가 근거가 없으면 빈 목록(마스터 원가를 대입하지 않음)", (() => {
+  const x = PP.model({ ...base, items: [], purchases: [], plans: [], wingInbounds: WD });
+  return x.sourceGaps.find(g => g.request === "R1").unitEvidence;
+})(), []);
+check("합계가 '연결분만의 잠정액' 임을 화면에 적음",
+      text(PP.cardHtml(srcM)).includes("현재 연결분만의 잠정액"), true);
 check("원천 누락은 금액을 0원으로 확정하지 않음",
       [text(PP.cardHtml(srcM)).includes("0원 확정이 아닙니다"), srcM.sourceGaps.every(g => g.amount === undefined)], [true, true]);
 check("누락이 없으면 '누락 0건' 으로 적음",
