@@ -3,8 +3,10 @@
  * 숫자를 새로 계산하지 않아요. 백엔드가 매일 기록하는 최신 기여액 요약(sync_job_status 'cm_contribution_latest' detail -
  * cm_contribution.summary_for_status)의 줄(lines)·월 공통비·잠정 공헌이익을 '보는 순서'만 바꿔요.
  *   · 맨 위 4칸: 잠정 공헌이익 · 순매출 · 총비용 · 확인할 항목
- *   · 한 줄 흐름: 순매출 − 상품원가 − 판매수수료 − 광고비 − 물류비 − 공통비 − 반품손실 = 공헌이익
- *       상품원가 = 판매 원가 − 반품 원가 환입 · 물류비 = 판매분 입고 운반비 · 공통비 = 쿠팡 월 공통비(입고·풀필먼트·보관·세이버)
+ *   · 한 줄 흐름: 순매출 − 상품원가 − 판매수수료 − 광고비 − 물류·공통비 − 반품손실 = 공헌이익
+ *       상품원가 = 판매 원가 − 반품 원가 환입
+ *       물류·공통비 = 판매분 입고 운반비 + 쿠팡 월 공통비(입고·풀필먼트·보관·세이버) - 원액 합산 후 반올림(2026-10-22 대표 승인)
+ *       세부 내역은 상세 표에만 두고 요약에는 합계 한 칸만 보여 줘요.
  *       토스쇼핑 정산분(TOSS_CONTRIBUTION)이 있으면 '+ 토스쇼핑' 한 칸, 모르는 줄이 생기면 '기타' 한 칸 - 흐름 합 = 잠정 공헌이익 검산,
  *       어긋나면 model.ok=false → 화면은 기존 카드 그대로(단순 보기를 그리지 않음)
  *   · 확인할 일: 기존 사유(reasons)를 쉬운 이름 · 금액 영향 · 할 일로 바꿔 보여 줘요(자동으로 풀리는 건 '자동 대기')
@@ -39,6 +41,11 @@
     const ad = -sum(isAd);
     const logi = num(p.inbound_freight);
     const common = num(p.monthly_cost);
+    // 2026-10-22 [대표 승인] 요약 흐름은 '물류·공통비' 한 칸 - 운반비와 월 공통비의 *원액*을 더해 반올림해요.
+    //   세부 내역(판매분 입고 운반비 · 월 공통비 항목별)은 아래 상세 표에 그대로 있고,
+    //   차감은 기존처럼 각각 한 번씩만 들어갑니다(이중 차감 아님 - flowSum 검산도 그대로).
+    const logiCommon = Math.round((p.inbound_freight_exact != null ? num(p.inbound_freight_exact) : logi)
+                                  + (p.monthly_cost_exact != null ? num(p.monthly_cost_exact) : common));
     const loss = -(by.RETURN_LOSS || 0);
     const toss = by.TOSS_CONTRIBUTION || 0;
     const other = sum(c => !KNOWN.has(c) && !isFee(c) && !isAd(c));
@@ -46,11 +53,11 @@
     const flowSum = revenue - cost - fee - ad - logi - common - loss + toss + other;
     if (Math.abs(flowSum - cm) > 2) return { ok: false, why: `흐름 합 ${Math.round(flowSum)} ≠ 잠정 공헌이익 ${cm}` };
     const terms = [["순매출", revenue, ""], ["상품원가", cost, "−"], ["판매수수료", fee, "−"], ["광고비", ad, "−"],
-                   ["물류비", logi, "−"], ["공통비", common, "−"], ["반품손실", loss, "−"]];
+                   ["물류·공통비", logiCommon, "−"], ["반품손실", loss, "−"]];
     if (toss) terms.push(["토스쇼핑", toss, "+"]);
     if (Math.abs(other) >= 1) terms.push(["기타", other, "+"]);
     const todos = todoItems(d, by);
-    return { ok: true, revenue, cost, fee, ad, logi, common, loss, toss, other, cm, totalCost: revenue - cm,
+    return { ok: true, revenue, cost, fee, ad, logi, common, logiCommon, loss, toss, other, cm, totalCost: revenue - cm,
              rate: revenue ? cm / revenue * 100 : null, terms, todos,
              mine: todos.filter(t => t.mine).length, auto: todos.filter(t => !t.mine).length };
   }

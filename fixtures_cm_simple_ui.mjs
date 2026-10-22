@@ -69,8 +69,10 @@ const m = C.model(D);
 check("검산 통과", m.ok, true);
 check("[핵심] 순매출·상품원가(환입 차감)·수수료·광고비·물류비·공통비·반품손실·공헌이익",
       [m.revenue, m.cost, m.fee, m.ad, m.logi, m.common, m.loss, m.cm], [19120500, 10183272, 2228646, 1639491, 521990, 4603218, 0, -56117]);
+// 2026-10-22 [대표 승인] 요약은 물류비+공통비를 한 칸으로 - 원액 합산 후 반올림(521,990 + 4,603,218)
+check("물류·공통비 합계 한 칸", m.logiCommon, 5125208);
 check("총비용 = 순매출 − 공헌이익", m.totalCost, 19176617);
-check("흐름 칸 순서(토스·기타 없음)", m.terms.map(t => t[0]), ["순매출", "상품원가", "판매수수료", "광고비", "물류비", "공통비", "반품손실"]);
+check("흐름 칸 순서(토스·기타 없음)", m.terms.map(t => t[0]), ["순매출", "상품원가", "판매수수료", "광고비", "물류·공통비", "반품손실"]);
 check("흐름 합 = 공헌이익(월 공통비 전 기여액 5,069,091 도 일치)", m.revenue - m.cost - m.fee - m.ad, 5069091);
 
 console.log("\n[2] 확인할 일 - 쉬운 이름 · 금액 영향 · 할 일");
@@ -94,7 +96,14 @@ const basic = top.replace(/<details class="cms-set">[\s\S]*?<\/details>/, "");
 check("4칸 라벨", [...basic.matchAll(/stat-label">([^<]+)</g)].map(x => x[1]), ["잠정 공헌이익(본업)", "순매출", "총비용", "확인할 항목"]);
 check("4칸 값", [...basic.matchAll(/stat-value[^"]*">([^<]+)</g)].map(x => x[1]), ["−₩56,117", "₩19,120,500", "₩19,176,617", "5건"]);
 check("[핵심] 한 줄 흐름 문구", text(basic.match(/<div class="cms-flow"[\s\S]*?<\/div>/)[0]),
-      "₩19,120,500 순매출 − ₩10,183,272 상품원가 − ₩2,228,646 판매수수료 − ₩1,639,491 광고비 − ₩521,990 물류비 − ₩4,603,218 공통비 − ₩0 반품손실 = −₩56,117 공헌이익");
+      "₩19,120,500 순매출 − ₩10,183,272 상품원가 − ₩2,228,646 판매수수료 − ₩1,639,491 광고비 − ₩5,125,208 물류·공통비 − ₩0 반품손실 = −₩56,117 공헌이익");
+// 원액(소수점)이 있으면 각각 반올림해서 더하지 않고 더한 뒤 한 번만 반올림(합성 수치 1,000,000.4 + 2,000,000.3)
+const exact = C.model({ ...D, provisional_cm: { ...D.provisional_cm, amount: 2069091,
+                                                inbound_freight: 2000000, inbound_freight_exact: 2000000.3,
+                                                monthly_cost: 1000000, monthly_cost_exact: 1000000.4 } });
+check("원액을 더한 뒤 한 번만 반올림(각각 반올림하면 3,000,000)", exact.ok ? exact.logiCommon : exact.why, 3000001);
+check("합쳐 보여 줘도 차감은 그대로(검산 통과)", exact.ok, true);
+check("상세 표에는 운반비·월 공통비가 그대로", [C.moreHtml(D, m, {}).includes("판매분 입고 운반비"), C.moreHtml(D, m, {}).includes("월 공통비 ·")], [true, true]);
 check("[핵심] 기본 화면에 기술 표시 없음", ["ACCRUED", "VAT 미확인", "정산파일", "API", "실행", "cm_contribution", "해시", "9a31d629"].filter(w => text(basic).includes(w)), []);
 check("기간·갱신 문구", text(basic.match(/<div class="cms-period">[\s\S]*?<\/div>/)[0]), "9월 1일 ~ 28일 자료 · 잠정(월 확정 전) · 갱신 09-29 23:49");
 check("설정 메뉴 하나에 월 선택·수동 광고비·고정비", ["월 선택", "수동 광고비", "고정비 설정"].every(w => top.match(/<details class="cms-set">[\s\S]*?<\/details>/)[0].includes(w)), true);
