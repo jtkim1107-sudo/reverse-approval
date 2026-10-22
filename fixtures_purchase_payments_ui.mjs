@@ -259,8 +259,8 @@ check("확정 운반비도 대조표에", (() => {
 check("'실제로 나갈 돈' 이라고 단정하지 않고 예상·확인 필요를 유지",
       [text(PP.cardHtml(linked)).includes("실제로 나갈 돈"), text(PP.cardHtml(linked)).includes("미지급(확정 전)"),
        text(PP.cardHtml(linked)).includes("지급 확인 필요")], [false, true, true]);
-check("app.js 자금일보가 같은 모델을 쓰고 확정·예상을 나눠 보여 줌",
-      ["PurchasePayments.load(sb", "estimatedPlans", "planOutEst", "예상 · 매입 전", "확정만 반영하면"]
+check("app.js 자금일보가 같은 모델을 쓰고 확정·조정을 나눠 보여 줌",
+      ["PurchasePayments.load(sb", "PurchasePayments.cashAdjustments", "planOutEst", "예상 · 매입 전", "확정만 반영하면"]
         .filter(w => !APP.includes(w)), []);
 
 console.log("\n[8-6] 입고 오류 - 대체 신청 증거로 이력/확인 필요 가르기");
@@ -312,6 +312,80 @@ check("입고 근거가 없는 검토 초안은 보류 유지(임의 확정 금�
     items: [...ITEMS, { id: "iw2", po_id: "pw2", product_id: "p1", qty: 10, unit_cost: 1000, amount: 10000, received_qty: 0, _name: "x" }] });
   return x.rows.find(y => y.poId === "pw2").hold;
 })(), true);
+
+console.log("\n[8-8] 자금일보 ↔ 발주 화면 합계 대조(0원 아닌 시나리오)");
+// 자금일보가 반영하는 총액 = cash_plans(확정) + 조정항목(예상·운반비·미생성분 − 확인된 지급)
+const cashTotalAt = (m, date) => {
+  const cash = (m.rows.filter(r => r.payDate === date && r.plan).map(r => Number(r.plan.amount)))
+    .reduce((a, b) => a + b, 0);
+  const adj = PP.cashAdjustments(m, { from: date, to: date })
+    .reduce((a, o) => a + (o.kind === "입금" ? -1 : 1) * o.amount, 0);
+  return cash + adj;
+};
+const screenTotalAt = (m, date) => (m.schedule.find(d => d.date === date) || {}).outstanding || 0;
+const compare = (label, cfg, date) => {
+  const m = PP.model(cfg);
+  check(label, [cashTotalAt(m, date), screenTotalAt(m, date), cashTotalAt(m, date) === screenTotalAt(m, date)],
+        [screenTotalAt(m, date), screenTotalAt(m, date), true]);
+  return m;
+};
+compare("① 확정 운반비가 있는 날 - 양쪽 같은 잔액",
+        { ...base, freights: [{ id: "f1", purchase_order_id: "po1", basis: "ACTUAL", gross: 132000 }] }, "2026-11-20");
+compare("② 부분 지급이 있는 날 - 양쪽 같은 잔액",
+        { ...base, txns: [{ id: "t1", kind: "출금", date: "2026-11-20", amount: 300000, memo: "리버스-발주-2026-018 1차" }] }, "2026-11-20");
+compare("③ 예상(매입 전 발주)이 섞인 날 - 양쪽 같은 잔액",
+        { ...base, pos: [PO, PO17], items: [...ITEMS, ...IT17] }, "2026-11-20");
+compare("④ 부분 매입 + 운반비 + 부분 지급이 모두 있는 날",
+        { ...halfCfg, freights: [{ id: "f1", purchase_order_id: "po1", basis: "ACTUAL", gross: 132000 }],
+          txns: [{ id: "t1", kind: "출금", date: "2026-11-20", amount: 300000, memo: "리버스-발주-2026-018 1차" }] }, "2026-11-20");
+compare("⑤ 확정 plan 이 아직 없는 날(예정출금 미생성) - 미생성분을 항목으로 더해 같은 잔액",
+        { ...base, plans: [] }, "2026-11-20");
+const mm = compare("⑥ 다월 발주 - 뒤 달도 같은 잔액",
+        { ...base, purchases: [...PURCHASES, { id: "pur-9", po_id: "po1", product_id: "p1", date: "2026-11-05",
+          qty: 10, unit_cost: 6500, amount: 65000, supplier: "리파코 주식회사", _name: "x" }] }, "2026-12-20");
+check("미생성분 항목에 사유를 적고 cash_plans 를 만들지 않음", (() => {
+  const adj = PP.cashAdjustments(PP.model({ ...base, plans: [] }), { from: "2026-11-20", to: "2026-11-20" });
+  const x = adj.find(o => o.type === "PLAN_MISSING");
+  return [!!x, x.amount, x.note.includes("만들지 않아요")];
+})(), [true, PLAN_AMOUNT, true]);
+check("확인된 지급은 '입금' 방향 조정으로 이중 차감 방지", (() => {
+  const adj = PP.cashAdjustments(PP.model({ ...base, txns: [{ id: "t1", kind: "출금", date: "2026-11-20",
+    amount: 300000, memo: "리버스-발주-2026-018 1차" }] }), { from: "2026-11-20", to: "2026-11-20" });
+  const x = adj.find(o => o.type === "PAID_OFFSET");
+  return [x.kind, x.amount];
+})(), ["입금", 300000]);
+
+console.log("\n[8-9] 쿠팡 원천 역대조 - 매입·발주에 없는 실제 입고 검출");
+const WD = [
+  { product_id: "p1", wing_created_at: "2026-10-07T00:00:00Z", wing_request_id: "R1", wing_inbound_id: "I1",
+    requested_qty: 100, received_qty: 100, stowed_qty: 100, wing_status: "STOWING" },
+  { product_id: "p1", wing_created_at: "2026-10-12T00:00:00Z", wing_request_id: "R2", wing_inbound_id: "I2",
+    requested_qty: 50, received_qty: 0, stowed_qty: 0, wing_status: "INIT_COMPLETED" },
+  { product_id: "p1", wing_created_at: "2026-10-14T00:00:00Z", wing_request_id: "R3", wing_inbound_id: "I3",
+    requested_qty: 72, received_qty: 0, stowed_qty: 0, wing_status: "CANCELLED" },
+  { product_id: "p1", wing_created_at: "2026-10-05T00:00:00Z", wing_request_id: "R4", wing_inbound_id: "I4",
+    requested_qty: 240, received_qty: 240, stowed_qty: 240, wing_status: "STOWING" },
+];
+const srcM = PP.model({ ...base, pos: [{ ...PO, wing_direct_shipment_id: "I4" }], wingInbounds: WD });
+check("매입·발주 없이 실제 입고된 건을 잡아냄",
+      srcM.sourceGaps.filter(g => g.kind === "매입·발주 없이 실제 입고됨").map(g => [g.request, g.received]), [["R1", 100]]);
+check("신청만 있고 입고 전인 건은 따로 분류",
+      srcM.sourceGaps.filter(g => g.kind === "신청만 있고 아직 입고 없음").map(g => g.request), ["R2"]);
+check("취소 신청은 매입으로 보지 않음", srcM.sourceGaps.some(g => g.request === "R3"), false);
+check("이미 매입·발주에 연결된 입고는 빠짐", srcM.sourceGaps.some(g => g.request === "R4"), false);
+check("취소된 발주인데 실제 입고된 건도 잡아냄", (() => {
+  const x = PP.model({ ...base, pos: [PO, { id: "pc", po_no: "WING검토-취소", supplier: "리파코 주식회사",
+    date: "2026-10-16", status: "canceled", wing_direct_shipment_id: "I9" }],
+    wingInbounds: [{ product_id: "p1", wing_created_at: "2026-10-16T00:00:00Z", wing_request_id: "R9",
+                     wing_inbound_id: "I9", requested_qty: 50, received_qty: 50, stowed_qty: 50, wing_status: "STOWING" }] });
+  return x.sourceGaps.map(g => [g.kind, g.po, g.received]);
+})(), [["취소·반려 발주인데 실제 입고됨", "WING검토-취소", 50]]);
+check("원천 누락은 금액을 0원으로 확정하지 않음",
+      [text(PP.cardHtml(srcM)).includes("0원 확정이 아닙니다"), srcM.sourceGaps.every(g => g.amount === undefined)], [true, true]);
+check("누락이 없으면 '누락 0건' 으로 적음",
+      text(PP.cardHtml(PP.model({ ...base, wingInbounds: [] }))).includes("누락 0건"), true);
+check("자금일보도 같은 모델의 조정 항목을 씀", ["PurchasePayments.cashAdjustments", "PLAN_MISSING", "PAID_OFFSET"]
+      .filter(w => !APP.includes(w)), []);
 
 console.log("\n[9] 화면 - 모바일 펼침 · 단가 보존 문구 · 송금 없음");
 check("요약은 <summary>, 자세한 건 <details> 안", [html.includes("<details class=\"pp-row\">"), html.includes("<summary>")], [true, true]);

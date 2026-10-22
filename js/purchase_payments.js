@@ -154,7 +154,8 @@
    * 반환: { groups: [...], due: { date, total, bySupplier[] }, unverifiedPayouts, asOf }
    */
   function model({ pos = [], items = [], purchases = [], products = [], plans = [], txns = [],
-                   inbounds = [], freights = [], vat = {}, today = "" } = {}) {
+                   inbounds = [], freights = [], wingInbounds = [], vat = {}, today = "",
+                   start = "2026-09-01" } = {}) {
     const poById = Object.fromEntries(pos.map(p => [p.id, p]));
     const prodById = Object.fromEntries(products.map(p => [p.id, p]));
     const itemsByPo = {}, inboundByPo = {}, freightByPo = {};
@@ -315,11 +316,43 @@
     const schedule = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
       .map(d => ({ ...d, match: Math.abs(d.confirmed - d.cash) <= 1 }));
 
+    // ① 쿠팡 원천에서 출발한 역대조 - 실제 입고됐는데 ERP 매입·발주에 없는 건을 찾아요.
+    //    금액은 단가 근거가 없어 잡지 않아요(0원으로 확정하지 않습니다 - 수량·상태만 알려 줘요).
+    const shipToPo = {};
+    pos.forEach(po => { if (po.wing_direct_shipment_id) shipToPo[String(po.wing_direct_shipment_id)] = po; });
+    const memoHas = key => purchases.some(x => key && String(x.memo || "").includes(key));
+    const sourceGaps = [];
+    (wingInbounds || []).forEach(w => {
+      const when = ymd(w.wing_created_at || w.expected_date || w.created_at);
+      if (!when || when < (start || "")) return;
+      const st = String(w.wing_status || "").toUpperCase();
+      const req = String(w.wing_request_id || ""), inb = String(w.wing_inbound_id || "");
+      const po = shipToPo[req] || shipToPo[inb] || null;
+      const linkedPurchase = memoHas(req) || memoHas(inb) || (po && purchases.some(x => x.po_id === po.id));
+      const got = num(w.received_qty) || num(w.stowed_qty);
+      if (st.includes("CANCEL")) return;                       // 취소 신청은 매입이 아니에요
+      if (linkedPurchase) return;                              // 매입 원장에 이미 잡혀 있어요
+      if (po && !["canceled", "rejected"].includes(po.status)) return;   // 살아 있는 발주로 이미 집계돼요
+      const kind = got > 0
+        ? (po ? "취소·반려 발주인데 실제 입고됨" : "매입·발주 없이 실제 입고됨")
+        : "신청만 있고 아직 입고 없음";
+      sourceGaps.push({ date: when, product: (prodById[w.product_id] || {}).code || w.vendor_item_id,
+                        requested: num(w.requested_qty), received: got, status: st, kind,
+                        request: req, inbound: inb, po: po ? po.po_no : null,
+                        note: "금액은 단가 근거가 없어 잡지 않았어요(0원 확정 아님)" });
+    });
+    const sourceSummary = {
+      total: sourceGaps.length,
+      received: sourceGaps.filter(g => g.received > 0).length,
+      receivedQty: sourceGaps.filter(g => g.received > 0).reduce((a, g) => a + g.received, 0),
+      pending: sourceGaps.filter(g => g.received <= 0).length,
+    };
+
     const matchedIds = new Set(rows.flatMap(r => r.paid.map(t => t.id)));
     const ambiguousIds = new Set(alloc.ambiguous.map(a => a.id));
     const unverified = (txns || []).filter(t => t.kind === "출금" && ymd(t.date) >= "2026-09-01"
       && !matchedIds.has(t.id)).length;
-    return { rows, due, reconcile, schedule, estimatedPlans, unverifiedPayouts: unverified, ambiguousPayouts: alloc.ambiguous,
+    return { rows, due, reconcile, schedule, estimatedPlans, sourceGaps, sourceSummary, unverifiedPayouts: unverified, ambiguousPayouts: alloc.ambiguous,
              overPaid: rows.filter(r => r.overPaid > 0).map(r => ({ po: r.po && r.po.po_no, over: r.overPaid })),
              asOf: today };
   }
@@ -452,14 +485,58 @@
         ${m.overPaid.length ? `<p class="pp-note pp-warn">⚠ 발주 금액보다 많은 출금이 걸린 건 ${m.overPaid.length}건 - 초과분은 차감하지 않았어요.</p>` : ""}
       </div>
       <div class="pp-rows">${m.rows.map(rowHtml).join("")}</div>
+      ${m.sourceSummary && m.sourceSummary.total ? `<div class="pp-recon">
+        <p class="pp-note pp-warn">⚠ 쿠팡 원천 대조: 실제 입고·신청인데 ERP 매입·발주에 없는 건 ${fmt(m.sourceSummary.total)}건
+          (이미 입고된 것 ${fmt(m.sourceSummary.received)}건 · 수량 ${fmt(m.sourceSummary.receivedQty)}개).
+          단가 근거가 없어 금액은 잡지 않았어요 - <b>0원 확정이 아닙니다.</b></p>
+        <details class="pp-row"><summary><div class="pp-main"><b>원천에 있는데 ERP 에 없는 입고</b>
+          <span class="pp-sub">쿠팡 직접입고 기록에서 출발해 역으로 맞춰 본 결과예요</span></div></summary>
+          <div class="pp-detail"><table class="pp-items"><thead><tr><th>신청일</th><th>상품</th><th class="num">신청</th>
+            <th class="num">입고</th><th>상태</th><th>분류</th></tr></thead><tbody>
+            ${m.sourceGaps.map(g => `<tr><td>${esc(g.date)}</td><td>${esc(g.product || "")}</td>
+              <td class="num">${fmt(g.requested)}</td><td class="num">${fmt(g.received)}</td>
+              <td>${esc(g.status)}</td><td>${esc(g.kind)}${g.po ? ` <small>(${esc(g.po)})</small>` : ""}</td></tr>`).join("")}
+          </tbody></table>
+          <p class="pp-note">신청번호·입고번호로 매입 원장·발주를 찾아본 결과입니다. 금액을 넣으려면 공급처 단가가 필요해요.</p></div>
+        </details></div>` : `<p class="pp-note">✓ 쿠팡 직접입고 원천과 ERP 매입·발주가 모두 연결돼 있어요(누락 0건).</p>`}
       <p class="pp-note">통장 출금에 발주번호·매입 번호가 적혀 있지 않으면 지급으로 차감하지 않아요(지금 확인 안 된 출금 ${fmt(m.unverifiedPayouts)}건).
         실제 송금·발주 전송·입고 신청은 이 화면에서 하지 않습니다.</p>
     </div>`;
   }
 
+  /**
+   * 자금일보가 cash_plans(확정 예정출금) 위에 더해야 할 조정 항목 - 두 화면이 같은 잔액을 쓰게 해요.
+   *   날짜별: 예상(매입 전) ＋ 확정 운반비 ＋ 예정출금 미생성분 － 확인된 기지급
+   *   = 그 날짜의 '미지급(확정 전)'. cash_plans 금액은 그대로 두고 차이만 항목으로 보여 줘 이중 계상이 없어요.
+   */
+  function cashAdjustments(m, { from = "", to = "" } = {}) {
+    if (!m || !m.schedule) return [];
+    const out = [];
+    m.schedule.forEach(d => {
+      if ((from && d.date < from) || (to && d.date > to)) return;
+      m.rows.filter(r => r.payDate === d.date && r.basis === "ORDER" && !r.hold && r.goods > 0
+                         && !(r.plan && r.plan.id))
+        .forEach(r => out.push({ date: d.date, occDate: d.date, kind: "출금", amount: r.goods, estimate: true,
+          type: "ESTIMATE", key: r.key, poNo: r.po && r.po.po_no, supplier: r.supplier,
+          title: `${r.supplier} ${r.month} 발주 예상 매입대금 (${(r.po && r.po.po_no) || ""})`,
+          note: "매입 입력 전이라 예상이에요 - 매입을 넣으면 확정 예정출금으로 바뀌어요" }));
+      if (d.freightConfirmed > 0) out.push({ date: d.date, occDate: d.date, kind: "출금", amount: d.freightConfirmed,
+        estimate: true, type: "FREIGHT", title: `입고 운반비(실제 청구) ${d.date} 지급분`,
+        note: "확정된 운반비예요 - 자금일보 매입대금 예정출금에는 들어 있지 않아 따로 더해요" });
+      const missing = d.confirmed - d.cash;
+      if (missing > 0.5) out.push({ date: d.date, occDate: d.date, kind: "출금", amount: missing, estimate: true,
+        type: "PLAN_MISSING", title: `매입대금 예정출금 미생성분 ${d.date}`,
+        note: "매입은 입력됐는데 자금일보 예정출금이 아직 만들어지지 않은 금액이에요(이 화면에서 만들지 않아요)" });
+      if (d.paid > 0) out.push({ date: d.date, occDate: d.date, kind: "입금", amount: d.paid, estimate: true,
+        type: "PAID_OFFSET", title: `이미 확인된 지급 되돌림 ${d.date}`,
+        note: "통장에서 확인된 지급이라 잔액에 이미 반영돼 있어요 - 예정출금에서 그만큼 빼 줍니다" });
+    });
+    return out;
+  }
+
   /** 화면에서 쓰는 로더 - 읽기 전용 조회만 해요 */
   async function load(sb, { today } = {}) {
-    const [pos, items, purchases, products, plans, txns, inbounds, freights, settings] = await Promise.all([
+    const [pos, items, purchases, products, plans, txns, inbounds, freights, wingInbounds, settings] = await Promise.all([
       sb.from("purchase_orders").select("*").order("date", { ascending: false }),
       sb.from("purchase_order_items").select("*"),
       sb.from("purchases").select("*").gte("date", "2026-09-01"),
@@ -468,9 +545,11 @@
       sb.from("cash_txns").select("*").gte("date", "2026-09-01"),
       sb.from("inbound_plans").select("id,purchase_order_id,internal_status,preflight_status,last_error_code,last_error_message,rejection_code,rejection_reason,submit_status,recovery_status,resubmission_of_plan_id,retry_of_plan_id"),
       sb.from("inbound_freight_costs").select("*"),
+      sb.from("wing_direct_inbounds").select("*").order("wing_created_at", { ascending: false }),
       sb.from("settings").select("value").eq("key", "vat").maybeSingle(),
     ]);
     const err = [pos, items, purchases, products, plans, txns, inbounds, freights].find(r => r && r.error);
+    const wingRows = wingInbounds && !wingInbounds.error ? (wingInbounds.data || []) : [];
     if (err) return { error: err.error.message };
     const prod = Object.fromEntries((products.data || []).map(p => [p.id, p]));
     const name = x => { const p = prod[x.product_id]; return p ? `${p.name}` : (x.option_name || ""); };
@@ -479,9 +558,10 @@
     if (typeof vat === "string") { try { vat = JSON.parse(vat); } catch (e) { vat = {}; } }
     return model({ pos: pos.data || [], items: withName(items.data), purchases: withName(purchases.data),
                    products: products.data || [], plans: plans.data || [], txns: txns.data || [],
-                   inbounds: inbounds.data || [], freights: freights.data || [], vat,
+                   inbounds: inbounds.data || [], freights: freights.data || [], wingInbounds: wingRows, vat,
                    today: today || new Date().toISOString().slice(0, 10) });
   }
 
-  global.PurchasePayments = { nextTwentieth, payableOf, inboundStateOf, matchedPayments, model, cardHtml, load, nextTodo };
+  global.PurchasePayments = { nextTwentieth, payableOf, inboundStateOf, matchedPayments, allocatePayments,
+                              model, cardHtml, load, nextTodo, cashAdjustments };
 })(typeof window !== "undefined" ? window : globalThis);

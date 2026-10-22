@@ -12369,7 +12369,9 @@ async function viewCash() {
   if (globalThis.PurchasePayments) {
     try { payModel = await PurchasePayments.load(sb, { today: today() }); } catch (e) { payModel = { error: String(e && e.message || e) }; }
   }
-  const estPlans = (payModel && !payModel.error ? payModel.estimatedPlans : []) || [];
+  // 예상(매입 전)·확정 운반비·예정출금 미생성분·확인된 지급을 같은 모델에서 받아 자금일보 잔액에 반영해요.
+  const estPlans = (payModel && !payModel.error && globalThis.PurchasePayments.cashAdjustments
+    ? PurchasePayments.cashAdjustments(payModel, { from: today(), to: forecastEnd }) : []) || [];
   const estInRange = estPlans.filter(o => o.date >= today() && o.date <= forecastEnd);
   const occConfirmed = planOccurrences(cashPlans, today(), forecastDays);
   const occ = occConfirmed.concat(estInRange).sort((a, b) => String(a.date).localeCompare(String(b.date)));
@@ -12382,7 +12384,7 @@ async function viewCash() {
   });
   const planIn = occ.filter(o => o.kind === "입금").reduce((s, o) => s + Number(o.amount), 0);
   const planOut = occConfirmed.filter(o => o.kind === "출금").reduce((s, o) => s + Number(o.amount), 0);
-  const planOutEst = estInRange.reduce((s, o) => s + Number(o.amount), 0);
+  const planOutEst = estInRange.reduce((s, o) => s + (o.kind === "입금" ? -1 : 1) * Number(o.amount), 0);
   const minRow = projRows.reduce((m, r) => (m === null || r.bal < m.bal) ? r : m, null);
   const bankAsOf = lastBankStatementAt(cashTxns);
 
@@ -12476,9 +12478,13 @@ async function viewCash() {
         <div class="stat"><div class="stat-label">다음 달 20일까지 예정 출금(확정) · 매입월 다음 달 20일 지급</div>
           <div class="stat-value red">−₩${fmt(planOut)}</div>
           <small style="color:var(--text-sub);font-size:11.5px">매입 입력된 상품대금 · 발주 화면 '확정' 과 같은 금액</small></div>
-        <div class="stat"><div class="stat-label">＋ 예상 출금(매입 전 발주)</div>
+        <div class="stat"><div class="stat-label">＋ 예상·운반비·대사 조정</div>
           <div class="stat-value ${planOutEst ? "red" : ""}">−₩${fmt(planOutEst)}</div>
-          <small style="color:var(--text-sub);font-size:11.5px">${estInRange.length}건 · 발주는 했지만 매입 입력 전이라 예상이에요</small></div>
+          <small style="color:var(--text-sub);font-size:11.5px">${estInRange.length}건 ·
+            ${["ESTIMATE", "FREIGHT", "PLAN_MISSING", "PAID_OFFSET"].map(k => {
+              const n = estInRange.filter(o => o.type === k).length;
+              return n ? `${{ ESTIMATE: "예상(매입 전)", FREIGHT: "확정 운반비", PLAN_MISSING: "예정출금 미생성분", PAID_OFFSET: "확인된 지급 차감" }[k]} ${n}` : "";
+            }).filter(Boolean).join(" · ") || "없음"}</small></div>
         <div class="stat"><div class="stat-label">다음 달 20일 예상 잔액</div>
           <div class="stat-value ${curBal + planIn - planOut - planOutEst < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut - planOutEst)}</div>
           <small style="color:var(--text-sub);font-size:11.5px">확정만 반영하면 ₩${fmt(curBal + planIn - planOut)}</small></div>
@@ -12499,11 +12505,11 @@ async function viewCash() {
           <tr>
             <td>${esc(r.occDate)}</td>
             <td><b>${esc(r.title)}</b>${r.repeat === "매월" ? ' <span class="chip mine">매월</span>' : ""}
-              ${r.estimate ? ' <span class="chip progress">예상 · 매입 전</span>' : ""}
+              ${r.estimate ? ` <span class="chip progress">${{ ESTIMATE: "예상 · 매입 전", FREIGHT: "확정 운반비", PLAN_MISSING: "예정출금 미생성", PAID_OFFSET: "확인된 지급" }[r.type] || "예상"}</span>` : ""}
               ${r.overdue ? ' <span class="chip rejected">예정일 지남</span>' : ""}</td>
             <td class="num" style="color:${r.kind === "입금" ? "var(--green)" : "var(--red)"}">${r.kind === "입금" ? "+" : "−"}₩${fmt(r.amount)}</td>
             <td class="num" style="font-weight:800;color:${r.bal < 0 ? "var(--red)" : "var(--text)"}">₩${fmt(r.bal)}</td>
-            <td>${r.estimate ? `<span style="color:var(--text-sub);font-size:11.5px">매입 입력하면 확정</span>`
+            <td>${r.estimate ? `<span style="color:var(--text-sub);font-size:11.5px">${r.type === "ESTIMATE" ? "매입 입력하면 확정" : "대사 조정"}</span>`
               : `<button class="btn sm danger" onclick="deleteErpRow('cash_plans','${r.id}')">삭제</button>`}</td>
           </tr>`).join("") : `<tr><td colspan="5" class="empty">다음 달 20일까지 예정된 입출금이 없습니다 — 결제 예정·정산 예정을 등록해 두세요</td></tr>`}
         </tbody>
