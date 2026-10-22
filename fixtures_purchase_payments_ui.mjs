@@ -428,8 +428,36 @@ check("단가 근거가 없으면 빈 목록(마스터 원가를 대입하지 �
 })(), []);
 check("합계가 '연결분만의 잠정액' 임을 화면에 적음",
       text(PP.cardHtml(srcM)).includes("현재 연결분만의 잠정액"), true);
-check("원천 누락은 금액을 0원으로 확정하지 않음",
-      [text(PP.cardHtml(srcM)).includes("0원 확정이 아닙니다"), srcM.sourceGaps.every(g => g.amount === undefined)], [true, true]);
+check("증명 안 된 건은 금액을 0원으로 확정하지 않음(null 로 둠)",
+      [text(PP.cardHtml(srcM)).includes("0원 확정이 아닙니다"),
+       srcM.sourceGaps.filter(g => !g.provable).every(g => g.amount === null)], [true, true]);
+// 증명 가능한 건(이 입고번호로 연결된 발주서에 같은 상품 품목·단가가 있는 경우)은 금액을 잡아 합계에 넣어요
+const prov = PP.model({ ...base,
+  pos: [PO, { id: "pc2", po_no: "WING검토-증명", supplier: "리파코 주식회사", date: "2026-10-16",
+              status: "canceled", wing_direct_shipment_id: "I7" }],
+  items: [...ITEMS, { id: "ix", po_id: "pc2", product_id: "p1", qty: 50, unit_cost: 8500, amount: 425000, _name: "베베 케이스" }],
+  wingInbounds: [{ product_id: "p1", wing_created_at: "2026-10-16T00:00:00Z", wing_request_id: "R7", wing_inbound_id: "I7",
+                   requested_qty: 50, received_qty: 50, stowed_qty: 50, wing_status: "STOWING" }] });
+const provGap = prov.sourceGaps.find(g => g.request === "R7");
+check("증명된 원천 입고는 발주서 단가로 금액을 잡고 합계에 포함",
+      [provGap.provable, provGap.included, provGap.amount, provGap.evidence.includes("발주서 WING검토-증명")],
+      [true, true, PP.payableOf(50 * 8500, TAXABLE, VAT), true]);
+check("증명된 건이 지급 예정 합계·대조표에 흐름", (() => {
+  const d = prov.schedule.find(x => x.date === "2026-11-20");
+  return [d.estimated, prov.rows.some(r => r.fromSource)];
+})(), [PP.payableOf(50 * 8500, TAXABLE, VAT), true]);
+check("수량이 다르면 '수량 확인' 을 남김", (() => {
+  const x = PP.model({ ...base,
+    pos: [PO, { id: "pc3", po_no: "WING검토-수량", supplier: "리파코 주식회사", date: "2026-10-14",
+                status: "canceled", wing_direct_shipment_id: "I8" }],
+    items: [...ITEMS, { id: "iy", po_id: "pc3", product_id: "p1", qty: 60, unit_cost: 6300, amount: 378000, _name: "스프레이건" }],
+    wingInbounds: [{ product_id: "p1", wing_created_at: "2026-10-14T00:00:00Z", wing_request_id: "R8", wing_inbound_id: "I8",
+                     requested_qty: 60, received_qty: 40, stowed_qty: 40, wing_status: "STOWING" }] });
+  const g = x.sourceGaps.find(y => y.request === "R8");
+  return [g.amount, g.qtyMismatch, g.received];
+})(), [PP.payableOf(40 * 6300, TAXABLE, VAT), false, 40]);
+check("연결된 발주서가 없으면 증명 불가 - 금액 미포함",
+      srcM.sourceGaps.filter(g => g.received > 0).every(g => g.provable === false), true);
 check("누락이 없으면 '누락 0건' 으로 적음",
       text(PP.cardHtml(PP.model({ ...base, wingInbounds: [] }))).includes("누락 0건"), true);
 check("자금일보도 같은 모델의 조정 항목을 씀", ["PurchasePayments.cashAdjustments", "PLAN_MISSING", "PAID_OFFSET"]

@@ -238,6 +238,74 @@
                outstandingBasis: freight.confirmed ? "상품대금 + 확정 운반비" : "상품대금 기준(운반비 미확정)" };
     }).sort((a, b) => (a.payDate.localeCompare(b.payDate) || String(b.firstDate).localeCompare(String(a.firstDate))));
 
+    // ① 쿠팡 원천에서 출발한 역대조 - 실제 입고됐는데 ERP 매입·발주에 없는 건을 찾아요.
+    //    금액은 단가 근거가 없어 잡지 않아요(0원으로 확정하지 않습니다 - 수량·상태만 알려 줘요).
+    const shipToPo = {};
+    pos.forEach(po => { if (po.wing_direct_shipment_id) shipToPo[String(po.wing_direct_shipment_id)] = po; });
+    const memoHas = key => purchases.some(x => key && String(x.memo || "").includes(key));
+    const sourceGaps = [];
+    (wingInbounds || []).forEach(w => {
+      const when = ymd(w.wing_created_at || w.expected_date || w.created_at);
+      if (!when || when < (start || "")) return;
+      const st = String(w.wing_status || "").toUpperCase();
+      const req = String(w.wing_request_id || ""), inb = String(w.wing_inbound_id || "");
+      const po = shipToPo[req] || shipToPo[inb] || null;
+      const linkedPurchase = memoHas(req) || memoHas(inb) || (po && purchases.some(x => x.po_id === po.id));
+      const got = num(w.received_qty) || num(w.stowed_qty);
+      if (st.includes("CANCEL")) return;                       // 취소 신청은 매입이 아니에요
+      if (linkedPurchase) return;                              // 매입 원장에 이미 잡혀 있어요
+      if (po && !["canceled", "rejected"].includes(po.status)) return;   // 살아 있는 발주로 이미 집계돼요
+      const kind = got > 0
+        ? (po ? "취소·반려 발주인데 실제 입고됨" : "매입·발주 없이 실제 입고됨")
+        : "신청만 있고 아직 입고 없음";
+      // 증명 가능한 연결: 이 입고번호로 연결된 발주서에 같은 상품 품목이 있고 단가가 적혀 있을 때만.
+      //   (상품·수량이 같다는 이유만으로 다른 발주에 붙이지 않아요. 상품 마스터 원가도 쓰지 않습니다.)
+      const poItem = po ? (items || []).find(i => i.po_id === po.id && i.product_id === w.product_id && num(i.unit_cost) > 0) : null;
+      const provable = !!(poItem && got > 0);
+      const qtyMismatch = provable && num(poItem.qty) !== num(w.requested_qty);
+      // 단가 '근거' 만 모아요 - 상품 마스터 원가(판매 원가)를 매입 단가로 대입하지 않습니다.
+      const unitFromOrders = [...new Set((items || []).filter(i => i.product_id === w.product_id && num(i.unit_cost) > 0)
+        .map(i => num(i.unit_cost)))];
+      const unitFromPurchases = [...new Set(purchases.filter(x => x.product_id === w.product_id && num(x.unit_cost) > 0)
+        .map(x => num(x.unit_cost)))];
+      sourceGaps.push({ date: when, product: (prodById[w.product_id] || {}).code || w.vendor_item_id,
+                        name: (prodById[w.product_id] || {}).name || "",
+                        requested: num(w.requested_qty), received: got, status: st, kind,
+                        request: req, inbound: inb, po: po ? po.po_no : null,
+                        payMonth: got > 0 ? nextTwentieth(when) : null,
+                        unitEvidence: [...new Set(unitFromOrders.concat(unitFromPurchases))],
+                        included: provable, provable, qtyMismatch,
+                        unit: poItem ? num(poItem.unit_cost) : null,
+                        amount: provable ? payableOf(got * num(poItem.unit_cost), prodById[w.product_id], vat) : null,
+                        evidence: provable
+                          ? `발주서 ${po.po_no} 품목 단가 ${fmt(poItem.unit_cost)}원 · 이 입고번호로 연결된 발주서${qtyMismatch ? ` · 발주 ${fmt(poItem.qty)} ≠ 신청 ${fmt(w.requested_qty)}(수량 확인 필요)` : ""}`
+                          : "단가·귀속 근거가 확정되지 않았어요",
+                        note: provable ? "발주서 단가로 금액을 잡았고 '원천 입고(매입 미등록)' 로 합계에 넣었어요"
+                          : "금액은 단가 근거가 확정되지 않아 잡지 않았어요(0원 확정 아님)" });
+    });
+    const sourceSummary = {
+      total: sourceGaps.length,
+      received: sourceGaps.filter(g => g.received > 0).length,
+      receivedQty: sourceGaps.filter(g => g.received > 0).reduce((a, g) => a + g.received, 0),
+      pending: sourceGaps.filter(g => g.received <= 0).length,
+    };
+
+    // 증명된 건은 줄로 더해 합계·대조표·자금일보에 같은 방식으로 흐르게 해요(매입 원장은 만들지 않아요).
+    sourceGaps.filter(g => g.provable).forEach(g => {
+      const po = pos.find(x => x.po_no === g.po) || null;
+      rows.push({ key: `src:${g.inbound}:${g.product}`, month: g.date.slice(0, 7), poId: po ? po.id : `src:${g.inbound}`,
+        basis: "ORDER", fromSource: true, purchases: [], firstDate: g.date, supplier: (po && po.supplier) || "",
+        goods: g.amount, qty: g.received, hold: false, po, items: [], route: "쿠팡 직접입고 → ERP 미등록",
+        inbound: { ordered: g.requested, got: g.received, remain: 0, state: "DONE", plans: 0, observed: g.received,
+                   errors: 0, errorReason: "", errorKind: "", checks: 0, checkReason: "", pastErrors: 0,
+                   pastReasons: [], pastEvidence: [g.evidence] },
+        freight: { records: 0, confirmed: false, owns: true, amount: 0, estimate: 0 },
+        plan: null, payDate: g.payMonth, base: g.amount, purchaseIds: [], matchKeys: [g.inbound, g.request].filter(Boolean),
+        orderMonth: g.date.slice(0, 7), basisNote: `원천 입고 ${g.date} · 매입 원장 미등록`,
+        linkNotes: g.qtyMismatch ? ["수량 확인"] : [], evidenceNote: g.evidence,
+        outstandingBasis: "상품대금 기준(운반비 미확정)" });
+    });
+
     // 출금 배분(중복 차감 금지) → 줄마다 확인된 기지급·미지급 잔액·지급 상태
     const alloc = allocatePayments(txns, rows);
     rows.forEach(r => {
@@ -324,47 +392,6 @@
     const carryRows = schedule.filter(d => d.overdue && d.outstanding > 0);
     const carry = { total: carryRows.reduce((a, d) => a + d.outstanding, 0), count: carryRows.length,
                     dates: carryRows.map(d => ({ date: d.date, amount: d.outstanding, cash: d.cash, confirmed: d.confirmed })) };
-
-    // ① 쿠팡 원천에서 출발한 역대조 - 실제 입고됐는데 ERP 매입·발주에 없는 건을 찾아요.
-    //    금액은 단가 근거가 없어 잡지 않아요(0원으로 확정하지 않습니다 - 수량·상태만 알려 줘요).
-    const shipToPo = {};
-    pos.forEach(po => { if (po.wing_direct_shipment_id) shipToPo[String(po.wing_direct_shipment_id)] = po; });
-    const memoHas = key => purchases.some(x => key && String(x.memo || "").includes(key));
-    const sourceGaps = [];
-    (wingInbounds || []).forEach(w => {
-      const when = ymd(w.wing_created_at || w.expected_date || w.created_at);
-      if (!when || when < (start || "")) return;
-      const st = String(w.wing_status || "").toUpperCase();
-      const req = String(w.wing_request_id || ""), inb = String(w.wing_inbound_id || "");
-      const po = shipToPo[req] || shipToPo[inb] || null;
-      const linkedPurchase = memoHas(req) || memoHas(inb) || (po && purchases.some(x => x.po_id === po.id));
-      const got = num(w.received_qty) || num(w.stowed_qty);
-      if (st.includes("CANCEL")) return;                       // 취소 신청은 매입이 아니에요
-      if (linkedPurchase) return;                              // 매입 원장에 이미 잡혀 있어요
-      if (po && !["canceled", "rejected"].includes(po.status)) return;   // 살아 있는 발주로 이미 집계돼요
-      const kind = got > 0
-        ? (po ? "취소·반려 발주인데 실제 입고됨" : "매입·발주 없이 실제 입고됨")
-        : "신청만 있고 아직 입고 없음";
-      // 단가 '근거' 만 모아요 - 상품 마스터 원가(판매 원가)를 매입 단가로 대입하지 않습니다.
-      const unitFromOrders = [...new Set((items || []).filter(i => i.product_id === w.product_id && num(i.unit_cost) > 0)
-        .map(i => num(i.unit_cost)))];
-      const unitFromPurchases = [...new Set(purchases.filter(x => x.product_id === w.product_id && num(x.unit_cost) > 0)
-        .map(x => num(x.unit_cost)))];
-      sourceGaps.push({ date: when, product: (prodById[w.product_id] || {}).code || w.vendor_item_id,
-                        name: (prodById[w.product_id] || {}).name || "",
-                        requested: num(w.requested_qty), received: got, status: st, kind,
-                        request: req, inbound: inb, po: po ? po.po_no : null,
-                        payMonth: got > 0 ? nextTwentieth(when) : null,
-                        unitEvidence: [...new Set(unitFromOrders.concat(unitFromPurchases))],
-                        included: false,
-                        note: "금액은 단가 근거가 확정되지 않아 잡지 않았어요(0원 확정 아님)" });
-    });
-    const sourceSummary = {
-      total: sourceGaps.length,
-      received: sourceGaps.filter(g => g.received > 0).length,
-      receivedQty: sourceGaps.filter(g => g.received > 0).reduce((a, g) => a + g.received, 0),
-      pending: sourceGaps.filter(g => g.received <= 0).length,
-    };
 
     const matchedIds = new Set(rows.flatMap(r => r.paid.map(t => t.id)));
     const ambiguousIds = new Set(alloc.ambiguous.map(a => a.id));
@@ -500,7 +527,8 @@
           `${esc(h.po || "")} ${won(h.amount)}(${esc(h.reason)})`).join(" · ")}</p>` : ""}
         ${m.carry && m.carry.count ? `<p class="pp-note pp-warn">⚠ 지급일이 지났는데 통장 확인이 안 된 <b>이월 미지급 ${won(m.carry.total)}</b>
           (${m.carry.dates.map(x => `${esc(x.date)} ${won(x.amount)}`).join(" · ")}).
-          자금일보 미래 예측에는 들어가지 않는 금액이에요 - 지급 여부를 통장에서 확인해 주세요.</p>` : ""}
+          자금일보 미래 예측에는 들어가지 않는 금액이에요 - 예상 잔액에서 이미 빠진 돈이 아니니 <b>가용잔액으로 보면 안 돼요.</b>
+          지급 여부를 통장에서 확인해 주세요(확인된 미지급이 아니라 '지급 미확인' 입니다).</p>` : ""}
         ${m.ambiguousPayouts.length ? `<p class="pp-note pp-warn">⚠ 어느 발주 지급인지 하나로 정해지지 않아 차감하지 않은 출금 ${m.ambiguousPayouts.length}건:
           ${m.ambiguousPayouts.slice(0, 3).map(a => `${esc(a.date)} ${won(a.amount)}(${esc(a.reason)})`).join(" · ")}</p>` : ""}
         ${m.overPaid.length ? `<p class="pp-note pp-warn">⚠ 발주 금액보다 많은 출금이 걸린 건 ${m.overPaid.length}건 - 초과분은 차감하지 않았어요.</p>` : ""}

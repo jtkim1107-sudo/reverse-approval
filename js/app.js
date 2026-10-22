@@ -12485,15 +12485,19 @@ async function viewCash() {
               const n = estInRange.filter(o => o.type === k).length;
               return n ? `${{ ESTIMATE: "예상(매입 전)", FREIGHT: "확정 운반비", PLAN_MISSING: "예정출금 미생성분", PAID_OFFSET: "확인된 지급 차감" }[k]} ${n}` : "";
             }).filter(Boolean).join(" · ") || "없음"}</small></div>
-        <div class="stat"><div class="stat-label">다음 달 20일 예상 잔액</div>
+        <div class="stat"><div class="stat-label">다음 달 20일 예상 잔액<br><small style="font-weight:400">※ 이월 미지급 제외</small></div>
           <div class="stat-value ${curBal + planIn - planOut - planOutEst < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut - planOutEst)}</div>
-          <small style="color:var(--text-sub);font-size:11.5px">확정만 반영하면 ₩${fmt(curBal + planIn - planOut)}</small></div>
+          <small style="color:var(--text-sub);font-size:11.5px">확정만 반영하면 ₩${fmt(curBal + planIn - planOut)}${
+            payModel && !payModel.error && payModel.carry && payModel.carry.total
+              ? `<br><b style="color:var(--amber)">이월 미지급 ₩${fmt(payModel.carry.total)} 빼면 ₩${fmt(curBal + planIn - planOut - planOutEst - payModel.carry.total)}</b> - 가용잔액이 아니에요`
+              : ""}</small></div>
       </div>
       ${payModel && !payModel.error && payModel.carry && payModel.carry.count ? `<p style="margin:10px 0 0;padding:10px 12px;
         border:1px solid var(--amber);background:var(--amber-bg);border-radius:9px;font-size:12.5px;line-height:1.7">
         ⚠ <b>이월 미지급 ₩${fmt(payModel.carry.total)}</b> - 지급일이 지났는데 통장에서 확인되지 않은 금액이에요
         (${payModel.carry.dates.map(x => `${esc(x.date)} ₩${fmt(x.amount)}`).join(" · ")}).
-        날짜가 지나 아래 미래 예측에는 들어가지 않습니다 - 통장에서 지급을 확인하거나 예정을 다시 잡아 주세요.</p>` : ""}
+        날짜가 지나 아래 미래 예측에는 <b>들어가지 않습니다</b> - 위 '예상 잔액' 은 이 금액을 뺀 뒤의 돈이 아니에요(가용잔액 아님).
+        통장에서 지급을 확인하거나 예정을 다시 잡아 주세요.</p>` : ""}
       ${payModel && !payModel.error ? `<p style="color:var(--text-sub);font-size:12.5px;margin:10px 0 0;line-height:1.7">
         발주 화면과 같은 계산이에요(매입월 다음 달 20일 · VAT 포함 · 운반비 별도).
         ${payModel.due.date ? `${esc(payModel.due.date)} 기준 확정 ₩${fmt(payModel.due.confirmed.total)} ·
