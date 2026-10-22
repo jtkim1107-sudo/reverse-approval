@@ -165,7 +165,7 @@
 
     // (매입월, 발주) 묶음 - 자금일보 cash_plans 와 같은 키
     const groups = new Map();
-    const keyOf = (month, poId) => `${month}:${poId}`;
+    const keyOf = (month, poId) => `${month}:${poId.replace(/^purchase:/, "")}`;
     purchases.forEach(p => {
       if (ymd(p.date) < start) return;
       const month = ymd(p.date).slice(0, 7);
