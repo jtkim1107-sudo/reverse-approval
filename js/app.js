@@ -6806,6 +6806,18 @@ async function viewPurchaseOrders() {
   await loadErpBase();
   await loadPOs();
   const reinbound = await loadReinboundRows();   // 2026-09-13 재입고 승인 필요 목록(읽기만)
+  // 2026-10-22 [대표 승인] 발주·입고·지급을 한 줄로(js/purchase_payments.js) - 읽기만 하고 발주 전송·입고 신청·송금은 없어요.
+  let payHtml = "";
+  if (globalThis.PurchasePayments) {
+    try {
+      const pay = await PurchasePayments.load(sb, { today: today() });
+      payHtml = pay && pay.error
+        ? `<div class="card"><h2>💳 발주 · 입고 · 지급</h2><p class="pp-note">자료를 불러오지 못했어요 (${esc(pay.error)}).</p></div>`
+        : PurchasePayments.cardHtml(pay);
+    } catch (e) {
+      payHtml = `<div class="card"><h2>💳 발주 · 입고 · 지급</h2><p class="pp-note">자료를 불러오지 못했어요 (${esc(String(e && e.message || e))}).</p></div>`;
+    }
+  }
   const waiting = poCache.filter(p => p.status === "progress" &&
     p.approval_line?.[p.current_step]?.userId === me.id).length;
   const open = poCache.filter(p => ["ordered", "partial"].includes(p.status));
@@ -6814,6 +6826,7 @@ async function viewPurchaseOrders() {
   const wingReviewCount = poCache.filter(p => p.status === "wing_direct_review").length;
 
   return `
+    ${payHtml}
     <div class="card">
       <div class="card-head"><h2>📦 발주서</h2>
         <div><button class="btn secondary" id="btn-po-assist" onclick="openInventoryPOModal()">판매·재고로 발주서 작성</button> <button class="btn" onclick="openPOModal()">＋ 발주서 작성</button></div>

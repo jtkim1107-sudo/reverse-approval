@@ -1557,3 +1557,42 @@ details.cms-sub .card { box-shadow: none; border: 1px solid var(--line); }
 .inventory-money-summary b { font-size:18px; }
 .inventory-money-summary small { grid-column:1/-1; color:var(--text-sub); }
 @media (max-width:720px) { .inventory-money-summary { grid-template-columns:1fr; } .inventory-money-summary small { grid-column:auto; } }
+
+/* 2026-10-22 발주·입고·지급 한눈에(js/purchase_payments.js) - 모바일에서는 한 줄 요약, 자세한 건 펼침 */
+.pp .pp-sub { color: var(--text-sub); font-size: 12px; display: block; }
+.pp .pp-note { color: var(--text-sub); font-size: 12.5px; margin: 8px 0 0; line-height: 1.6; }
+.pp .pp-warn { color: var(--amber); font-weight: 600; }
+.pp-due { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: flex-start;
+  background: var(--bg-soft, #f7f7fb); border: 1px solid var(--line, #e6e6ef); border-radius: 12px; padding: 12px 14px; margin-top: 10px; }
+.pp-due-main { display: grid; gap: 2px; min-width: 0; }
+.pp-due-main span { color: var(--text-sub); font-size: 12px; }
+.pp-due-main b { font-size: 15px; }
+.pp-due-main em { font-style: normal; font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+.pp-due-main small { color: var(--text-sub); font-size: 11.5px; }
+.pp-due-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; min-width: 180px; }
+.pp-due-list li { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.pp-rows { display: grid; gap: 8px; margin-top: 12px; }
+.pp-row { border: 1px solid var(--line, #e6e6ef); border-radius: 12px; background: var(--card, #fff); }
+.pp-row > summary { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 10px; align-items: center; padding: 10px 12px; cursor: pointer; list-style: none; }
+.pp-row > summary::-webkit-details-marker { display: none; }
+.pp-row[open] > summary { border-bottom: 1px solid var(--line, #e6e6ef); }
+.pp-main { min-width: 0; }
+.pp-main b, .pp-amt b, .pp-pay b { display: block; font-size: 13.5px; overflow-wrap: anywhere; }
+.pp-amt, .pp-pay { text-align: right; }
+.pp-states { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.pp-detail { padding: 10px 12px 12px; }
+.pp-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px 16px; margin-bottom: 10px; }
+.pp-facts > div { display: grid; gap: 1px; font-size: 13px; min-width: 0; }
+.pp-facts span { color: var(--text-sub); font-size: 11.5px; }
+.pp-facts small { color: var(--text-sub); font-size: 11.5px; font-weight: 400; }
+.pp-items { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.pp-items th, .pp-items td { padding: 5px 6px; border-bottom: 1px solid var(--line, #eee); text-align: left; }
+.pp-items .num { text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  .pp-row > summary { grid-template-columns: 1fr auto; gap: 6px 10px; }
+  .pp-amt, .pp-pay { text-align: left; }
+  .pp-amt { grid-column: 1; } .pp-pay { grid-column: 2; text-align: right; }
+  .pp-states { grid-column: 1 / -1; justify-content: flex-start; }
+  .pp-due-main em { font-size: 20px; }
+}
