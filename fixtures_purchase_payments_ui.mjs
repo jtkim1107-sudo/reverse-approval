@@ -194,6 +194,17 @@ const now = PP.inboundStateOf([{ qty: 10, received_qty: 0 }],
 check("대체 계획이 없으면 '지금 오류'", [now.errors, now.pastErrors], [1, 0]);
 check("복구 완료(RECOVERED)도 지난 오류",
       PP.inboundStateOf([{ qty: 10, received_qty: 10 }], [{ id: "a", last_error_code: "X", recovery_status: "RECOVERED" }]).errors, 0);
+// 2026-10-22 실데이터(발주-2026-016): 오류가 난 계획이 취소·DB 동기화로 끝나 있었어요
+check("취소된 계획의 오류는 지난 오류",
+      PP.inboundStateOf([{ qty: 480, received_qty: 480 }],
+        [{ id: "a", preflight_status: "FAILED", last_error_code: "SessionInvalidError", internal_status: "CANCELLED" }]).errors, 0);
+check("복구가 DB 동기화까지 끝났으면 지난 오류",
+      PP.inboundStateOf([{ qty: 1, received_qty: 1 }],
+        [{ id: "a", internal_status: "FAILED", last_error_code: "PREFLIGHT_DRAFT_CREATED", recovery_status: "DB_SYNCED" }]).errors, 0);
+check("복구 진행 중(PLAN_ID_CAPTURED)은 지금 오류로 남김",
+      PP.inboundStateOf([{ qty: 240, received_qty: 240 }],
+        [{ id: "a", internal_status: "PLAN_CREATED", preflight_status: "FAILED",
+           recovery_status: "PLAN_ID_CAPTURED", last_error_code: "SLOT_UNAVAILABLE_AFTER_MIN_EDD" }]).errors, 1);
 const pastRow = PP.model({ ...base, inbounds: [{ id: "a", purchase_order_id: "po1", preflight_status: "FAILED", last_error_message: "센터 매핑 실패" },
                                                { id: "b", purchase_order_id: "po1", resubmission_of_plan_id: "a", internal_status: "RECEIVED" }] });
 check("지난 오류는 다음 할 일에 올리지 않음", PP.nextTodo(pastRow.rows.find(r => r.basis === "PURCHASE")).includes("입고 신청 오류"), false);

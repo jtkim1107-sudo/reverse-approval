@@ -67,8 +67,13 @@
                             || p.submit_status === "FAILED" || p.recovery_status === "NEEDS_RECOVERY");
     // 그 계획을 대신해 다시 올린 계획이 있으면(재신청·재시도) 그 오류는 '지나간 일' 이에요.
     const replaced = new Set(plans.map(p => p.resubmission_of_plan_id || p.retry_of_plan_id).filter(Boolean));
-    const resolved = p => replaced.has(p.id) || p.recovery_status === "RECOVERED"
-      || ["RECEIVED", "DONE", "COMPLETED"].includes(String(p.internal_status || "").toUpperCase());
+    // 끝난 오류로 보는 경우(실측 2026-10-22): 다른 계획이 대신 올라갔거나, 그 계획 자체가 취소·입고 완료됐거나,
+    //   복구가 끝나(DB 동기화까지) 더 손댈 게 없는 상태. 'PLAN_ID_CAPTURED' 처럼 복구 진행 중은 현재 오류로 둡니다.
+    const DONE_STATUS = ["CANCELLED", "CANCELED", "RECEIVED", "DONE", "COMPLETED"];
+    const DONE_RECOVERY = ["RECOVERED", "DB_SYNCED"];
+    const resolved = p => replaced.has(p.id)
+      || DONE_RECOVERY.includes(String(p.recovery_status || "").toUpperCase())
+      || DONE_STATUS.includes(String(p.internal_status || "").toUpperCase());
     const errs = plans.filter(hasError);
     const open = errs.filter(p => !resolved(p));
     const past = errs.filter(resolved);
@@ -264,7 +269,9 @@
       : badge("muted", "발주서 없음", "매입 원장만 있는 건이에요");
     const [ik, it] = INBOUND_TEXT[r.inbound.state] || INBOUND_TEXT.UNKNOWN;
     const inBadge = po ? badge(ik, `입고 ${it}`, `발주 ${fmt(r.inbound.ordered)} · 입고 ${fmt(r.inbound.got)}`) : "";
-    const errBadge = r.inbound.errors ? badge("error", "입고 오류", r.inbound.errorReason) : "";
+    const errBadge = r.inbound.errors
+      ? badge("error", "입고 오류", `${r.inbound.errorReason}${r.inbound.state === "DONE"
+          ? " (입고 수량은 다 채워졌지만 이 입고 신청은 아직 정리되지 않았어요)" : ""}`) : "";
     const pastBadge = !r.inbound.errors && r.inbound.pastErrors
       ? badge("muted", `지난 입고 오류 ${r.inbound.pastErrors}건`, `재신청·재시도로 끝난 오류예요: ${r.inbound.pastReasons.join(" / ")}`) : "";
     const payBadge = { SCHEDULED: ["info", "지급 예정"], OVERDUE: ["pending", "지급 확인 필요"],
