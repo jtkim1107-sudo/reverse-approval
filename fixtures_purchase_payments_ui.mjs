@@ -191,7 +191,13 @@ const past = PP.inboundStateOf([{ qty: 10, received_qty: 10 }],
 check("재신청으로 끝난 오류는 '지난 오류' 로", [past.errors, past.pastErrors, past.pastReasons], [0, 1, ["센터 매핑 실패"]]);
 const now = PP.inboundStateOf([{ qty: 10, received_qty: 0 }],
   [{ id: "a", preflight_status: "FAILED", last_error_message: "센터 매핑 실패" }]);
-check("대체 계획이 없으면 '지금 오류'", [now.errors, now.pastErrors], [1, 0]);
+check("대체 계획이 없으면 '지금 오류'", [now.errors, now.pastErrors, now.errorKind], [1, 0, "오류"]);
+// 2026-10-22 실데이터(발주-2026-015): 사람이 반려한 건은 '반려' 로 말해요(시스템 오류와 할 일이 달라요)
+const rej = PP.inboundStateOf([{ qty: 80, received_qty: 80 }],
+  [{ id: "a", internal_status: "PENDING", rejection_code: "SINGLE_PLT", rejection_reason: "승인 불가 · 1PLT 단독 입고" }]);
+check("반려는 '반려' 로 구분", [rej.errors, rej.errorKind, rej.errorReason], [1, "반려", "승인 불가 · 1PLT 단독 입고"]);
+check("다음 할 일에도 반려로", PP.nextTodo({ po: { status: "ordered" }, basis: "PURCHASE", inbound: rej, freight: {}, payState: "SCHEDULED", payDate: "2026-11-20", outstanding: 0 }),
+      "입고 신청 반려 확인: 승인 불가 · 1PLT 단독 입고");
 check("복구 완료(RECOVERED)도 지난 오류",
       PP.inboundStateOf([{ qty: 10, received_qty: 10 }], [{ id: "a", last_error_code: "X", recovery_status: "RECOVERED" }]).errors, 0);
 // 2026-10-22 실데이터(발주-2026-016): 오류가 난 계획이 취소·DB 동기화로 끝나 있었어요

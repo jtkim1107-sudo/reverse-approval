@@ -79,8 +79,11 @@
     const past = errs.filter(resolved);
     const reasonOf = p => p.last_error_message || p.rejection_reason || p.rejection_code || p.last_error_code || "입고 신청 오류";
     const state = ordered <= 0 ? "UNKNOWN" : got <= 0 ? "NONE" : got < ordered ? "PARTIAL" : "DONE";
+    // 사람이 반려한 건(rejection_code)과 시스템 오류를 말로 구분해요 - 할 일이 다릅니다.
+    const kindOf = p => (p.rejection_code ? "반려" : "오류");
     return { ordered, got, remain: Math.max(ordered - got, 0), state, plans: live.length,
              errors: open.length, errorReason: open.length ? reasonOf(open[0]) : "",
+             errorKind: open.length ? kindOf(open[0]) : "",
              pastErrors: past.length, pastReasons: past.map(reasonOf).slice(0, 3) };
   }
 
@@ -270,7 +273,7 @@
     const [ik, it] = INBOUND_TEXT[r.inbound.state] || INBOUND_TEXT.UNKNOWN;
     const inBadge = po ? badge(ik, `입고 ${it}`, `발주 ${fmt(r.inbound.ordered)} · 입고 ${fmt(r.inbound.got)}`) : "";
     const errBadge = r.inbound.errors
-      ? badge("error", "입고 오류", `${r.inbound.errorReason}${r.inbound.state === "DONE"
+      ? badge("error", `입고 ${r.inbound.errorKind || "오류"}`, `${r.inbound.errorReason}${r.inbound.state === "DONE"
           ? " (입고 수량은 다 채워졌지만 이 입고 신청은 아직 정리되지 않았어요)" : ""}`) : "";
     const pastBadge = !r.inbound.errors && r.inbound.pastErrors
       ? badge("muted", `지난 입고 오류 ${r.inbound.pastErrors}건`, `재신청·재시도로 끝난 오류예요: ${r.inbound.pastReasons.join(" / ")}`) : "";
@@ -283,7 +286,7 @@
   function nextTodo(r) {
     if (r.po && r.po.status === "progress") return "결재 올린 발주서를 승인·반려 처리";
     if (r.po && r.po.status === "wing_direct_review") return "WING 직접입고 검토 초안을 정식 발주로 전환하거나 취소";
-    if (r.inbound.errors) return `입고 신청 오류 확인: ${r.inbound.errorReason}`;
+    if (r.inbound.errors) return `입고 신청 ${r.inbound.errorKind || "오류"} 확인: ${r.inbound.errorReason}`;
     if (r.basis === "ORDER") return r.partialOfPurchased
       ? "남은 수량 매입 입력 → 예상이 확정 지급액으로 옮겨져요"
       : "입고된 수량으로 매입 입력 → 지급 예정이 잡혀요";
