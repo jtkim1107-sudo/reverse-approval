@@ -508,6 +508,7 @@
     }
     const d = m.due;
     return `<div class="card pp" id="purchase-payments">
+      ${(m.paymentConfirmations || []).filter(p => p.status === "PAID").map(p => `<p class="pp-note">✓ ${esc(p.invoice_month)} ${esc(p.supplier)} 운반비 ${won(p.paid_amount)} · ${esc(p.paid_date)} 지급 완료(사용자 확인) · 남은 지급액 ${won(p.outstanding)}</p>`).join("")}
       <div class="card-head"><h2>💳 발주 · 입고 · 지급</h2>
         <small class="pp-sub">발주 · 입고 · 지급은 각각 따로 표시돼요 · 금액은 저장된 발주 시점 단가 기준</small></div>
       <div class="pp-due">
@@ -623,10 +624,14 @@
     const withName = rows => (rows || []).map(x => ({ ...x, _name: name(x) }));
     let vat = (settings && settings.data && settings.data.value) || {};
     if (typeof vat === "string") { try { vat = JSON.parse(vat); } catch (e) { vat = {}; } }
-    return model({ pos: pos.data || [], items: withName(items.data), purchases: withName(purchases.data),
+    const result = model({ pos: pos.data || [], items: withName(items.data), purchases: withName(purchases.data),
                    products: products.data || [], plans: plans.data || [], txns: txns.data || [],
                    inbounds: inbounds.data || [], freights: freights.data || [], wingInbounds: wingRows, vat,
                    today: today || new Date().toISOString().slice(0, 10) });
+    const paid = await sb.from("settings").select("value").eq("key", "procurement_payment_confirmations").maybeSingle();
+    if (paid.error) return {error: paid.error.message};
+    result.paymentConfirmations = Object.values(paid.data?.value || {});
+    return result;
   }
 
   global.PurchasePayments = { nextTwentieth, payableOf, inboundStateOf, matchedPayments, allocatePayments,
