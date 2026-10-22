@@ -56,7 +56,8 @@ check("미입고 · 입고 완료", [PP.inboundStateOf([{ qty: 10, received_qty:
                             PP.inboundStateOf([{ qty: 10, received_qty: 10 }], []).state], ["NONE", "DONE"]);
 const inbErr = PP.inboundStateOf([{ qty: 10, received_qty: 10 }],
   [{ id: "i1", preflight_status: "FAILED", last_error_message: "센터 매핑 실패" }]);
-check("입고 완료여도 오류는 따로 남음", [inbErr.state, inbErr.errors, inbErr.errorReason], ["DONE", 1, "센터 매핑 실패"]);
+check("입고 수량은 찼지만 신청 기록이 오류면 '확인 필요' 로 남김(현재 오류로 단정 안 함)",
+      [inbErr.state, inbErr.errors, inbErr.checks, inbErr.checkReason], ["DONE", 0, 1, "센터 매핑 실패"]);
 check("재신청·재시도는 원건에 묶어 중복으로 세지 않음",
       PP.inboundStateOf([{ qty: 10, received_qty: 10 }],
         [{ id: "a" }, { id: "b", resubmission_of_plan_id: "a" }, { id: "c", retry_of_plan_id: "a" }]).plans, 1);
@@ -193,7 +194,7 @@ const now = PP.inboundStateOf([{ qty: 10, received_qty: 0 }],
   [{ id: "a", preflight_status: "FAILED", last_error_message: "센터 매핑 실패" }]);
 check("대체 계획이 없으면 '지금 오류'", [now.errors, now.pastErrors, now.errorKind], [1, 0, "오류"]);
 // 2026-10-22 실데이터(발주-2026-015): 사람이 반려한 건은 '반려' 로 말해요(시스템 오류와 할 일이 달라요)
-const rej = PP.inboundStateOf([{ qty: 80, received_qty: 80 }],
+const rej = PP.inboundStateOf([{ qty: 80, received_qty: 0 }],
   [{ id: "a", internal_status: "PENDING", rejection_code: "SINGLE_PLT", rejection_reason: "승인 불가 · 1PLT 단독 입고" }]);
 check("반려는 '반려' 로 구분", [rej.errors, rej.errorKind, rej.errorReason], [1, "반려", "승인 불가 · 1PLT 단독 입고"]);
 check("다음 할 일에도 반려로", PP.nextTodo({ po: { status: "ordered" }, basis: "PURCHASE", inbound: rej, freight: {}, payState: "SCHEDULED", payDate: "2026-11-20", outstanding: 0 }),
@@ -207,14 +208,108 @@ check("취소된 계획의 오류는 지난 오류",
 check("복구가 DB 동기화까지 끝났으면 지난 오류",
       PP.inboundStateOf([{ qty: 1, received_qty: 1 }],
         [{ id: "a", internal_status: "FAILED", last_error_code: "PREFLIGHT_DRAFT_CREATED", recovery_status: "DB_SYNCED" }]).errors, 0);
-check("복구 진행 중(PLAN_ID_CAPTURED)은 지금 오류로 남김",
-      PP.inboundStateOf([{ qty: 240, received_qty: 240 }],
+check("복구 진행 중 + 아직 미입고면 지금 오류",
+      PP.inboundStateOf([{ qty: 240, received_qty: 0 }],
         [{ id: "a", internal_status: "PLAN_CREATED", preflight_status: "FAILED",
            recovery_status: "PLAN_ID_CAPTURED", last_error_code: "SLOT_UNAVAILABLE_AFTER_MIN_EDD" }]).errors, 1);
 const pastRow = PP.model({ ...base, inbounds: [{ id: "a", purchase_order_id: "po1", preflight_status: "FAILED", last_error_message: "센터 매핑 실패" },
                                                { id: "b", purchase_order_id: "po1", resubmission_of_plan_id: "a", internal_status: "RECEIVED" }] });
 check("지난 오류는 다음 할 일에 올리지 않음", PP.nextTodo(pastRow.rows.find(r => r.basis === "PURCHASE")).includes("입고 신청 오류"), false);
 check("지난 오류는 접어서 배지로만", text(PP.cardHtml(pastRow)).includes("지난 입고 오류 1건"), true);
+
+console.log("\n[8-5] 자금일보 연결 - 예상 출금·대조표(같은 계산, 이중 합산 없음)");
+const linked = PP.model({ ...base, pos: [PO, PO17], items: [...ITEMS, ...IT17] });
+check("예상 출금 목록을 자금일보에 그대로 넘김",
+      linked.estimatedPlans.map(x => [x.date, x.kind, x.amount, x.estimate, !!x.poNo]),
+      [["2026-11-20", "출금", EST17, true, true]]);
+check("cash_plans 에 이미 있는 확정분은 예상으로 다시 넣지 않음",
+      linked.estimatedPlans.filter(x => x.poNo === PO.po_no).length, 0);
+check("[핵심] 매입을 넣으면 예상이 사라져 이중 합산이 안 됨(멱등 전환)", (() => {
+  const after = PP.model({ ...base, pos: [PO, PO17], items: [...ITEMS, ...IT17],
+    purchases: [...PURCHASES, { id: "pur-17", po_id: "po17", product_id: "p1", date: "2026-10-25", qty: 200,
+                                unit_cost: 6500, amount: 1300000, supplier: "리파코 주식회사", _name: "구름목욕시간" }],
+    plans: [...PLANS, { id: "cp2", date: "2026-11-20", kind: "출금", amount: EST17,
+                        title: "리파코 주식회사 2026-10 매입대금 (리버스-발주-2026-017)",
+                        memo: "AUTO_PURCHASE_TERMS=2026-10:po17 | 매입월 다음 달 20일" }] });
+  return [after.estimatedPlans.length, after.due.confirmed.total, after.due.estimated.total, after.due.total];
+})(), [0, PLAN_AMOUNT + EST17, 0, PLAN_AMOUNT + EST17]);
+check("부분 매입이면 남은 몫만 예상 출금으로", (() => {
+  const x = PP.model(halfCfg);
+  return [x.estimatedPlans.length, x.estimatedPlans[0].amount];
+})(), [1, EST17 - PP.payableOf(650000, TAXABLE, VAT)]);
+const sch = linked.schedule.find(d => d.date === "2026-11-20");
+check("날짜별 대조표 - 확정·예상·운반비·기지급·잔액",
+      [sch.confirmed, sch.estimated, sch.cash, sch.match, sch.freightConfirmed, sch.paid, sch.outstanding],
+      [PLAN_AMOUNT, EST17, PLAN_AMOUNT, true, 0, 0, PLAN_AMOUNT + EST17]);
+check("다월 발주도 날짜마다 따로 대조",
+      twoMonths.schedule.map(d => [d.date, d.confirmed, d.match]),
+      [["2026-11-20", PLAN_AMOUNT, true], ["2026-12-20", PP.payableOf(65000, TAXABLE, VAT), false]]);
+check("부분 지급도 대조표에 반영", (() => {
+  const x = PP.model({ ...base, txns: [{ id: "t1", kind: "출금", date: "2026-11-20", amount: 300000, memo: "리버스-발주-2026-018 1차" }] });
+  const d = x.schedule.find(y => y.date === "2026-11-20");
+  return [d.paid, d.outstanding, d.confirmed];
+})(), [300000, PLAN_AMOUNT - 300000, PLAN_AMOUNT]);
+check("확정 운반비도 대조표에", (() => {
+  const x = PP.model({ ...base, freights: [{ id: "f1", purchase_order_id: "po1", basis: "ACTUAL", gross: 132000 }] });
+  const d = x.schedule.find(y => y.date === "2026-11-20");
+  return [d.freightConfirmed, d.outstanding];
+})(), [132000, PLAN_AMOUNT + 132000]);
+check("'실제로 나갈 돈' 이라고 단정하지 않고 예상·확인 필요를 유지",
+      [text(PP.cardHtml(linked)).includes("실제로 나갈 돈"), text(PP.cardHtml(linked)).includes("미지급(확정 전)"),
+       text(PP.cardHtml(linked)).includes("지급 확인 필요")], [false, true, true]);
+check("app.js 자금일보가 같은 모델을 쓰고 확정·예상을 나눠 보여 줌",
+      ["PurchasePayments.load(sb", "estimatedPlans", "planOutEst", "예상 · 매입 전", "확정만 반영하면"]
+        .filter(w => !APP.includes(w)), []);
+
+console.log("\n[8-6] 입고 오류 - 대체 신청 증거로 이력/확인 필요 가르기");
+const ev = PP.inboundStateOf([{ qty: 240, received_qty: 240, wing_observed_received_qty: 240 }],
+  [{ id: "a", internal_status: "PLAN_CREATED", preflight_status: "FAILED", recovery_status: "PLAN_ID_CAPTURED",
+     last_error_code: "SLOT_UNAVAILABLE_AFTER_MIN_EDD" }], { wing_direct_shipment_id: "1110729122750939136" });
+check("[실데이터 018] 대체 신청·관측 수량이 맞으면 이력으로",
+      [ev.errors, ev.checks, ev.pastErrors, ev.pastEvidence.length], [0, 0, 1, 2]);
+const noEv = PP.inboundStateOf([{ qty: 240, received_qty: 240 }],
+  [{ id: "a", internal_status: "PLAN_CREATED", preflight_status: "FAILED", recovery_status: "PLAN_ID_CAPTURED",
+     last_error_code: "SLOT_UNAVAILABLE_AFTER_MIN_EDD" }], {});
+check("증거가 없으면 '확인 필요'(현재 오류로 단정하지 않음)", [noEv.errors, noEv.checks, noEv.pastErrors], [0, 1, 0]);
+const notDone = PP.inboundStateOf([{ qty: 240, received_qty: 0 }],
+  [{ id: "a", preflight_status: "FAILED", last_error_code: "X" }], {});
+check("아직 입고가 안 됐으면 지금 오류 그대로", [notDone.errors, notDone.checks], [1, 0]);
+check("확인 필요도 다음 할 일에 나옴",
+      PP.nextTodo({ po: { status: "ordered" }, basis: "PURCHASE", inbound: noEv, freight: {}, payState: "SCHEDULED", payDate: "x", outstanding: 0 })
+        .includes("어느 신청으로 받았는지 확인"), true);
+
+console.log("\n[8-7] 등록 경로 · 연결 확인 · 입고 근거 있는 보류");
+const directPO = { id: "pod", po_no: "리버스-발주-WING검토-111", supplier: "리파코 주식회사", date: "2026-10-12",
+                   status: "done", wing_direct_shipment_id: "111" };
+const directPur = [{ id: "pur-d", po_id: "pod", product_id: "p1", date: "2026-10-12", qty: 72, unit_cost: 9300,
+                     amount: 669600, supplier: "리파코 주식회사", _name: "틈새 수납함",
+                     memo: "WING검토-111 | 사용자 확인: 기존 발주의 재신청. 실제 입고 222" }];
+const dm = PP.model({ ...base, pos: [PO, directPO], items: ITEMS, purchases: [...PURCHASES, ...directPur] });
+const drow = dm.rows.find(r => r.poId === "pod");
+check("[핵심] 발주서 없이 쿠팡에 먼저 입고한 건도 집계에 포함",
+      [!!drow, drow.basis, drow.goods], [true, "PURCHASE", PP.payableOf(669600, TAXABLE, VAT)]);
+check("등록 경로를 구분해 적음", [drow.route, dm.rows.find(r => r.poId === "po1").route],
+      ["쿠팡 직접입고 → ERP 등록", "ERP 발주서 → 입고"]);
+check("재신청 메모는 '연결 확인 필요' 로 남기고 금액을 임의로 합치거나 빼지 않음",
+      [drow.linkNotes, drow.goods], [["재신청"], PP.payableOf(669600, TAXABLE, VAT)]);
+check("재고 이동 메모도 연결 확인 대상",
+      PP.model({ ...base, pos: [PO, directPO], items: ITEMS,
+        purchases: [...PURCHASES, { ...directPur[0], memo: "쿠팡 창고로 재고 이동분" }] })
+        .rows.find(r => r.poId === "pod").linkNotes, ["재고 이동"]);
+check("검토 초안이라도 입고 근거가 있으면 예상에 넣고 근거를 적음", (() => {
+  const x = PP.model({ ...base, pos: [PO, { id: "pw", po_no: "WING검토-2", supplier: "리파코 주식회사", date: "2026-10-03",
+                                            status: "wing_direct_review", wing_direct_shipment_id: "999" }],
+    items: [...ITEMS, { id: "iw", po_id: "pw", product_id: "p1", qty: 10, unit_cost: 1000, amount: 10000,
+                        received_qty: 10, wing_observed_received_qty: 10, _name: "x" }] });
+  const r = x.rows.find(y => y.poId === "pw");
+  return [r.hold, r.holdReleased, x.due.estimated.count >= 1, r.evidenceNote.includes("WING 관측")];
+})(), [false, true, true, true]);
+check("입고 근거가 없는 검토 초안은 보류 유지(임의 확정 금지)", (() => {
+  const x = PP.model({ ...base, pos: [PO, { id: "pw2", po_no: "WING검토-3", supplier: "리파코 주식회사", date: "2026-10-03",
+                                            status: "wing_direct_review" }],
+    items: [...ITEMS, { id: "iw2", po_id: "pw2", product_id: "p1", qty: 10, unit_cost: 1000, amount: 10000, received_qty: 0, _name: "x" }] });
+  return x.rows.find(y => y.poId === "pw2").hold;
+})(), true);
 
 console.log("\n[9] 화면 - 모바일 펼침 · 단가 보존 문구 · 송금 없음");
 check("요약은 <summary>, 자세한 건 <details> 안", [html.includes("<details class=\"pp-row\">"), html.includes("<summary>")], [true, true]);

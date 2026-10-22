@@ -58,8 +58,9 @@
     return `<span class="erp-badge erp-badge--sm"${title ? ` title="${esc(title)}"` : ""}>${esc(text)}</span>`;
   }
 
-  /** 입고 상태 - 수량(발주 대비 입고)과 입고 신청 오류를 따로 봐요(둘은 다른 사실) */
-  function inboundStateOf(items, plans) {
+  /** 입고 상태 - 수량(발주 대비 입고)과 입고 신청 오류를 따로 봐요(둘은 다른 사실)
+   *  po: 대체 신청 증거를 보기 위한 발주(선택) - wing_direct_shipment_id 등 */
+  function inboundStateOf(items, plans, po) {
     const ordered = items.reduce((s, i) => s + num(i.qty), 0);
     const got = items.reduce((s, i) => s + num(i.received_qty), 0);
     const live = plans.filter(p => !p.resubmission_of_plan_id && !p.retry_of_plan_id);  // 재신청·재시도는 원건에 묶어요
@@ -75,16 +76,33 @@
       || DONE_RECOVERY.includes(String(p.recovery_status || "").toUpperCase())
       || DONE_STATUS.includes(String(p.internal_status || "").toUpperCase());
     const errs = plans.filter(hasError);
-    const open = errs.filter(p => !resolved(p));
-    const past = errs.filter(resolved);
     const reasonOf = p => p.last_error_message || p.rejection_reason || p.rejection_code || p.last_error_code || "입고 신청 오류";
     const state = ordered <= 0 ? "UNKNOWN" : got <= 0 ? "NONE" : got < ordered ? "PARTIAL" : "DONE";
     // 사람이 반려한 건(rejection_code)과 시스템 오류를 말로 구분해요 - 할 일이 다릅니다.
     const kindOf = p => (p.rejection_code ? "반려" : "오류");
-    return { ordered, got, remain: Math.max(ordered - got, 0), state, plans: live.length,
+
+    // 수량은 다 입고됐는데 신청 기록만 오류로 남은 경우 - '다른 신청으로 받았다'는 증거가 있으면 이력,
+    //   없으면 '확인 필요'(현재 오류로 단정하지 않아요). 2026-10-22 발주-2026-018 사례.
+    const observed = (items || []).reduce((s2, i) => s2 + num(i.wing_observed_received_qty), 0);
+    const altPlan = p => plans.some(q => q.id !== p.id
+      && (["SUBMITTED", "SUBMIT_SUCCEEDED", "OK"].includes(String(q.submit_status || "").toUpperCase())
+          || DONE_STATUS.includes(String(q.internal_status || "").toUpperCase())));
+    const altEvidence = [];
+    if (po && po.wing_direct_shipment_id) altEvidence.push(`WING 직접입고 ${po.wing_direct_shipment_id} 연결`);
+    if (ordered > 0 && observed >= ordered) altEvidence.push(`WING 관측 입고 수량 ${fmt(observed)}/${fmt(ordered)}`);
+    const doneByOther = p => state === "DONE" && (altEvidence.length > 0 || altPlan(p));
+
+    const past = errs.filter(p => resolved(p) || doneByOther(p));
+    const rest = errs.filter(p => !past.includes(p));
+    // 수량은 다 찼는데 증거가 없으면 '확인 필요'
+    const check = rest.filter(() => state === "DONE");
+    const open = rest.filter(p => !check.includes(p));
+    return { ordered, got, remain: Math.max(ordered - got, 0), state, plans: live.length, observed,
              errors: open.length, errorReason: open.length ? reasonOf(open[0]) : "",
              errorKind: open.length ? kindOf(open[0]) : "",
-             pastErrors: past.length, pastReasons: past.map(reasonOf).slice(0, 3) };
+             checks: check.length, checkReason: check.length ? reasonOf(check[0]) : "",
+             pastErrors: past.length, pastReasons: past.map(reasonOf).slice(0, 3),
+             pastEvidence: altEvidence };
   }
 
   const INBOUND_TEXT = { NONE: ["pending", "미입고"], PARTIAL: ["pending", "일부 입고"], DONE: ["ok", "입고 완료"],
@@ -173,11 +191,17 @@
       const remain = orderedPayable - purchased;
       if (remain <= 0) return;                       // 매입이 발주액을 다 채웠으면 예상 줄이 필요 없어요
       const month = ymd(po.date).slice(0, 7);
-      const hold = HOLD.includes(po.status);
+      const received = its.reduce((a, i) => a + num(i.received_qty), 0);
+      const observed = its.reduce((a, i) => a + num(i.wing_observed_received_qty), 0);
+      // 보류(결재 대기·검토 초안)라도 '실제로 들어온 증거' 가 있으면 빠뜨리지 않고 예상에 넣어요(근거를 적어서).
+      const evidence = received > 0 || observed > 0 || !!po.wing_direct_shipment_id;
+      const hold = HOLD.includes(po.status) && !evidence;
+      const holdReleased = HOLD.includes(po.status) && evidence;
       const partial = purchased > 0;
       groups.set(`${month}:${po.id}:EST`, {
         key: `${month}:${po.id}:EST`, month, poId: po.id, basis: "ORDER", purchases: [], firstDate: ymd(po.date),
-        supplier: po.supplier || "", goods: remain, hold, partialOfPurchased: partial,
+        supplier: po.supplier || "", goods: remain, hold, holdReleased, partialOfPurchased: partial,
+        evidenceNote: holdReleased ? `입고 근거 있음(입고 ${fmt(received)} · WING 관측 ${fmt(observed)}${po.wing_direct_shipment_id ? ` · 직접입고 ${po.wing_direct_shipment_id}` : ""})` : "",
         orderedPayable, purchasedPayable: purchased,
         qty: partial ? 0 : its.reduce((s, i) => s + num(i.qty), 0),
       });
@@ -186,7 +210,7 @@
     const rows = [...groups.values()].map(g => {
       const po = poById[g.poId] || null;
       const its = po ? (itemsByPo[po.id] || []) : [];
-      const inb = inboundStateOf(its, po ? (inboundByPo[po.id] || []) : []);
+      const inb = inboundStateOf(its, po ? (inboundByPo[po.id] || []) : [], po);
       const frs = po ? (freightByPo[po.id] || []) : [];
       // 운반비는 발주마다 한 번만 - 그 발주의 가장 이른 묶음에만 붙여요(달이 나뉘어도 두 번 더하지 않게)
       const firstOfPo = [...groups.values()].filter(x => x.poId === g.poId).sort((a, b) => a.month.localeCompare(b.month))[0];
@@ -196,11 +220,18 @@
                         amount: ownsFreight ? actual.reduce((s, f) => s + num(f.gross), 0) : 0,
                         estimate: po ? num(po.freight_est) : 0 };
       const purchaseIds = g.purchases.map(p => p.id);
+      // 등록 경로 - ERP 발주서로 시작했는지, 쿠팡에 먼저 입고 신청하고 ERP 에 등록했는지(같은 매입 업무, 순서만 다름)
+      const direct = !!(po && (po.wing_direct_shipment_id || String(po.po_no || "").includes("WING검토")));
+      const route = !po ? "발주서 없이 매입 입력" : direct ? "쿠팡 직접입고 → ERP 등록" : "ERP 발주서 → 입고";
+      // 재신청·이동처럼 '원매입과 묶어야 할 수 있는' 매입은 사람이 확인하도록 표시해요(임의로 합치거나 빼지 않아요)
+      const linkWords = [["재신청", "재신청"], ["재시도", "재시도"], ["이동", "재고 이동"], ["대체", "대체 신청"]];
+      const linkNotes = [...new Set(g.purchases.flatMap(x => linkWords
+        .filter(([w]) => String(x.memo || "").includes(w)).map(([, label]) => label)))];
       const payDate = nextTwentieth(g.firstDate);
       const plan = (plans || []).find(p => String(p.memo || "").includes(`AUTO_PURCHASE_TERMS=${g.key}`)) || null;
       const base = g.goods + (freight.confirmed ? freight.amount : 0);
       const orderMonth = po ? ymd(po.date).slice(0, 7) : g.month;
-      return { ...g, po, items: its, inbound: inb, freight, plan, payDate, base, purchaseIds,
+      return { ...g, po, items: its, inbound: inb, freight, plan, payDate, base, purchaseIds, route, direct, linkNotes,
                matchKeys: [po && po.po_no].filter(Boolean).concat(purchaseIds),
                orderMonth, basisNote: orderMonth !== g.month ? `매입월 ${g.month} 기준 · 발주 ${orderMonth}` : "",
                outstandingBasis: freight.confirmed ? "상품대금 + 확정 운반비" : "상품대금 기준(운반비 미확정)" };
@@ -255,13 +286,40 @@
       cash: cashAt.reduce((s, p) => s + num(p.amount), 0), cashCount: cashAt.length,
       screen: due.confirmed.total, ok: Math.abs(due.confirmed.total - cashAt.reduce((s, p) => s + num(p.amount), 0)) <= 1,
       freight: due.freightConfirmed, paid: due.paid, outstanding: due.outstanding,
-      note: "자금일보 예정출금은 상품대금만 잡아요(운반비 별도·지급 대사 전). 이 화면은 거기에 확정 운반비를 더하고 확인된 지급을 뺀 잔액을 따로 보여 줍니다.",
+      note: "자금일보 예정출금(확정)은 매입 입력된 상품대금만 잡아요. 자금일보에도 같은 예상·운반비·기지급을 같은 계산으로 함께 보여 줍니다.",
     };
+    // 자금일보가 그대로 쓰는 '예상 출금'(매입 전 발주) - cash_plans 에 이미 있는 확정분과 겹치지 않아요.
+    //   같은 발주가 매입 입력되면 그 금액만큼 예상이 줄고 확정(cash_plans)으로 옮겨 가 이중 합산이 되지 않습니다.
+    const planKeys = new Set(auto.map(p => (String(p.memo || "").match(/AUTO_PURCHASE_TERMS=([^\s|]+)/) || [])[1]).filter(Boolean));
+    const estimatedPlans = rows.filter(r => r.basis === "ORDER" && !r.hold && r.goods > 0 && !planKeys.has(r.key))
+      .map(r => ({ date: r.payDate, kind: "출금", amount: r.goods, estimate: true, key: r.key,
+                   poNo: r.po && r.po.po_no, supplier: r.supplier,
+                   title: `${r.supplier} ${r.month} 발주 예상 매입대금 (${(r.po && r.po.po_no) || ""})`,
+                   note: "매입 입력 전이라 예상이에요 - 매입을 넣으면 확정 예정출금으로 바뀌어요" }));
+    // 날짜별 대조표(확정/예상/운반비/기지급/잔액) - 발주 화면과 자금일보가 같은 숫자를 쓰도록
+    const byDate = {};
+    rows.forEach(r => {
+      if (r.hold) return;
+      const d = byDate[r.payDate] || (byDate[r.payDate] = { date: r.payDate, confirmed: 0, estimated: 0,
+                                                           freightConfirmed: 0, paid: 0, outstanding: 0, cash: 0 });
+      d[r.basis === "PURCHASE" ? "confirmed" : "estimated"] += r.goods;
+      d.freightConfirmed += r.freight.confirmed ? r.freight.amount : 0;
+      d.paid += r.paidAmount;
+      d.outstanding += r.outstanding;
+    });
+    auto.forEach(p => {
+      const d = byDate[ymd(p.date)] || (byDate[ymd(p.date)] = { date: ymd(p.date), confirmed: 0, estimated: 0,
+                                                                freightConfirmed: 0, paid: 0, outstanding: 0, cash: 0 });
+      d.cash += num(p.amount);
+    });
+    const schedule = Object.values(byDate).sort((a, b) => a.date.localeCompare(b.date))
+      .map(d => ({ ...d, match: Math.abs(d.confirmed - d.cash) <= 1 }));
+
     const matchedIds = new Set(rows.flatMap(r => r.paid.map(t => t.id)));
     const ambiguousIds = new Set(alloc.ambiguous.map(a => a.id));
     const unverified = (txns || []).filter(t => t.kind === "출금" && ymd(t.date) >= "2026-09-01"
       && !matchedIds.has(t.id)).length;
-    return { rows, due, reconcile, unverifiedPayouts: unverified, ambiguousPayouts: alloc.ambiguous,
+    return { rows, due, reconcile, schedule, estimatedPlans, unverifiedPayouts: unverified, ambiguousPayouts: alloc.ambiguous,
              overPaid: rows.filter(r => r.overPaid > 0).map(r => ({ po: r.po && r.po.po_no, over: r.overPaid })),
              asOf: today };
   }
@@ -275,18 +333,23 @@
     const errBadge = r.inbound.errors
       ? badge("error", `입고 ${r.inbound.errorKind || "오류"}`, `${r.inbound.errorReason}${r.inbound.state === "DONE"
           ? " (입고 수량은 다 채워졌지만 이 입고 신청은 아직 정리되지 않았어요)" : ""}`) : "";
-    const pastBadge = !r.inbound.errors && r.inbound.pastErrors
-      ? badge("muted", `지난 입고 오류 ${r.inbound.pastErrors}건`, `재신청·재시도로 끝난 오류예요: ${r.inbound.pastReasons.join(" / ")}`) : "";
+    const checkBadge = r.inbound.checks
+      ? badge("pending", "입고 확인 필요", `수량은 다 입고됐는데 이 신청 기록이 오류로 남아 있어요(대체 신청 증거 없음): ${r.inbound.checkReason}`) : "";
+    const pastBadge = !r.inbound.errors && !r.inbound.checks && r.inbound.pastErrors
+      ? badge("muted", `지난 입고 오류 ${r.inbound.pastErrors}건`,
+              `끝난 오류예요: ${r.inbound.pastReasons.join(" / ")}${r.inbound.pastEvidence.length
+                ? ` · 근거 ${r.inbound.pastEvidence.join(" · ")}` : " · 재신청·재시도로 대체됨"}`) : "";
     const payBadge = { SCHEDULED: ["info", "지급 예정"], OVERDUE: ["pending", "지급 확인 필요"],
                        PARTIAL: ["pending", "일부 지급"], PAID: ["ok", "지급 완료"],
                        NOT_PURCHASED: ["info", "지급 예상(매입 전)"], HOLD: ["muted", "지급 보류"] }[r.payState];
-    return `<div class="pp-states">${orderBadge}${inBadge}${errBadge}${pastBadge}${badge(payBadge[0], payBadge[1], "통장 매칭이 확인된 지급만 차감해요")}</div>`;
+    return `<div class="pp-states">${orderBadge}${inBadge}${errBadge}${checkBadge}${pastBadge}${badge(payBadge[0], payBadge[1], "통장 매칭이 확인된 지급만 차감해요")}</div>`;
   }
 
   function nextTodo(r) {
     if (r.po && r.po.status === "progress") return "결재 올린 발주서를 승인·반려 처리";
     if (r.po && r.po.status === "wing_direct_review") return "WING 직접입고 검토 초안을 정식 발주로 전환하거나 취소";
     if (r.inbound.errors) return `입고 신청 ${r.inbound.errorKind || "오류"} 확인: ${r.inbound.errorReason}`;
+    if (r.inbound.checks) return `입고는 끝났는데 신청 기록이 오류로 남아 있어요 - 어느 신청으로 받았는지 확인: ${r.inbound.checkReason}`;
     if (r.basis === "ORDER") return r.partialOfPurchased
       ? "남은 수량 매입 입력 → 예상이 확정 지급액으로 옮겨져요"
       : "입고된 수량으로 매입 입력 → 지급 예정이 잡혀요";
@@ -318,7 +381,7 @@
     return `<details class="pp-row">
       <summary>
         <div class="pp-main">
-          <b>${esc(r.supplier || "거래처 확인 필요")}</b>
+          <b>${esc(r.supplier || "거래처 확인 필요")}</b>${r.direct ? ` ${badge("info", "직접입고", "쿠팡에 먼저 입고 신청하고 ERP 에 등록한 건이에요")}` : ""}${(r.linkNotes || []).length ? ` ${badge("pending", "연결 확인", r.linkNotes.join(" · "))}` : ""}
           <span class="pp-sub">${esc(title)} · ${esc(first)}${esc(more)} · ${fmt(r.qty)}개</span>
         </div>
         <div class="pp-amt"><b>${won(r.goods)}</b><span class="pp-sub">상품대금(VAT 포함)</span></div>
@@ -329,6 +392,9 @@
       <div class="pp-detail">
         <div class="pp-facts">
           <div><span>기준</span><b>${r.basis === "PURCHASE" ? "매입 원장" : "발주서(매입 입력 전 잠정)"}${r.basisNote ? ` · ${esc(r.basisNote)}` : ""}</b></div>
+          <div><span>등록 경로</span><b>${esc(r.route)}${r.evidenceNote ? ` <small>· ${esc(r.evidenceNote)}</small>` : ""}</b></div>
+          ${r.linkNotes && r.linkNotes.length ? `<div><span>연결 확인 필요</span><b class="pp-warn">${esc(r.linkNotes.join(" · "))}
+            <small>원매입과 묶어야 하는 건지 확인해 주세요 - 자동으로 합치거나 빼지 않았어요</small></b></div>` : ""}
           <div><span>지급 예정일</span><b>${esc(r.payDate)} <small>${r.basis === "ORDER"
             ? `발주월 ${esc(r.month)} 기준 예상 - 매입 입력하면 매입월 기준으로 확정돼요`
             : `매입월 ${esc(r.month)} 다음 달 20일`}</small></b></div>
@@ -338,8 +404,9 @@
             : `<small>기록 없음</small>`}</b></div>
           <div><span>확인된 기지급</span><b>${r.paidAmount ? won(r.paidAmount) : `<small>없음 · 통장에 이 발주가 적힌 출금만 차감해요</small>`}</b></div>
           <div><span>미지급 잔액</span><b>${won(r.outstanding)} <small>${esc(r.outstandingBasis)}</small></b></div>
-          <div><span>입고</span><b>${fmt(r.inbound.got)} / ${fmt(r.inbound.ordered)}${r.inbound.errors
-            ? ` · <span class="pp-warn">지금 오류 ${r.inbound.errors}건</span>` : ""}${r.inbound.pastErrors
+          <div><span>입고</span><b>${fmt(r.inbound.got)} / ${fmt(r.inbound.ordered)}${r.inbound.errors ? ` · <span class="pp-warn">지금 오류 ${r.inbound.errors}건</span>` : ""}${r.inbound.checks
+            ? ` · <span class="pp-warn">확인 필요 ${r.inbound.checks}건</span>` : ""}${r.inbound.pastEvidence.length
+            ? ` <small>· 대체 신청 근거: ${esc(r.inbound.pastEvidence.join(" · "))}</small>` : ""}${r.inbound.pastErrors
             ? ` <small>· 지난 오류 ${fmt(r.inbound.pastErrors)}건(재신청·재시도로 끝남)</small>` : ""}</b></div>
           ${r.basis === "ORDER" && r.partialOfPurchased ? `<div><span>예상 남은 몫</span><b>${won(r.goods)}
             <small>발주 ${won(r.orderedPayable)} − 매입 입력 ${won(r.purchasedPayable)}</small></b></div>` : ""}
@@ -373,10 +440,11 @@
       <div class="pp-recon">
         ${m.reconcile.ok ? `<p class="pp-note">✓ 확정분 ${won(m.reconcile.screen)} 는 자금일보 ${esc(d.date)} 예정출금 ${m.reconcile.cashCount}건과 같은 금액이에요.</p>`
           : `<p class="pp-note pp-warn">⚠ 확정분 ${won(m.reconcile.screen)} 와 자금일보 ${won(m.reconcile.cash)} 가 달라요 - 매입 입력·지급 예정 반영을 확인해 주세요.</p>`}
-        <p class="pp-note">같은 날 실제로 나갈 돈: 상품대금 ${won(d.confirmed.total + d.estimated.total)}
+        <p class="pp-note">${esc(d.date)} 기준 <b>미지급(확정 전)</b>: 상품대금 ${won(d.confirmed.total)}(확정)
+          ${d.estimated.total ? `＋ ${won(d.estimated.total)}(예상 · 매입 전)` : ""}
           ${d.freightConfirmed ? `＋ 확정 운반비 ${won(d.freightConfirmed)}` : "＋ 운반비 미확정(더하지 않음)"}
-          ${d.paid ? `－ 확인된 지급 ${won(d.paid)}` : "－ 확인된 지급 없음"} ＝ <b>미지급 ${won(d.outstanding)}</b>.
-          ${esc(m.reconcile.note)}</p>
+          ${d.paid ? `－ 확인된 지급 ${won(d.paid)}` : "－ 확인된 지급 없음(지급 확인 필요)"} ＝ <b>${won(d.outstanding)}</b>.
+          실제 나갈 금액은 매입 입력·운반비 청구·통장 대사로 바뀔 수 있어요. ${esc(m.reconcile.note)}</p>
         ${d.hold.count ? `<p class="pp-note">보류 ${d.hold.count}건은 합계에서 뺐어요: ${d.hold.items.map(h =>
           `${esc(h.po || "")} ${won(h.amount)}(${esc(h.reason)})`).join(" · ")}</p>` : ""}
         ${m.ambiguousPayouts.length ? `<p class="pp-note pp-warn">⚠ 어느 발주 지급인지 하나로 정해지지 않아 차감하지 않은 출금 ${m.ambiguousPayouts.length}건:

@@ -12362,14 +12362,27 @@ async function viewCash() {
       .reduce((ss, t) => ss + (t.kind === "입금" ? 1 : -1) * Number(t.amount), 0), 0);
   const forecastEnd = ripacoEstimatedPayDate(today());
   const forecastDays = Math.round((new Date(forecastEnd + "T00:00:00Z") - new Date(today() + "T00:00:00Z")) / 86400000);
-  const occ = planOccurrences(cashPlans, today(), forecastDays);
-  let runBal = curBal;
+  // 2026-10-22 [대표 지시] 발주 화면과 같은 계산으로 '예상(매입 전 발주)' 도 함께 보여 줘요.
+  //   cash_plans(확정)과 겹치지 않게 PurchasePayments 가 골라 주고(같은 발주가 매입되면 예상이 사라짐),
+  //   예상·확정을 섞지 않고 따로 표시합니다. 조회만 하고 cash_plans 를 만들지 않아요.
+  let payModel = null;
+  if (globalThis.PurchasePayments) {
+    try { payModel = await PurchasePayments.load(sb, { today: today() }); } catch (e) { payModel = { error: String(e && e.message || e) }; }
+  }
+  const estPlans = (payModel && !payModel.error ? payModel.estimatedPlans : []) || [];
+  const estInRange = estPlans.filter(o => o.date >= today() && o.date <= forecastEnd);
+  const occConfirmed = planOccurrences(cashPlans, today(), forecastDays);
+  const occ = occConfirmed.concat(estInRange).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  let runBal = curBal, runBalConfirmed = curBal;
   const projRows = occ.map(o => {
-    runBal += (o.kind === "입금" ? 1 : -1) * Number(o.amount);
-    return { ...o, bal: runBal };
+    const delta = (o.kind === "입금" ? 1 : -1) * Number(o.amount);
+    runBal += delta;
+    if (!o.estimate) runBalConfirmed += delta;
+    return { ...o, bal: runBal, balConfirmed: runBalConfirmed };
   });
   const planIn = occ.filter(o => o.kind === "입금").reduce((s, o) => s + Number(o.amount), 0);
-  const planOut = occ.filter(o => o.kind === "출금").reduce((s, o) => s + Number(o.amount), 0);
+  const planOut = occConfirmed.filter(o => o.kind === "출금").reduce((s, o) => s + Number(o.amount), 0);
+  const planOutEst = estInRange.reduce((s, o) => s + Number(o.amount), 0);
   const minRow = projRows.reduce((m, r) => (m === null || r.bal < m.bal) ? r : m, null);
   const bankAsOf = lastBankStatementAt(cashTxns);
 
@@ -12460,11 +12473,24 @@ async function viewCash() {
           <div class="stat-value blue">₩${fmt(curBal)}</div></div>
         <div class="stat"><div class="stat-label">다음 달 20일까지 예정 입금</div>
           <div class="stat-value green">+₩${fmt(planIn)}</div></div>
-        <div class="stat"><div class="stat-label">다음 달 20일까지 예정 출금 · 매입월 다음 달 20일 지급</div>
-          <div class="stat-value red">−₩${fmt(planOut)}</div></div>
+        <div class="stat"><div class="stat-label">다음 달 20일까지 예정 출금(확정) · 매입월 다음 달 20일 지급</div>
+          <div class="stat-value red">−₩${fmt(planOut)}</div>
+          <small style="color:var(--text-sub);font-size:11.5px">매입 입력된 상품대금 · 발주 화면 '확정' 과 같은 금액</small></div>
+        <div class="stat"><div class="stat-label">＋ 예상 출금(매입 전 발주)</div>
+          <div class="stat-value ${planOutEst ? "red" : ""}">−₩${fmt(planOutEst)}</div>
+          <small style="color:var(--text-sub);font-size:11.5px">${estInRange.length}건 · 발주는 했지만 매입 입력 전이라 예상이에요</small></div>
         <div class="stat"><div class="stat-label">다음 달 20일 예상 잔액</div>
-          <div class="stat-value ${curBal + planIn - planOut < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut)}</div></div>
+          <div class="stat-value ${curBal + planIn - planOut - planOutEst < 0 ? "red" : ""}">₩${fmt(curBal + planIn - planOut - planOutEst)}</div>
+          <small style="color:var(--text-sub);font-size:11.5px">확정만 반영하면 ₩${fmt(curBal + planIn - planOut)}</small></div>
       </div>
+      ${payModel && !payModel.error ? `<p style="color:var(--text-sub);font-size:12.5px;margin:10px 0 0;line-height:1.7">
+        발주 화면과 같은 계산이에요(매입월 다음 달 20일 · VAT 포함 · 운반비 별도).
+        ${payModel.due.date ? `${esc(payModel.due.date)} 기준 확정 ₩${fmt(payModel.due.confirmed.total)} ·
+          예상 ₩${fmt(payModel.due.estimated.total)} ·
+          확정 운반비 ${payModel.due.freightConfirmed ? `＋₩${fmt(payModel.due.freightConfirmed)}` : "없음(미확정은 더하지 않아요)"} ·
+          확인된 지급 ${payModel.due.paid ? `－₩${fmt(payModel.due.paid)}` : "없음(지급 확인 필요)"} ·
+          미지급(확정 전) ₩${fmt(payModel.due.outstanding)}` : ""}
+        <a href="#/po" style="color:var(--brand)"> 발주·입고·지급에서 보기 ›</a></p>` : ""}
 
       <h2 style="font-size:14.5px;margin:16px 0 10px">잔액 흐름 (예정 반영)</h2>
       <div class="table-wrap"><table>
@@ -12473,15 +12499,18 @@ async function viewCash() {
           <tr>
             <td>${esc(r.occDate)}</td>
             <td><b>${esc(r.title)}</b>${r.repeat === "매월" ? ' <span class="chip mine">매월</span>' : ""}
+              ${r.estimate ? ' <span class="chip progress">예상 · 매입 전</span>' : ""}
               ${r.overdue ? ' <span class="chip rejected">예정일 지남</span>' : ""}</td>
             <td class="num" style="color:${r.kind === "입금" ? "var(--green)" : "var(--red)"}">${r.kind === "입금" ? "+" : "−"}₩${fmt(r.amount)}</td>
             <td class="num" style="font-weight:800;color:${r.bal < 0 ? "var(--red)" : "var(--text)"}">₩${fmt(r.bal)}</td>
-            <td><button class="btn sm danger" onclick="deleteErpRow('cash_plans','${r.id}')">삭제</button></td>
+            <td>${r.estimate ? `<span style="color:var(--text-sub);font-size:11.5px">매입 입력하면 확정</span>`
+              : `<button class="btn sm danger" onclick="deleteErpRow('cash_plans','${r.id}')">삭제</button>`}</td>
           </tr>`).join("") : `<tr><td colspan="5" class="empty">다음 달 20일까지 예정된 입출금이 없습니다 — 결제 예정·정산 예정을 등록해 두세요</td></tr>`}
         </tbody>
       </table></div>
       <p style="color:var(--text-sub);font-size:12px;margin-top:10px">
-        ※ 예상 잔액 = 현재 잔액 + 예정 입금 − 예정 출금 (날짜순 누적). 실제 입출금이 일어나면 위의 '입출금 입력'에 기록하고, 여기 계획은 삭제하세요.<br>
+        ※ 예상 잔액 = 현재 잔액 + 예정 입금 − 예정 출금(확정) − 예상 출금(매입 전 발주), 날짜순 누적. 실제 입출금이 일어나면 위의 '입출금 입력'에 기록하고, 여기 계획은 삭제하세요.<br>
+        ※ '예상 · 매입 전' 줄은 발주서만 있고 매입 입력이 아직 없는 건이에요. 매입을 넣으면 자동으로 확정 예정출금으로 바뀌고 예상에서 빠집니다(이중 합산 없음).<br>
         ※ '매월 반복' 계획은 삭제하면 반복 전체가 삭제됩니다.
       </p>
     </div>
