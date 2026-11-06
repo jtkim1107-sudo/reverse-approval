@@ -1301,7 +1301,11 @@ function teamCardHtml(st, g, hy, compact) {
 async function viewTeam() {
   const month = today().slice(0, 7);
   const st = await loadTeamMonth(month);
-  const { data: taskRows } = await sb.from("tasks").select("status,due_date");
+  // 운영 상태의 '원장↔실재고 차이' 신호도 실재고가 있어야 떠요. 기존 조회와 나란히 돌려 지연을 더하지 않아요.
+  const [{ data: taskRows }] = await Promise.all([
+    sb.from("tasks").select("status,due_date"),
+    loadErpLiveStock(),
+  ]);
   st.overdueTasks = (taskRows || []).filter(t => t.status === "open" && t.due_date && t.due_date < today()).length;
   const g = computeTeamGauge(st);
   const hy = collectHygiene(st);
@@ -4512,6 +4516,8 @@ async function viewInventoryDecisions() {
     inventoryDecisionsCache = await fetchInventoryDecisions(forceRefresh);
   }
   const result = inventoryDecisionsCache;
+  // 원장↔실재고 차이 카드가 쓰는 실재고 맵. 위에서 캐시를 이미 채웠으니 여기선 바로 끝나요(추가 요청 없음).
+  await loadErpLiveStock();
   const cacheHealthHtml = await inventoryCacheHealthHtml(result);
   if (!result.ok) {
     return `<div class="card">
