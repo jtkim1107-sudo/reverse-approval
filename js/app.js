@@ -4510,6 +4510,9 @@ function inventorySharedInventoryBadge(d) {
 
 async function viewInventoryDecisions() {
   const won = value => `₩${fmt(Math.round(Number(value) || 0))}`;
+  // 원장↔실재고 차이 카드는 원장 재고(erpStock)가 있어야 하는데 이 화면은 그동안 안 불러왔어요.
+  // 아래 판단 조회와 나란히 돌려서 기다리는 시간을 더하지 않습니다. 실패하면 카드만 빠지고 화면은 그대로.
+  const erpBaseReady = loadErpBase().catch(e => { console.warn("[재고 차이] 원장 재고를 읽지 못했어요:", e); return null; });
   if (!inventoryDecisionsCache) {
     const forceRefresh = _inventoryDecisionsForceRefreshNext;
     _inventoryDecisionsForceRefreshNext = false;
@@ -4518,6 +4521,7 @@ async function viewInventoryDecisions() {
   const result = inventoryDecisionsCache;
   // 원장↔실재고 차이 카드가 쓰는 실재고 맵. 위에서 캐시를 이미 채웠으니 여기선 바로 끝나요(추가 요청 없음).
   await loadErpLiveStock();
+  await erpBaseReady;
   const cacheHealthHtml = await inventoryCacheHealthHtml(result);
   if (!result.ok) {
     return `<div class="card">
