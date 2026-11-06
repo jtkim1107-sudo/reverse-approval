@@ -165,8 +165,9 @@
 
     // (매입월, 발주) 묶음 - 자금일보 cash_plans 와 같은 키
     const groups = new Map();
-    const keyOf = (month, poId) => `${month}:${poId}`;
+    const keyOf = (month, poId) => `${month}:${poId.replace(/^purchase:/, "")}`;
     purchases.forEach(p => {
+      if (ymd(p.date) < start) return;
       const month = ymd(p.date).slice(0, 7);
       const poId = p.po_id || `purchase:${p.id}`;
       const k = keyOf(month, poId);
@@ -188,7 +189,7 @@
       if (!its.length) return;
       const orderedPayable = its.reduce((s, i) =>
         s + payableOf(num(i.amount) || num(i.qty) * num(i.unit_cost), prodById[i.product_id], vat), 0);
-      const purchased = [...groups.values()].filter(g => g.poId === po.id).reduce((s, g) => s + g.goods, 0);
+      const purchased = purchases.filter(p => p.po_id === po.id).reduce((s, p) => s + payableOf(p.amount, prodById[p.product_id], vat), 0);
       const remain = orderedPayable - purchased;
       if (remain <= 0) return;                       // 매입이 발주액을 다 채웠으면 예상 줄이 필요 없어요
       const month = ymd(po.date).slice(0, 7);
@@ -216,9 +217,9 @@
       // 운반비는 발주마다 한 번만 - 그 발주의 가장 이른 묶음에만 붙여요(달이 나뉘어도 두 번 더하지 않게)
       const firstOfPo = [...groups.values()].filter(x => x.poId === g.poId).sort((a, b) => a.month.localeCompare(b.month))[0];
       const ownsFreight = firstOfPo && firstOfPo.key === g.key;
-      const actual = frs.filter(f => f.basis === "ACTUAL");
+      const actual = frs.filter(f => f.basis === "ACTUAL" && !["SUPERSEDED", "VOID_PENDING_REBUILD", "VOID", "CANCELED"].includes(f.status));
       const freight = { records: frs.length, confirmed: actual.length > 0, owns: !!ownsFreight,
-                        amount: ownsFreight ? actual.reduce((s, f) => s + num(f.gross), 0) : 0,
+                        amount: ownsFreight ? actual.reduce((s, f) => s + num(f.gross_amount ?? f.gross), 0) : 0,
                         estimate: po ? num(po.freight_est) : 0 };
       const purchaseIds = g.purchases.map(p => p.id);
       // 등록 경로 - ERP 발주서로 시작했는지, 쿠팡에 먼저 입고 신청하고 ERP 에 등록했는지(같은 매입 업무, 순서만 다름)
@@ -242,15 +243,17 @@
     //    금액은 단가 근거가 없어 잡지 않아요(0원으로 확정하지 않습니다 - 수량·상태만 알려 줘요).
     const shipToPo = {};
     pos.forEach(po => { if (po.wing_direct_shipment_id) shipToPo[String(po.wing_direct_shipment_id)] = po; });
-    const memoHas = key => purchases.some(x => key && String(x.memo || "").includes(key));
+    const memoHas = (key, productId) => purchases.some(x => x.product_id === productId && key && String(x.memo || "").includes(key));
     const sourceGaps = [];
     (wingInbounds || []).forEach(w => {
-      const when = ymd(w.wing_created_at || w.expected_date || w.created_at);
+      const stamp = w.wing_created_at || w.expected_date || w.created_at;
+      const when = stamp && String(stamp).includes("T")
+        ? new Date(new Date(stamp).getTime() + 9 * 3600000).toISOString().slice(0, 10) : ymd(stamp);
       if (!when || when < (start || "")) return;
       const st = String(w.wing_status || "").toUpperCase();
       const req = String(w.wing_request_id || ""), inb = String(w.wing_inbound_id || "");
       const po = shipToPo[req] || shipToPo[inb] || null;
-      const linkedPurchase = memoHas(req) || memoHas(inb) || (po && purchases.some(x => x.po_id === po.id));
+      const linkedPurchase = memoHas(req, w.product_id) || memoHas(inb, w.product_id) || (po && purchases.some(x => x.po_id === po.id && x.product_id === w.product_id));
       const got = num(w.received_qty) || num(w.stowed_qty);
       if (st.includes("CANCEL")) return;                       // 취소 신청은 매입이 아니에요
       if (linkedPurchase) return;                              // 매입 원장에 이미 잡혀 있어요
@@ -262,6 +265,8 @@
       //   (상품·수량이 같다는 이유만으로 다른 발주에 붙이지 않아요. 상품 마스터 원가도 쓰지 않습니다.)
       const poItem = po ? (items || []).find(i => i.po_id === po.id && i.product_id === w.product_id && num(i.unit_cost) > 0) : null;
       const provable = !!(poItem && got > 0);
+      const confirmedQty = Number((String(poItem?.memo || "").match(/PAYMENT_CONFIRMED_QTY=(\d+)/) || [])[1] || 0);
+      const payableQty = provable && confirmedQty > 0 && confirmedQty <= num(poItem.qty) ? Math.max(got, confirmedQty) : got;
       const qtyMismatch = provable && num(poItem.qty) !== num(w.requested_qty);
       // 단가 '근거' 만 모아요 - 상품 마스터 원가(판매 원가)를 매입 단가로 대입하지 않습니다.
       const unitFromOrders = [...new Set((items || []).filter(i => i.product_id === w.product_id && num(i.unit_cost) > 0)
@@ -270,13 +275,13 @@
         .map(x => num(x.unit_cost)))];
       sourceGaps.push({ date: when, product: (prodById[w.product_id] || {}).code || w.vendor_item_id,
                         name: (prodById[w.product_id] || {}).name || "",
-                        requested: num(w.requested_qty), received: got, status: st, kind,
+                        requested: num(w.requested_qty), received: got, payableQty, status: st, kind,
                         request: req, inbound: inb, po: po ? po.po_no : null,
                         payMonth: got > 0 ? nextTwentieth(when) : null,
                         unitEvidence: [...new Set(unitFromOrders.concat(unitFromPurchases))],
                         included: provable, provable, qtyMismatch,
                         unit: poItem ? num(poItem.unit_cost) : null,
-                        amount: provable ? payableOf(got * num(poItem.unit_cost), prodById[w.product_id], vat) : null,
+                        amount: provable ? payableOf(payableQty * num(poItem.unit_cost), prodById[w.product_id], vat) : null,
                         evidence: provable
                           ? `발주서 ${po.po_no} 품목 단가 ${fmt(poItem.unit_cost)}원 · 이 입고번호로 연결된 발주서${qtyMismatch ? ` · 발주 ${fmt(poItem.qty)} ≠ 신청 ${fmt(w.requested_qty)}(수량 확인 필요)` : ""}`
                           : "단가·귀속 근거가 확정되지 않았어요",
@@ -295,13 +300,13 @@
       const po = pos.find(x => x.po_no === g.po) || null;
       rows.push({ key: `src:${g.inbound}:${g.product}`, month: g.date.slice(0, 7), poId: po ? po.id : `src:${g.inbound}`,
         basis: "ORDER", fromSource: true, purchases: [], firstDate: g.date, supplier: (po && po.supplier) || "",
-        goods: g.amount, qty: g.received, hold: false, po, items: [], route: "쿠팡 직접입고 → ERP 미등록",
-        inbound: { ordered: g.requested, got: g.received, remain: 0, state: "DONE", plans: 0, observed: g.received,
+        goods: g.amount, qty: g.payableQty, hold: false, po, items: [{ _name: g.name, qty: g.payableQty, unit_cost: g.unit, amount: g.payableQty * g.unit }], route: "쿠팡 직접입고 → ERP 미등록",
+        inbound: { ordered: g.requested, got: g.received, remain: Math.max(g.requested - g.received, 0), state: g.received < g.requested ? "PARTIAL" : "DONE", plans: 0, observed: g.received,
                    errors: 0, errorReason: "", errorKind: "", checks: 0, checkReason: "", pastErrors: 0,
                    pastReasons: [], pastEvidence: [g.evidence] },
         freight: { records: 0, confirmed: false, owns: true, amount: 0, estimate: 0 },
         plan: null, payDate: g.payMonth, base: g.amount, purchaseIds: [], matchKeys: [g.inbound, g.request].filter(Boolean),
-        orderMonth: g.date.slice(0, 7), basisNote: `원천 입고 ${g.date} · 매입 원장 미등록`,
+        orderMonth: g.date.slice(0, 7), basisNote: `신청 ${g.date} · 지급대상 ${fmt(g.payableQty)}개 / 입고 ${fmt(g.received)}개 · 매입 원장 미등록`,
         linkNotes: g.qtyMismatch ? ["수량 확인"] : [], evidenceNote: g.evidence,
         outstandingBasis: "상품대금 기준(운반비 미확정)" });
     });
@@ -503,6 +508,7 @@
     }
     const d = m.due;
     return `<div class="card pp" id="purchase-payments">
+      ${(m.paymentConfirmations || []).filter(p => p.status === "PAID").map(p => `<p class="pp-note">✓ ${esc(p.invoice_month)} ${esc(p.supplier)} 운반비 ${won(p.paid_amount)} · ${esc(p.paid_date)} 지급 완료(사용자 확인) · 남은 지급액 ${won(p.outstanding)}</p>`).join("")}
       <div class="card-head"><h2>💳 발주 · 입고 · 지급</h2>
         <small class="pp-sub">발주 · 입고 · 지급은 각각 따로 표시돼요 · 금액은 저장된 발주 시점 단가 기준</small></div>
       <div class="pp-due">
@@ -601,7 +607,7 @@
     const [pos, items, purchases, products, plans, txns, inbounds, freights, wingInbounds, settings] = await Promise.all([
       sb.from("purchase_orders").select("*").order("date", { ascending: false }),
       sb.from("purchase_order_items").select("*"),
-      sb.from("purchases").select("*").gte("date", "2026-09-01"),
+      sb.from("purchases").select("*"),
       sb.from("products").select("id,code,name,tax_type"),
       sb.from("cash_plans").select("*"),
       sb.from("cash_txns").select("*").gte("date", "2026-09-01"),
@@ -610,7 +616,7 @@
       sb.from("wing_direct_inbounds").select("*").order("wing_created_at", { ascending: false }),
       sb.from("settings").select("value").eq("key", "vat").maybeSingle(),
     ]);
-    const err = [pos, items, purchases, products, plans, txns, inbounds, freights].find(r => r && r.error);
+    const err = [pos, items, purchases, products, plans, txns, inbounds, freights, wingInbounds, settings].find(r => r && r.error);
     const wingRows = wingInbounds && !wingInbounds.error ? (wingInbounds.data || []) : [];
     if (err) return { error: err.error.message };
     const prod = Object.fromEntries((products.data || []).map(p => [p.id, p]));
@@ -618,10 +624,14 @@
     const withName = rows => (rows || []).map(x => ({ ...x, _name: name(x) }));
     let vat = (settings && settings.data && settings.data.value) || {};
     if (typeof vat === "string") { try { vat = JSON.parse(vat); } catch (e) { vat = {}; } }
-    return model({ pos: pos.data || [], items: withName(items.data), purchases: withName(purchases.data),
+    const result = model({ pos: pos.data || [], items: withName(items.data), purchases: withName(purchases.data),
                    products: products.data || [], plans: plans.data || [], txns: txns.data || [],
                    inbounds: inbounds.data || [], freights: freights.data || [], wingInbounds: wingRows, vat,
                    today: today || new Date().toISOString().slice(0, 10) });
+    const paid = await sb.from("settings").select("value").eq("key", "procurement_payment_confirmations").maybeSingle();
+    if (paid.error) return {error: paid.error.message};
+    result.paymentConfirmations = Object.values(paid.data?.value || {});
+    return result;
   }
 
   global.PurchasePayments = { nextTwentieth, payableOf, inboundStateOf, matchedPayments, allocatePayments,
