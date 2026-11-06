@@ -49,6 +49,7 @@ vm.runInContext(`
   const cfv = v => (v === "" || v == null ? "" : Number(v).toLocaleString("ko-KR"));
   const numOf = v => Number(String(v).replace(/,/g, "")) || 0;
   const vatTag = () => "";
+  const initFreightPicker = () => {};   // 운반비 추천(과거 실적)은 이 테스트 범위 밖 - 호출만 받아 줌
   const prodName = id => (erpProducts.find(p => p.id === id) || {}).name || id;
   ${grabFn("effCost")}
   ${grabFn("isCoupangPoolSale")}

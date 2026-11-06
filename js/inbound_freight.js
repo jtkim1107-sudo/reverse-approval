@@ -74,14 +74,29 @@
     // (PO, 상품) → 배분 행. 같은 PO·상품이 두 기록에 걸리면 먼저 만든 기록만(운송비 두 번 방지).
     const allocKey = (po, pid) => `${po}|${pid}`;
     const allocByKey = new Map();
+    // 2026-11-06 재입고(창고→쿠팡 이동)에 직접 달린 운송비 - (이동, 상품) 으로 찾아요.
+    //   DB: inbound_freight_costs.stock_transfer_id (purchase_order_id 와 둘 중 하나만 채워짐 - source_ck)
+    const allocByTransfer = new Map();
     for (const r of records) {
       for (const a of r.allocs) {
+        if (r.cost.stock_transfer_id) {
+          const k = allocKey(r.cost.stock_transfer_id, a.product_id);
+          if (!allocByTransfer.has(k)) allocByTransfer.set(k, { rec: r, alloc: a });
+          continue;   // 발주 쪽 지도에 넣지 않아요 - purchase_order_id 가 비어 'null|상품' 으로 서로 겹칩니다
+        }
+        if (!r.cost.purchase_order_id) continue;   // 발주도 이동도 없는 기록은 붙일 곳이 없어요
         const k = allocKey(r.cost.purchase_order_id, a.product_id);
         if (!allocByKey.has(k)) allocByKey.set(k, { rec: r, alloc: a });
       }
     }
 
     // 쿠팡 재고 로트: 입고처 '쿠팡' 매입 + 창고→쿠팡 이동. 운송비는 배분 수량까지만 로트에 얹어요.
+    // 2026-11-06 [대표 지적: "재고원가에 얹혀야지, 외부운송비가 2번 들었으니까"]
+    //   로트의 운송비를 한 덩어리(freightRemaining + link 하나)가 아니라 '구간 목록(segs)'으로 들고 다녀요.
+    //   입고 오류로 반출(쿠팡→창고 회수)됐다가 다시 들여보낸 물건은 같은 물건이라 원래 운임이 따라가야 하는데,
+    //   예전에는 회수 때 운임을 그냥 없애 버려서 그 운임이 영영 공헌이익으로 못 갔어요(재고원가에 묶인 채로 남음).
+    //   구간마다 어느 배분(link)에서 온 운임인지 들고 있어야 나중에 팔릴 때 원래 운송비 기록의 soldSupply 로
+    //   정확히 돌아갑니다(여러 번 반출되면 서로 다른 기록의 운임이 한 로트에 섞일 수 있어서 목록이어야 해요).
     const lotsByBase = new Map();
     const pushLot = (base, lot) => { if (!lotsByBase.has(base)) lotsByBase.set(base, []); lotsByBase.get(base).push(lot); };
     const inflows = [
@@ -92,16 +107,43 @@
       const qty = Number(f.row.qty) || 0;
       if (qty <= 0) continue;
       let freightUnits = 0, link = null;
-      if (f.kind === "buy" && f.row.po_id) {
-        link = allocByKey.get(allocKey(f.row.po_id, f.row.product_id)) || null;
-        if (link) {
-          freightUnits = Math.max(0, Math.min(qty, link.alloc.qty - link.alloc.receivedQty));
-          link.alloc.receivedQty += freightUnits;
-          if (freightUnits > 0) link.alloc.receiptDates.push(f.row.date);
+      if (f.kind === "buy" && f.row.po_id) link = allocByKey.get(allocKey(f.row.po_id, f.row.product_id)) || null;
+      // 재입고 이동에 달린 트럭값(운임②) - 반출 때 들고 나온 운임(운임①)과 함께 이 로트에 겹쳐 얹혀요.
+      else if (f.kind === "move") link = allocByTransfer.get(allocKey(f.row.id, f.row.product_id)) || null;
+      if (link) {
+        freightUnits = Math.max(0, Math.min(qty, link.alloc.qty - link.alloc.receivedQty));
+        link.alloc.receivedQty += freightUnits;
+        if (freightUnits > 0) link.alloc.receiptDates.push(f.row.date);
+      }
+      pushLot(f.row.product_id, { date: f.row.date, remaining: qty,
+        fromMove: f.kind === "move",   // 창고→쿠팡 재입고 - 반출돼 나간 운임을 다시 받을 수 있는 로트
+        segs: freightUnits > 0 ? [{ link, units: freightUnits }] : [] });
+    }
+
+    // 반출(쿠팡→창고 회수)로 나간 운송비를 그 뒤 '다시 들여보낸' 로트로 옮겨요.
+    //   · 매입 로트에는 올리지 않아요 - 그건 다른 트럭으로 새로 들어온 물건이라 자기 운임이 따로 있어요.
+    //   · 회수일보다 뒤(>)인 로트에만 올려요. 같은 날 로트에 올리면 그 회수가 방금 올린 운임을 다시 집어
+    //     무한히 오갈 수 있어서, 날짜를 엄격히 비교해 그 고리를 끊습니다.
+    //   · 다시 들여보낸 기록이 아직 없으면 옮기지 않고 그대로 둬요 - 물건이 우리 창고에 있는 것이므로
+    //     공헌이익에서 빼지 않고 재고원가로 남는 게 맞아요.
+    //   · 한 로트가 받을 수 있는 운임 수량은 그 로트에 남은 재고 수량까지예요(없는 수량에 운임을 얹지 않음).
+    const carryFreight = (base, fromDate, segs) => {
+      const placed = new Map();   // 이 회수 한 건이 로트마다 이미 올린 수량 - 한 번 오간 운임은 그 로트 수량까지만
+      for (const src of segs) {
+        for (const lot of (lotsByBase.get(base) || [])) {
+          if (src.units <= 0) break;
+          if (!lot.fromMove || lot.remaining <= 0 || !(String(lot.date) > String(fromDate))) continue;
+          // 로트가 자기 운임(운임②)을 이미 가지고 있어도 받습니다 - 운임은 겹쳐 쌓이는 층이라
+          // 같은 수량이 두 트럭값을 함께 질 수 있어요. 한도는 '이번 회수로 이 로트에 올린 수량'뿐.
+          const room = lot.remaining - (placed.get(lot) || 0);
+          if (room <= 0) continue;
+          const put = Math.min(src.units, room);
+          lot.segs.push({ link: src.link, units: put });
+          placed.set(lot, (placed.get(lot) || 0) + put);
+          src.units -= put;
         }
       }
-      pushLot(f.row.product_id, { date: f.row.date, remaining: qty, freightRemaining: freightUnits, link });
-    }
+    };
 
     // 쿠팡 재고에서 빠지는 것: 풀필먼트 판매(공헌이익 차감) · 회수 이동(차감 없이 재고원가로 남음)
     const outflows = [
@@ -117,23 +159,35 @@
         if (need <= 0) break;
         if (lot.remaining <= 0 || String(lot.date) > String(o.date)) continue;   // 판매일 이후 입고분은 쓸 수 없음
         const take = Math.min(need, lot.remaining);
-        // 로트 안에서는 운송비가 얹힌 수량부터 소진(한 매입 행이 배분 수량보다 많을 때만 의미 있음)
-        const freightTake = Math.min(take, lot.freightRemaining);
         lot.remaining -= take;
-        lot.freightRemaining -= freightTake;
         need -= take;
-        if (freightTake > 0 && o.kind === "sale") {
-          const a = lot.link.alloc;
-          const amt = freightTake * a.perUnit;
-          a.soldQty += freightTake;
-          a.soldSupply += amt;
-          const m = String(o.date).slice(0, 7);
-          a.soldByMonth[m] = (a.soldByMonth[m] || 0) + amt;
-          const cur = bySale.get(o.row.id) || { supply: 0, units: 0, basis: lot.link.rec.basis };
-          cur.supply += amt; cur.units += freightTake;
-          if (cur.basis !== lot.link.rec.basis) cur.basis = "MIXED";
-          bySale.set(o.row.id, cur);
+        // 운송비 구간은 한 줄로 늘어선 게 아니라 같은 수량 위에 '겹쳐 쌓인 층'이에요.
+        // 한 번 반출됐다 돌아온 물건은 처음 운임(운임①)과 재입고 운임(운임②)을 같이 지고 있으니,
+        // 수량이 빠질 때 층마다 그 수량만큼 함께 빠집니다(층을 차례로 비우는 게 아니에요).
+        // 층이 하나뿐인 보통의 매입 로트에서는 예전 규칙(운송비가 얹힌 수량부터 소진)과 결과가 같아요.
+        // 팔린 것이면 그 운임을 공헌이익에서 빼고, 반출된 것이면 빼지 않고 들고 나가 다시 들어올 때 얹어요.
+        const carried = [];
+        const keep = [];
+        for (const seg of lot.segs) {
+          const n = Math.min(take, seg.units);
+          seg.units -= n;
+          if (seg.units > 0) keep.push(seg);
+          if (n <= 0) continue;
+          if (o.kind === "sale") {
+            const a = seg.link.alloc;
+            const amt = n * a.perUnit;
+            a.soldQty += n;
+            a.soldSupply += amt;
+            const m = String(o.date).slice(0, 7);
+            a.soldByMonth[m] = (a.soldByMonth[m] || 0) + amt;
+            const cur = bySale.get(o.row.id) || { supply: 0, units: 0, basis: seg.link.rec.basis };
+            cur.supply += amt; cur.units += n;
+            if (cur.basis !== seg.link.rec.basis) cur.basis = "MIXED";
+            bySale.set(o.row.id, cur);
+          } else carried.push({ link: seg.link, units: n });
         }
+        lot.segs = keep;
+        if (carried.length) carryFreight(base, o.date, carried);
       }
       // 기록에 없는 재고에서 나간 판매(입고 기록 누락)는 운송비를 붙이지 않아요 - 과대 차감 방지
     }

@@ -43,6 +43,7 @@ const ctx = vm.createContext({
   fmt: v => Number(v).toLocaleString("en-US"), cfv: v => (v === "" ? "" : Number(v).toLocaleString("en-US")),
   esc: v => String(v), prodName: () => "모노플랫", vatTag: () => "", today: () => "2026-09-12", numOf: v => Number(String(v).replace(/,/g, "")) || 0,
   toast: () => {}, closeModal: () => {}, route: () => {}, addDaysStr: () => "2026-10-12", confirmed: [],
+  initFreightPicker: () => {},   // 운반비 추천(과거 실적)은 이 테스트 범위 밖 - 호출만 받아 줌
   pad2: n => String(n).padStart(2, "0"), VAT_RATE: .1,
   isTaxable: p => (p?.tax_type || "과세") === "과세",
   me: { name: "테스트" }, erpSupplierList: [{ name: "리파코 주식회사", pay_terms: "월말" }],

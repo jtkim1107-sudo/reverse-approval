@@ -243,6 +243,91 @@ async function loadVatCfg() {
 const vatCfgWarning = () => vatCfgLoaded ? "" : `
   <div style="background:#fff4e6;border:1px solid #ffa94d;border-radius:9px;padding:10px;margin-bottom:12px;font-size:13px">
     ⚠️ 부가세 설정을 불러오지 못해 <b>기본값</b>으로 계산했습니다. 화면을 새로고침해 주세요.</div>`;
+
+/* ===== 차량 적재 규격 · 과거 운반비 재사용 (2026-11-06 대표 확인) =====================
+ * 운임은 PLT 비례가 아니라 '차량 단위'로 매겨지고, 적재량에 맞춰 꽉 채워 보내요.
+ * 그래서 (센터 × 차종)이 같으면 과거 운반비를 그대로 쓸 수 있어요 - 발주 시점엔 PLT 만 알면 됩니다.
+ *
+ * 세 가지 근거를 섞지 않아요(_loadFillWaitingCardHtml 과 같은 원칙):
+ *   규격 = 사람이 확인해준 차량 적재 한도 (아래 값 · 운영 설정에서 수정)
+ *   실적 = 과거 운송 기록 (운임의 유일한 출처 - inbound_freight_costs)
+ *   정책 = 1PLT 단독 출발 금지 (데이터와 무관)
+ * 채워 넣기만 하고 저장은 하지 않아요 - 재무 필드를 조용히 바꾸지 않는다는 기존 원칙(loadPOFreightReview)과 같아요.
+ */
+const VEHICLE_SPECS_DEFAULT = [
+  { type: "1톤", maxPlt: 2 }, { type: "2.5톤", maxPlt: 3 }, { type: "3.5톤", maxPlt: 4 },
+  { type: "5톤", maxPlt: 10 }, { type: "5톤축", maxPlt: 12 }, { type: "11톤", maxPlt: 18 },
+];
+let vehicleSpecs = VEHICLE_SPECS_DEFAULT.map(s => ({ ...s }));
+let vehicleSpecsSaved = false;   // settings 에 저장된 값인가 - 아니면 기본값이라 화면에 그렇게 적어요
+async function loadVehicleSpecs() {
+  const { data, error } = await sb.from("settings").select("value").eq("key", "vehicle_specs").maybeSingle();
+  if (error) { vehicleSpecsSaved = false; return vehicleSpecs; }
+  const rows = Array.isArray(data?.value) ? data.value : null;
+  const clean = (rows || []).filter(s => s && s.type && Number(s.maxPlt) > 0)
+    .map(s => ({ type: String(s.type), maxPlt: Number(s.maxPlt) }));
+  if (clean.length) { vehicleSpecs = clean; vehicleSpecsSaved = true; }
+  else vehicleSpecsSaved = false;
+  return vehicleSpecs;
+}
+
+// PLT → 차종. 규격이 없거나 PLT 가 비면 추측하지 않고 이유를 돌려줘요.
+function vehicleForPlt(plt, specs) {
+  const list = (specs || []).filter(s => s && s.type && Number(s.maxPlt) > 0)
+    .map(s => ({ type: String(s.type), maxPlt: Number(s.maxPlt) }))
+    .sort((a, b) => a.maxPlt - b.maxPlt);
+  if (!list.length) return { ok: false, reason: "차량 적재 규격이 등록되지 않았어요 - 운영 설정에서 먼저 등록해 주세요" };
+  const n = Number(plt);
+  if (!Number.isFinite(n) || n <= 0) return { ok: false, reason: "입고 PLT 를 넣으면 차종과 과거 운반비를 찾아 드려요" };
+  if (!Number.isInteger(n)) return { ok: false, reason: "PLT 는 정수로 입력해 주세요" };
+  const fit = list.find(s => n <= s.maxPlt);
+  if (fit) return { ok: true, over: false, type: fit.type, maxPlt: fit.maxPlt, trucks: 1, slack: fit.maxPlt - n };
+  const big = list[list.length - 1];
+  return { ok: true, over: true, type: big.type, maxPlt: big.maxPlt, trucks: Math.ceil(n / big.maxPlt), slack: 0 };
+}
+
+// 과거 운송 기록에서 지금 조건에 맞는 운반비 후보를 뽑아요.
+//   · 무효·대체된 기록(status ≠ ACTIVE)은 제외 - 기존 집계 규칙(inbound_freight.js)과 같아요
+//   · 같은 (센터 × 차종) 은 가장 최근 1건만 - 같은 값으로 목록이 길어지지 않게
+//   · 정렬: 차종 일치(4) > 센터 일치(2) > 실제 청구(1) > 최신
+function freightSuggestions({ costs = [], groups = [], plans = [], vehicleType = null, centerId = null, limit = 6 } = {}) {
+  const gById = new Map((groups || []).map(g => [String(g.id), g]));
+  const centerByGroup = new Map();
+  (plans || []).forEach(p => {
+    const k = String(p.shipment_group_id || "");
+    if (!k || centerByGroup.has(k) || !p.destination_center_id) return;
+    centerByGroup.set(k, p.destination_center_id);
+  });
+  const seen = new Set();
+  const rows = (costs || [])
+    .filter(c => (c.status || "ACTIVE") === "ACTIVE")
+    .map(c => {
+      const k = String(c.shipment_group_id || "");
+      const g = gById.get(k) || null;
+      return {
+        id: c.id, shipmentGroupId: c.shipment_group_id || null,
+        gross: Number(c.gross_amount) || 0,
+        actual: String(c.basis || "") === "ACTUAL",
+        date: String(c.invoice_date || c.date || "").slice(0, 10),
+        vehicleType: g && g.vehicle_type ? String(g.vehicle_type) : null,
+        vehicleCount: g ? (Number(g.vehicle_count) || 1) : 1,
+        plt: g && Number(g.total_pallet_count) > 0 ? Number(g.total_pallet_count) : null,
+        centerId: centerByGroup.get(k) || null,
+      };
+    })
+    .filter(r => r.gross > 0)
+    .sort((a, b) => (Number(b.actual) - Number(a.actual)) || b.date.localeCompare(a.date))
+    .filter(r => {
+      const k = `${r.centerId || "-"}|${r.vehicleType || "-"}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  const score = r => (vehicleType && r.vehicleType === vehicleType ? 4 : 0)
+    + (centerId && r.centerId === centerId ? 2 : 0) + (r.actual ? 1 : 0);
+  return rows.sort((a, b) => (score(b) - score(a)) || b.date.localeCompare(a.date))
+    .slice(0, Math.max(1, Number(limit) || 6));
+}
 const userName = id => (USERS.find(u => u.id === id) || {}).name || "?";
 const userRole = id => (USERS.find(u => u.id === id) || {}).role || "";
 
@@ -936,6 +1021,20 @@ function collectHygiene(st) {
   if (untracked.length) items.push({
     n: untracked.length,
     text: `이동 기록 없이 팔린 쿠팡 재고 ${fmt(untracked.reduce((s, [, x]) => s + x.coupangUntracked, 0))}개`,
+    href: "#/stockflow/stock",
+  });
+  // 원장이 '쿠팡에 있다'고 보는데 실재고에는 없는 수량 - 반출을 기록 안 한 경우가 여기 잡혀요
+  const gaps = coupangStockGaps({ stock: erpStock, live: erpLiveStockByProduct, products: erpProducts, stockCheck: erpStockCheck });
+  const gapOut = gaps.filter(r => r.kind === "MISSING_OUT");
+  if (gapOut.length) items.push({
+    n: gapOut.length,
+    text: `원장과 쿠팡 실재고가 안 맞음 ${fmt(coupangGapSum(gaps, "MISSING_OUT"))}개(쿠팡에서 빠졌는데 기록 없음)`,
+    href: "#/stockflow/stock",
+  });
+  const gapIn = gaps.filter(r => r.kind === "UNRECORDED_IN");
+  if (gapIn.length) items.push({
+    n: gapIn.length,
+    text: `쿠팡 실재고가 원장보다 많음 ${fmt(coupangGapSum(gaps, "UNRECORDED_IN"))}개(입고·이동 기록 누락)`,
     href: "#/stockflow/stock",
   });
   // 위탁 상품(공급처 재고)과 연동 세트(낱개에서 파생)는 재고를 갖지 않으므로 마이너스 점검에서 제외
@@ -2950,6 +3049,36 @@ function inventorySalesBasisHtml(d, stockUnit) {
 }
 
 const tradeTypeOf = p => (p?.trade_type || "사입");
+
+/* ===== 원장 쿠팡재고 ↔ 쿠팡 실재고(WING) 차이 (2026-11-06) ==========================
+ * 입고 오류로 반출됐는데 재고 이동을 기록하지 않으면, 원장은 '쿠팡에 있다'고 보는데 실재고는 0 이에요.
+ * 두 숫자를 맞대면 그 자리에서 드러납니다 - 쌓아 둘 게 없어서 빠뜨릴 일도 없어요.
+ *   gap > 0 (원장 > 실재고)  = 쿠팡에서 빠졌는데 기록이 없음 (반출·분실·쿠팡 조정 등)
+ *   gap < 0 (실재고 > 원장)  = 들어왔는데 기록이 없음 (입고·이동 기록 누락)
+ * 둘은 원인이 달라 따로 셉니다. '반출'이라고 단정하지 않아요 - 아는 건 '안 맞는다'까지예요.
+ * 모르면 비교하지 않습니다: 원장이 확정 안 됐거나(check) 실재고를 못 읽었으면 그 상품은 건너뜁니다.
+ */
+function coupangStockGaps({ stock = {}, live = {}, products = [], stockCheck = null } = {}) {
+  if (stockCheck) return [];              // 원장 자체를 못 믿는 상태 - 비교하면 거짓 신호만 납니다
+  const byId = new Map((products || []).map(p => [p.id, p]));
+  const rows = [];
+  for (const pid of Object.keys(stock || {})) {
+    const st = stock[pid];
+    if (!st || st.check || st.isSet) continue;                         // 확정 안 됨·연동 세트(자체 재고 없음)
+    const p = byId.get(pid) || null;
+    if ((p?.trade_type || "사입") === "위탁") continue;                 // 위탁은 공급처 재고
+    const liveQty = live ? live[pid] : null;
+    if (liveQty == null) continue;                                      // 실재고를 모르면 비교 안 함
+    const ledger = Number(st.atCoupang) || 0;
+    const gap = ledger - Number(liveQty);
+    if (!gap) continue;
+    rows.push({ product_id: pid, name: p?.name || "?", code: p?.code || "",
+      ledger, live: Number(liveQty), gap: Math.abs(gap),
+      kind: gap > 0 ? "MISSING_OUT" : "UNRECORDED_IN" });
+  }
+  return rows.sort((a, b) => b.gap - a.gap);
+}
+const coupangGapSum = (rows, kind) => rows.filter(r => r.kind === kind).reduce((s, r) => s + r.gap, 0);
 const tradeTypeOfId = id => tradeTypeOf(erpProducts.find(p => p.id === id));
 
 /* ---------- 세트상품 (재고·원가 연동) ----------
@@ -4473,6 +4602,34 @@ async function viewInventoryDecisions() {
       <small>원가·부가세 제외 · 대시보드와 같은 계산${inventoryValue.complete === false ? " · 일부 원가/수량 확인 필요" : ""}</small>
     </div>` : `<p class="erp-help">재고금액 확인 필요${inventoryValue && inventoryValue.error ? ` · ${esc(inventoryValue.error)}` : ""}</p>`;
 
+  const gapRows = coupangStockGaps({ stock: erpStock, live: erpLiveStockByProduct, products: erpProducts, stockCheck: erpStockCheck });
+  const gapHtml = !gapRows.length ? "" : `
+    <div class="card" style="border:1.5px solid var(--amber);margin-top:12px;padding:12px">
+      <b style="font-size:14px">⚠️ 원장과 쿠팡 실재고가 안 맞아요 — ${fmt(gapRows.length)}종</b>
+      <p style="font-size:12.5px;color:var(--text-sub);margin:6px 0 8px;line-height:1.7">
+        <b>쿠팡에서 빠졌는데 기록 없음</b>은 입고 오류로 반출됐는데 재고 이동을 적지 않았을 때 생겨요(분실·쿠팡 조정일 수도 있어 단정하지 않아요).
+        그 물건은 우리 창고에 있는데 <b>발주 판단에는 재고 0 으로 보여</b> 이미 가진 걸 또 발주할 수 있습니다.<br>
+        확인하고 <b>재고 이동</b>으로 기록하면 사라집니다. 아래 버튼을 누르면 수량이 채워진 채로 열려요.</p>
+      <div class="erp-table-wrap"><table class="erp-table erp-cards">
+        <thead><tr><th class="erp-sticky">상품</th><th class="num">원장 쿠팡재고</th><th class="num">쿠팡 실재고</th>
+          <th class="num">차이</th><th>무슨 일</th><th></th></tr></thead>
+        <tbody>${gapRows.map(r => `
+          <tr>
+            <td class="erp-sticky erp-card-head">${ErpUi.nameCellHtml({ code: r.code, name: r.name })}</td>
+            <td class="num" data-label="원장 쿠팡재고">${fmt(r.ledger)}</td>
+            <td class="num" data-label="쿠팡 실재고">${fmt(r.live)}</td>
+            <td class="num" data-label="차이"><b style="color:var(--amber)">${r.kind === "MISSING_OUT" ? "−" : "+"}${fmt(r.gap)}</b></td>
+            <td data-label="무슨 일">${r.kind === "MISSING_OUT"
+              ? "쿠팡에서 빠졌는데 기록 없음 <small style=\"color:var(--text-sub)\">(반출 등)</small>"
+              : "들어왔는데 기록 없음 <small style=\"color:var(--text-sub)\">(입고·이동 누락)</small>"}</td>
+            <td><button class="btn sm secondary" onclick="openTransferModal({ pid: '${esc(r.product_id)}', qty: ${r.gap}, kind: '${r.kind === "MISSING_OUT" ? "쿠팡회수" : "쿠팡입고"}' })">재고 이동으로 기록</button></td>
+          </tr>`).join("")}</tbody>
+      </table></div>
+      <p style="font-size:11.5px;color:var(--text-sub);margin-top:8px">
+        원장이 확정되지 않은 상품과 실재고를 못 읽은 상품은 비교하지 않아요(모르면 숫자를 내지 않습니다).
+        차이가 꼭 반출만은 아니에요 — 매입 기록 누락이나 판매 동기화 지연으로도 납니다. 수량을 직접 확인하고 저장해 주세요.</p>
+    </div>`;
+
   return `
     <div class="card">
       <div class="card-head">
@@ -4484,6 +4641,7 @@ async function viewInventoryDecisions() {
       ${cacheHealthHtml}
       ${summaryHtml}
       ${inventoryMoneySummary}
+      ${gapHtml}
       <details class="erp-help"><summary>표 보는 법</summary>
         <b>재고 상태</b>는 재고·판매·입고예정으로 낸 판단이고, <b>자동화 상태</b>는 정식 추천 발주수량·자동 발주·WING 입고 초안이
         막혔는지예요(예: 물류정보 입력 필요). 둘은 따로 판단해요. 판매속도는 최근 30일(오늘 제외) 로켓그로스 순판매수량 ÷ 30,
@@ -5224,7 +5382,9 @@ async function renderStockVelocityTable(preloaded, poInfo) {
     </div>`;
 }
 
-function openTransferModal() {
+// pre = { pid, qty, kind } - 재고 차이 줄에서 '재고 이동으로 기록'을 누르면 채워진 채로 열려요.
+//   채워 주기만 하고 저장하지는 않아요 - 추정한 수량이라 사람이 실물을 확인하고 눌러야 합니다.
+function openTransferModal(pre = {}) {
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal">
@@ -5233,19 +5393,47 @@ function openTransferModal() {
           <div class="field"><label>일자</label><input id="tr-date" type="date" value="${today()}"></div>
           <div class="field"><label>구분</label>
             <select id="tr-kind">
-              <option value="쿠팡입고">창고 → 쿠팡 (입고)</option>
-              <option value="쿠팡회수">쿠팡 → 창고 (회수)</option>
+              <option value="쿠팡입고" ${pre.kind === "쿠팡회수" ? "" : "selected"}>창고 → 쿠팡 (입고)</option>
+              <option value="쿠팡회수" ${pre.kind === "쿠팡회수" ? "selected" : ""}>쿠팡 → 창고 (회수)</option>
             </select></div>
-          <div class="field full"><label>품목 *</label><select id="tr-prod">${productOptions("", "buy")}</select></div>
-          <div class="field"><label>수량 *</label><input id="tr-qty" type="number" min="1" value="1"></div>
+          <div class="field full"><label>품목 *</label><select id="tr-prod">${productOptions(pre.pid || "", "buy")}</select></div>
+          <div class="field"><label>수량 *</label><input id="tr-qty" type="number" min="1" value="${Number(pre.qty) > 0 ? Number(pre.qty) : 1}"></div>
+          ${pre.pid ? `<div class="field full" style="font-size:12.5px;color:var(--amber);line-height:1.6">
+            원장과 쿠팡 실재고의 차이만큼 채워 뒀어요 — <b>추정값입니다.</b> 실물을 확인하고 수량을 고친 뒤 저장해 주세요.</div>` : ""}
           <div class="field"><label>메모</label><input id="tr-memo" placeholder="송장번호 등" maxlength="100"></div>
+        </div>
+        <div id="tr-freight-box" class="form-grid" style="margin-top:4px">
+          <div class="field full" style="font-size:12.5px;color:var(--text-sub);line-height:1.6">
+            반출됐다 다시 들여보내는 거라면 <b>트럭값이 또 듭니다</b>. 여기 넣으면 그 수량의 재고원가에 얹히고,
+            팔릴 때 공헌이익에서 빠져요. 처음 들어올 때 운임도 같이 따라옵니다. 모르면 비워 두세요.</div>
+          <div class="field"><label>입고 PLT <small style="color:var(--text-sub);font-weight:400">— 운반비 넣으려면 필요</small></label>
+            <input id="tr-plt" type="number" min="1" step="1" placeholder="예) 18" oninput="renderFreightPicker()">
+            <p id="tr-plt-hint" style="font-size:12px;color:var(--text-sub);margin-top:4px">입고 PLT 를 넣으면 차종과 과거 운반비를 찾아 드려요.</p></div>
+          <div class="field"><label>재입고 운송비(원) <small style="color:var(--text-sub);font-weight:400">— VAT 포함</small></label>
+            <input id="tr-freight" type="text" inputmode="numeric" class="comma" placeholder="0"></div>
+          <div class="field full" id="tr-freight-pick"></div>
         </div>
         <div class="modal-actions">
           <button class="btn secondary" onclick="closeModal()">취소</button>
-          <button class="btn" onclick="saveTransfer()">저장</button>
+          <button class="btn" id="btn-tr-save" onclick="saveTransfer()">저장</button>
         </div>
       </div>
     </div>`;
+  syncTransferFreightBox();
+  // 창고 → 쿠팡 입고일 때만 운반비를 받아요(회수는 나가는 쪽이라 이 트럭값이 아니에요).
+  document.getElementById("tr-kind").addEventListener("change", syncTransferFreightBox);
+}
+
+function syncTransferFreightBox() {
+  const box = document.getElementById("tr-freight-box");
+  if (!box) return;
+  const show = document.getElementById("tr-kind")?.value === "쿠팡입고";
+  box.hidden = !show;
+  // 앞서 다른 모달(발주서 작성·입고 확정)에서 쓰던 설정이 남아 있을 수 있어 이 모달 것인지로 확인해요.
+  if (show && freightPick.cfg?.boxId !== "tr-freight-pick") {
+    initFreightPicker({ pltId: "tr-plt", hintId: "tr-plt-hint", boxId: "tr-freight-pick",
+      amountId: "tr-freight", memoId: "tr-memo" });
+  }
 }
 
 async function saveTransfer() {
@@ -5259,13 +5447,40 @@ async function saveTransfer() {
   if (kind === "쿠팡입고" && qty > (erpStock[pid]?.inHouse ?? 0)) {
     if (!confirm(`자사창고 재고(${fmt(erpStock[pid]?.inHouse ?? 0)})보다 많은 수량입니다.\n그래도 저장할까요?`)) return;
   }
-  const { error } = await sb.from("stock_transfers").insert({
+  // 재입고 트럭값(운임②) - 창고 → 쿠팡 입고일 때만. 넣으면 그 수량의 재고원가에 얹히고 팔릴 때 공헌이익에서 빠져요.
+  const gross = kind === "쿠팡입고" ? (numOf(document.getElementById("tr-freight")?.value) || 0) : 0;
+  const plt = kind === "쿠팡입고" ? (numOf(document.getElementById("tr-plt")?.value) || 0) : 0;
+  if (gross > 0 && (!Number.isInteger(plt) || plt <= 0))
+    return toast("운반비를 넣으려면 입고 PLT 를 1 이상 정수로 입력해 주세요");
+  if (gross > 0 && !Number.isInteger(gross))
+    return toast("운반비는 원 단위 정수로 입력해 주세요");
+  if (plt > 0 && gross <= 0)
+    return toast("입고 PLT 만 넣고 운반비를 비워 두면 운송비가 기록되지 않아요 - 금액을 넣거나 PLT 를 비워 주세요");
+
+  const btn = document.getElementById("btn-tr-save");
+  if (btn) btn.disabled = true;
+  const { data: tr, error } = await sb.from("stock_transfers").insert({
     date, product_id: pid, qty, kind,
     memo: document.getElementById("tr-memo").value.trim(),
     created_by: me.name,
-  });
-  if (error) return toast("저장에 실패했습니다");
-  toast("이동이 기록되었습니다");
+  }).select("id").single();
+  if (error || !tr) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
+
+  if (gross > 0) {
+    // 기존 기록과 같은 방식: 공급가액 = 결제 총액 ÷ 1.1 (원 단위 반올림), VAT 는 나머지 - 합이 총액과 정확히 맞아요.
+    const supply = Math.round(gross / 1.1);
+    const { error: fe } = await sb.rpc("fn_add_reinbound_freight", {
+      p_transfer_id: tr.id, p_gross: gross, p_vat: gross - supply,
+      p_pallet_count: plt, p_basis: "ESTIMATE", p_invoice_ref: null, p_invoice_date: null });
+    // 이동은 이미 기록됐어요 - 조용히 넘기지 않고 운송비만 안 들어갔다고 또렷이 알립니다.
+    if (fe) {
+      if (btn) btn.disabled = false;
+      closeModal();
+      route();
+      return toast(`이동은 기록됐지만 운반비는 저장하지 못했어요: ${fe.message || fe.code || ""}`);
+    }
+  }
+  toast(gross > 0 ? `이동과 재입고 운반비 ₩${fmt(gross)}이 기록되었습니다` : "이동이 기록되었습니다");
   closeModal();
   route();
 }
@@ -6986,9 +7201,13 @@ function openPOModal(proposal = null) {
               <option value="쿠팡">쿠팡 (로켓그로스) — 공급처에서 바로 입고</option>
               <option value="자사창고">자사창고 — 우리 창고로 받음</option>
             </select></div>
+          <div class="field"><label>입고 PLT <small style="color:var(--text-sub);font-weight:400">— 차종·운반비를 찾는 기준</small></label>
+            <input id="po-plt" type="number" min="1" step="1" placeholder="예) 18" oninput="renderFreightPicker()">
+            <p id="po-plt-hint" style="font-size:12px;color:var(--text-sub);margin-top:4px">입고 PLT 를 넣으면 차종과 과거 운반비를 찾아 드려요.</p></div>
           <div class="field"><label>예상 운송비(원) ${vatTag("exp")}</label>
             <input id="po-freight" type="text" inputmode="numeric" class="comma" placeholder="0">
-            <p style="font-size:12px;color:var(--text-sub);margin-top:4px">센터와 팔레트 수에 맞춘 견적을 입력하세요. 미확정은 빈칸으로 두세요.</p></div>
+            <p style="font-size:12px;color:var(--text-sub);margin-top:4px">아래에서 고르거나 직접 입력하세요. 미확정은 빈칸으로 두세요.</p></div>
+          <div class="field full" id="po-freight-pick"></div>
           ${isJeongyeol ? "" : `
           <div class="field full"><label>결재자 *</label>
             <select id="po-appr">${approvers.map(u =>
@@ -7030,6 +7249,106 @@ function openPOModal(proposal = null) {
     document.getElementById("po-memo").value = "판매·재고 기반 발주안 / 납품희망일: 품절예상 7일 전 / 운송비: 센터·PLT 확인";
     calcPOTotal();
   } else addPORow();
+  initFreightPicker({ pltId: "po-plt", hintId: "po-plt-hint", boxId: "po-freight-pick",
+    amountId: "po-freight", memoId: "po-memo" });   // 과거 운반비는 모달을 막지 않게 비동기로 (실패해도 직접 입력 가능)
+}
+
+/* 운반비 추천(공용) - 금액을 칸에 채우기만 하고 저장하지 않아요.
+ * 발주서를 안 쓰고 들어온 입고(쿠팡에서 보고 잡은 건·전화 발주)도 결국 입고 확정에서 운송비를 적으므로,
+ * 발주서 작성 모달과 입고 확정 모달 두 곳에 같은 컴포넌트를 씁니다.
+ *   cfg = { pltId, hintId, boxId, amountId, memoId }  - memoId 가 없으면 근거 메모를 남기지 않아요. */
+const FREIGHT_PICK_EMPTY = { cfg: null, loaded: false, error: null, costs: [], groups: [], plans: [], list: [], picked: null, note: null };
+let freightPick = { ...FREIGHT_PICK_EMPTY };
+
+async function initFreightPicker(cfg) {
+  freightPick = { ...FREIGHT_PICK_EMPTY, cfg };
+  renderFreightPicker();
+  try {
+    const [, frRes, grpRes, planRes] = await Promise.all([
+      loadVehicleSpecs(),
+      sb.from("inbound_freight_costs").select("id,shipment_group_id,gross_amount,basis,status,invoice_date,date"),
+      sb.from("inbound_shipment_groups").select("id,vehicle_type,vehicle_count,total_pallet_count"),
+      sb.from("inbound_plans").select("shipment_group_id,destination_center_id"),
+    ]);
+    const err = frRes.error || grpRes.error || planRes.error;
+    // 못 읽으면 조용히 0건으로 두지 않고 이유를 적어요 - '기록 없음'과 '확인 못 함'은 다릅니다.
+    if (err) freightPick.error = err.message || String(err);
+    else {
+      freightPick.costs = frRes.data || [];
+      freightPick.groups = grpRes.data || [];
+      freightPick.plans = planRes.data || [];
+      await CoupangCenters.load(sb).catch(() => {});
+    }
+  } catch (e) { freightPick.error = String(e?.message || e); }
+  freightPick.loaded = true;
+  renderFreightPicker();
+}
+
+const freightCenterName = r => (r.centerId ? CoupangCenters.label({ id: r.centerId }) : "센터 미상");
+
+function renderFreightPicker() {
+  const cfg = freightPick.cfg;
+  const box = cfg ? document.getElementById(cfg.boxId) : null;
+  if (!box) return;   // 모달이 이미 닫혔으면 아무것도 안 함
+  const pltRaw = document.getElementById(cfg.pltId)?.value ?? "";
+  const v = vehicleForPlt(pltRaw, vehicleSpecs);
+  const hint = document.getElementById(cfg.hintId);
+  if (hint) {
+    const specNote = vehicleSpecsSaved ? "" : ` <small>· 기본 규격(운영 설정에서 확인하세요)</small>`;
+    hint.innerHTML = !v.ok ? `<span style="color:var(--text-sub)">${esc(v.reason)}</span>`
+      : v.over
+        ? `<span style="color:var(--amber)">⚠️ ${fmt(pltRaw)}PLT 는 가장 큰 차종 ${esc(v.type)}(${fmt(v.maxPlt)}PLT)를 넘어요 — ${fmt(v.trucks)}대 필요</span>${specNote}`
+        : `<b>${esc(v.type)}</b> 1대 <span style="color:var(--text-sub)">(규격 ${esc(v.type)} = ${fmt(v.maxPlt)}PLT · ${v.slack > 0 ? `${fmt(v.slack)}PLT 빔` : "꽉 참"})</span>`
+          + (Number(pltRaw) === 1 ? ` <span style="color:var(--amber)">· 1PLT 단독 출발은 정책상 막혀요</span>` : "") + specNote;
+  }
+  const note = t => `<p style="font-size:12px;color:var(--text-sub);margin:6px 0 0">${t}</p>`;
+  if (!freightPick.loaded) { box.innerHTML = note("과거 운반비를 불러오는 중…"); return; }
+  if (freightPick.error) {
+    box.innerHTML = `<p style="font-size:12.5px;color:var(--amber);margin:0">⚠️ 과거 운반비를 불러오지 못했어요 (${esc(freightPick.error)}) — 금액을 직접 입력해 주세요.</p>`;
+    return;
+  }
+  const list = freightSuggestions({ costs: freightPick.costs, groups: freightPick.groups,
+    plans: freightPick.plans, vehicleType: v.ok ? v.type : null });
+  freightPick.list = list;
+  if (!list.length) { box.innerHTML = note("과거 운송비 기록이 아직 없어요 — 금액을 직접 입력해 주세요."); return; }
+  box.innerHTML = `
+    <label>최근에 쓴 운반비 <small style="color:var(--text-sub);font-weight:400">— 누르면 위 금액칸에 채워집니다 (저장은 따로)</small></label>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:4px">${list.map((r, i) => {
+      const on = freightPick.picked === r.id;
+      const match = v.ok && r.vehicleType === v.type;
+      return `<button type="button" onclick="applyFreightPick(${i})" title="운송 묶음 ${esc(String(r.shipmentGroupId || "").slice(0, 8))}"
+        style="text-align:left;cursor:pointer;border-radius:9px;padding:7px 10px;font-size:12.5px;line-height:1.5;
+               border:1.5px solid ${on ? "var(--brand)" : "var(--line)"};background:${on ? "var(--brand-light)" : "transparent"}">
+        <div>${match ? "●" : "○"} ${esc(freightCenterName(r))} · ${esc(r.vehicleType || "차종 미상")}${r.vehicleCount > 1 ? ` ${fmt(r.vehicleCount)}대` : ""}${r.plt ? ` · ${fmt(r.plt)}PLT` : ""}</div>
+        <div><b>₩${fmt(r.gross)}</b> <small style="color:var(--text-sub)">${r.actual ? "실제청구" : "예상"}${r.date ? ` ${esc(r.date.slice(5))}` : ""}</small></div>
+      </button>`;
+    }).join("")}</div>
+    ${note("실제 청구된 금액을 먼저 보여 줘요. 무효·대체된 기록은 뺐습니다. 이번 건의 확정 견적이 아니라 <b>과거 실적</b>이에요.")}`;
+}
+
+function applyFreightPick(i) {
+  const cfg = freightPick.cfg;
+  const r = freightPick.list[i];
+  const el = cfg ? document.getElementById(cfg.amountId) : null;
+  if (!r || !el) return;
+  const memo = cfg.memoId ? document.getElementById(cfg.memoId) : null;
+  const dropNote = () => {
+    if (memo && freightPick.note)
+      memo.value = memo.value.split(" / ").map(x => x.trim()).filter(x => x && x !== freightPick.note).join(" / ");
+    freightPick.note = null;
+  };
+  if (freightPick.picked === r.id) { dropNote(); freightPick.picked = null; el.value = ""; }
+  else {
+    dropNote();
+    // 나중에 청구서와 대조할 수 있게 근거를 메모에 남겨요. 메모 길이 제한을 넘으면 넣지 않아요(잘린 근거는 더 위험).
+    const n = `운반비 근거: ${freightCenterName(r)} ${r.vehicleType || "차종미상"} ${r.date ? r.date.slice(5) : "날짜미상"} ${r.actual ? "청구" : "예상"} ₩${fmt(r.gross)}`;
+    const max = Number(memo?.getAttribute("maxlength")) || 100;
+    const merged = memo && memo.value.trim() ? `${memo.value.trim()} / ${n}` : n;
+    if (memo && merged.length <= max) { memo.value = merged; freightPick.note = n; }
+    freightPick.picked = r.id;
+    el.value = fmt(r.gross);
+  }
+  renderFreightPicker();
 }
 
 // 2026-09-12 VAT 확인 대기 품목을 사람이 경고를 보고 직접 발주안에 넣어요(자동으로는 안 넣음). 저장 때 한 번 더 확인받아요.
@@ -9040,10 +9359,14 @@ function openReceiveModal(id) {
     ? `<div class="field"><label>입고 트럭 운송비</label>
         <div style="font-size:12.5px;line-height:1.6;padding-top:4px">운송 묶음 기록 ₩${fmt(frRec.gross)} (${frRec.basis === "ACTUAL" ? "실제 청구" : "예상"}, VAT 포함)으로 반영돼요 —
         여기서 따로 기록하지 않아요(중복 방지). 실제 청구금액은 발주서 상세에서 등록하세요.</div></div>`
-    : `<div class="field"><label>실제 운송비(원) ${vatTag("exp")}</label>
+    : `<div class="field"><label>입고 PLT <small style="color:var(--text-sub);font-weight:400">— 차종·운반비를 찾는 기준</small></label>
+        <input id="rc-plt" type="number" min="1" step="1" placeholder="예) 18" oninput="renderFreightPicker()">
+        <p id="rc-plt-hint" style="font-size:12px;color:var(--text-sub);margin-top:4px">입고 PLT 를 넣으면 차종과 과거 운반비를 찾아 드려요.</p></div>
+      <div class="field"><label>실제 운송비(원) ${vatTag("exp")}</label>
         <input id="rc-freight" type="text" inputmode="numeric" class="comma" value="${erpFreight.error || poFreightInactiveOnly(p.id) ? "" : cfv(p.freight_est || "")}">
         ${erpFreight.error ? `<p style="font-size:12px;color:var(--amber);margin-top:4px">운송 묶음 기록을 확인하지 못해 예상 운송비를 미리 채우지 않았어요.</p>` : ""}
-        ${poFreightInactiveOnly(p.id) && p.freight_est ? `<p style="font-size:12px;color:var(--amber);margin-top:4px">발주서 예상 운송비 ₩${fmt(p.freight_est)}은 취소된 운송 묶음 기준(합산 안 함)이라 미리 채우지 않았어요 — 실제로 청구된 운송비만 입력하세요.</p>` : ""}</div>`;
+        ${poFreightInactiveOnly(p.id) && p.freight_est ? `<p style="font-size:12px;color:var(--amber);margin-top:4px">발주서 예상 운송비 ₩${fmt(p.freight_est)}은 취소된 운송 묶음 기준(합산 안 함)이라 미리 채우지 않았어요 — 실제로 청구된 운송비만 입력하세요.</p>` : ""}</div>
+      <div class="field full" id="rc-freight-pick"></div>`;
   document.getElementById("modal-root").innerHTML = `
     <div class="modal-backdrop" onclick="if(event.target===this)closeModal()">
       <div class="modal" style="max-width:760px;width:96vw">
@@ -9073,6 +9396,10 @@ function openReceiveModal(id) {
         </div>
       </div>
     </div>`;
+  // 발주서에 예상 운송비가 없던 건(쿠팡에서 보고 잡은 입고·전화 발주 등)도 여기서 과거 실적으로 채울 수 있게.
+  // 운송 묶음 기록이 이미 있으면 운송비 칸 자체가 없어서 띄우지 않아요(같은 트럭 운송비 두 번 방지).
+  if (!frRec) initFreightPicker({ pltId: "rc-plt", hintId: "rc-plt-hint", boxId: "rc-freight-pick",
+    amountId: "rc-freight", memoId: null });
 }
 
 async function saveReceive(id) {
@@ -12761,6 +13088,7 @@ async function deleteCashTxn(id) {
 
 /* ---------- 화면: 설정 ---------- */
 async function viewSettings() {
+  await loadVehicleSpecs();
   const pushSupported = "serviceWorker" in navigator && "PushManager" in window && typeof Notification !== "undefined";
   const perm = pushSupported ? Notification.permission : "unsupported";
   const pushStatus =
@@ -12844,6 +13172,21 @@ async function viewSettings() {
     </div>
 
     <div class="card">
+      <h2>차량 적재 규격</h2>
+      <p style="color:var(--text-sub);font-size:13.5px;margin-bottom:12px">
+        발주서에서 <b>입고 PLT</b>를 넣으면 이 표로 차종을 정하고, 같은 차종의 과거 운반비를 찾아 줍니다.
+        여기 적는 값은 <b>규격</b>(확인된 적재 한도)이에요 — 과거 실적의 최대 적재량(관측치)과는 다릅니다.
+        ${vehicleSpecsSaved ? "" : '<br><b style="color:var(--amber)">아직 저장된 적이 없어 기본값을 보여 주고 있어요. 확인하고 저장해 주세요.</b>'}
+      </p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>차종</th><th class="num" style="width:150px">최대 PLT</th><th style="width:44px"></th></tr></thead>
+        <tbody id="vs-rows">${vehicleSpecs.map(vehicleSpecRowHtml).join("")}</tbody>
+      </table></div>
+      <button class="btn sm secondary" onclick="addVehicleSpecRow()" style="margin-top:8px">＋ 차종 추가</button>
+      <div class="modal-actions"><button class="btn" id="btn-vs-save" onclick="saveVehicleSpecs()">저장</button></div>
+    </div>
+
+    <div class="card">
       <h2>데이터 저장 방식</h2>
       <p style="color:var(--text-sub);font-size:13.5px">
         모든 데이터는 클라우드에 저장되어 전 직원이 공유합니다.
@@ -12909,6 +13252,43 @@ async function saveVatCfg() {
   if (error || !data?.length) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
   vatCfg = { ...vatCfg, ...value };
   toast("부가세 기준이 저장되었습니다 — 이익 계산에 바로 반영됩니다");
+  route();
+}
+
+/* 차량 적재 규격 - 발주서의 PLT → 차종 판정, 그리고 과거 운반비 찾기에 쓰여요. */
+const vehicleSpecRowHtml = (s = { type: "", maxPlt: "" }) => `
+  <tr>
+    <td><input class="vs-type" value="${esc(s.type || "")}" placeholder="예) 11톤" maxlength="20"></td>
+    <td><input class="vs-plt" type="number" min="1" step="1" value="${s.maxPlt ?? ""}" placeholder="예) 18"></td>
+    <td><button class="btn sm secondary" onclick="this.closest('tr').remove()" title="이 줄 삭제">✕</button></td>
+  </tr>`;
+
+function addVehicleSpecRow() {
+  const tb = document.getElementById("vs-rows");
+  if (tb) tb.insertAdjacentHTML("beforeend", vehicleSpecRowHtml());
+}
+
+async function saveVehicleSpecs() {
+  const rows = [...document.querySelectorAll("#vs-rows tr")].map(tr => ({
+    type: (tr.querySelector(".vs-type")?.value || "").trim(),
+    maxPlt: Number(tr.querySelector(".vs-plt")?.value) || 0,
+  })).filter(s => s.type || s.maxPlt);
+  if (!rows.length) return toast("차종을 한 줄 이상 입력해 주세요");
+  for (const s of rows) {
+    if (!s.type) return toast("차종 이름을 입력해 주세요");
+    if (!Number.isInteger(s.maxPlt) || s.maxPlt <= 0) return toast(`'${s.type}'의 최대 PLT 를 1 이상 정수로 입력해 주세요`);
+  }
+  const dup = rows.map(s => s.type).find((t, i, a) => a.indexOf(t) !== i);
+  if (dup) return toast(`차종 '${dup}'이(가) 두 번 있습니다`);
+  const btn = document.getElementById("btn-vs-save");
+  if (btn) btn.disabled = true;
+  const { data, error } = await sb.from("settings")
+    .upsert({ key: "vehicle_specs", value: rows, updated_at: new Date().toISOString(), updated_by: me.name },
+            { onConflict: "key" }).select("key");
+  if (error || !data?.length) { if (btn) btn.disabled = false; return toast("저장에 실패했습니다"); }
+  vehicleSpecs = rows.map(s => ({ ...s }));
+  vehicleSpecsSaved = true;
+  toast("차량 적재 규격이 저장되었습니다 — 발주서의 PLT 판정에 바로 반영됩니다");
   route();
 }
 
